@@ -3,6 +3,8 @@ node_modules
 *.tsbuildinfo
 
 apps/web/.next
+apps/web/.env*
+!apps/web/.env.example
 apps/desktop/release
 
 dist

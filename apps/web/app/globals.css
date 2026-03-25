@@ -29,9 +29,9 @@ body {
 }
 
 .shell {
-  width: min(960px, calc(100vw - 48px));
+  width: min(960px, 100%);
   margin: 0 auto;
-  padding: 72px 0;
+  padding: 72px 24px;
 }
 
 .hero,
@@ -124,10 +124,39 @@ dd {
   line-height: 1.7;
 }
 
+.dark [data-copilotkit],
+[data-copilotkit].dark {
+  --cpk-default-font-family: "Segoe UI", sans-serif;
+  --background: #07111f;
+  --foreground: #e6eef8;
+  --card: rgba(13, 28, 47, 0.96);
+  --card-foreground: #e6eef8;
+  --popover: rgba(13, 28, 47, 0.98);
+  --popover-foreground: #e6eef8;
+  --primary: #58aef6;
+  --primary-foreground: #07111f;
+  --secondary: rgba(157, 177, 201, 0.12);
+  --secondary-foreground: #e6eef8;
+  --muted: rgba(157, 177, 201, 0.12);
+  --muted-foreground: #9db1c9;
+  --accent: rgba(88, 174, 246, 0.14);
+  --accent-foreground: #e6eef8;
+  --border: rgba(132, 168, 255, 0.18);
+  --input: rgba(132, 168, 255, 0.16);
+  --ring: rgba(88, 174, 246, 0.5);
+  --sidebar: rgba(7, 17, 31, 0.96);
+  --sidebar-foreground: #e6eef8;
+  --sidebar-primary: #58aef6;
+  --sidebar-primary-foreground: #07111f;
+  --sidebar-accent: rgba(88, 174, 246, 0.12);
+  --sidebar-accent-foreground: #e6eef8;
+  --sidebar-border: rgba(132, 168, 255, 0.18);
+  --sidebar-ring: rgba(88, 174, 246, 0.5);
+}
+
 @media (max-width: 720px) {
   .shell {
-    width: min(100vw - 28px, 960px);
-    padding: 28px 0 40px;
+    padding: 28px 14px 40px;
   }
 
   .hero,
@@ -141,4 +170,3 @@ dd {
     grid-template-columns: 1fr;
   }
 }
-
