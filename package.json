@@ -1,0 +1,12 @@
+{
+  "name": "glassbeaker-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev": "pnpm --filter glassbeaker-desktop dev",
+    "build": "pnpm --filter glassbeaker-web build",
+    "package:dir": "pnpm build && pnpm --filter glassbeaker-desktop package:dir",
+    "dist": "pnpm build && pnpm --filter glassbeaker-desktop dist"
+  }
+}
+

@@ -1,0 +1,9 @@
+node_modules
+.pnpm-store
+*.tsbuildinfo
+
+apps/web/.next
+apps/desktop/release
+
+dist
+out

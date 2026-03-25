@@ -1,0 +1,10 @@
+packages:
+  - "apps/*"
+onlyBuiltDependencies:
+  - electron
+  - electron-winstaller
+  - sharp
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  sharp: true
