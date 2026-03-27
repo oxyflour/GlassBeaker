@@ -4,6 +4,8 @@ const { app, BrowserWindow, utilityProcess } = require("electron");
 
 const HOST = "127.0.0.1";
 const PORT = process.env.GLASSBEAKER_PORT || "3000";
+const PYTHON_HOST = process.env.GLASSBEAKER_PYTHON_HOST || HOST;
+const PYTHON_PORT = process.env.GLASSBEAKER_PYTHON_PORT || "8000";
 
 let mainWindow = null;
 let serverProcess = null;
@@ -64,6 +66,14 @@ function getWebRoot() {
   return path.resolve(__dirname, "..", "..", "web");
 }
 
+function getPythonRoot() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "python");
+  }
+
+  return path.resolve(__dirname, "..", "..", "python");
+}
+
 function startServer() {
   if (serverProcess) {
     return;
@@ -77,7 +87,10 @@ function startServer() {
       ELECTRON_SERVER_MODE: app.isPackaged ? "production" : "development",
       GLASSBEAKER_HOST: HOST,
       GLASSBEAKER_PORT: PORT,
-      GLASSBEAKER_WEB_DIR: getWebRoot()
+      GLASSBEAKER_WEB_DIR: getWebRoot(),
+      GLASSBEAKER_PYTHON_HOST: PYTHON_HOST,
+      GLASSBEAKER_PYTHON_PORT: PYTHON_PORT,
+      GLASSBEAKER_PYTHON_ROOT: getPythonRoot()
     },
     stdio: "pipe"
   });
@@ -88,6 +101,7 @@ function startServer() {
   serverProcess.on("exit", (code) => {
     if (!isQuitting) {
       console.error(`utility process exited with code ${code}`);
+      app.quit();
     }
 
     serverProcess = null;
@@ -96,8 +110,12 @@ function startServer() {
 
 async function createMainWindow() {
   const url = `http://${HOST}:${PORT}`;
+  const pythonHealthUrl = `http://${PYTHON_HOST}:${PYTHON_PORT}/healthz`;
   startServer();
-  await waitForServer(url, app.isPackaged ? 30000 : 90000);
+  await Promise.all([
+    waitForServer(url, app.isPackaged ? 30000 : 90000),
+    waitForServer(pythonHealthUrl, app.isPackaged ? 30000 : 90000)
+  ]);
 
   mainWindow = new BrowserWindow({
     width: 1200,

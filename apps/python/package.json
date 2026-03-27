@@ -1,0 +1,8 @@
+{
+  "name": "glassbeaker-python",
+  "private": true,
+  "scripts": {
+    "dev": "uv run --project . --python 3.12 python app.py",
+    "build": "uv run --project . --python 3.12 --with pyinstaller pyinstaller --noconfirm --clean --onefile --name glassbeaker-python --distpath dist --workpath build --specpath build app.py"
+  }
+}

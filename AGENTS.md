@@ -1,0 +1,1 @@
+- all files are in utf8-encoded. note windows shell does not support utf8

@@ -6,8 +6,8 @@
   "main": "src/main.cjs",
   "scripts": {
     "dev": "node scripts/dev.cjs",
-    "package:dir": "electron-builder --dir --publish never",
-    "dist": "electron-builder --publish never"
+    "package:dir": "pnpm --dir ../python build && electron-builder --dir --publish never",
+    "dist": "pnpm --dir ../python build && electron-builder --publish never"
   },
   "build": {
     "appId": "com.glassbeaker.app",
@@ -24,6 +24,13 @@
       {
         "from": "../web/.next/standalone",
         "to": "web",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../python/dist",
+        "to": "python",
         "filter": [
           "**/*"
         ]
