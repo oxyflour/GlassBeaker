@@ -1,177 +1,112 @@
-const http = require("node:http");
-const path = require("node:path");
-const { app, BrowserWindow, utilityProcess } = require("electron");
+// @ts-check
+const path = require("node:path"),
+    { spawn } = require('child_process'),
+    { app, BrowserWindow, utilityProcess } = require("electron")
 
-const HOST = "127.0.0.1";
-const PORT = process.env.GLASSBEAKER_PORT || "3000";
-const PYTHON_HOST = process.env.GLASSBEAKER_PYTHON_HOST || HOST;
-const PYTHON_PORT = process.env.GLASSBEAKER_PYTHON_PORT || "8000";
+/**
+ * 
+ * @param { string } label 
+ * @param { string } data 
+ */
+function logWithLabel(label, data) {
+    for (const line of `${data}`.split('\n')) {
+        line && console.log(`[${label}] ${line}`)
+    }
+}
 
+/**
+ * 
+ * @param { string } label 
+ * @param { import('child_process').ChildProcess } proc 
+ */
+function watchProc(label, proc) {
+    proc.stdout?.on('data', data => logWithLabel(label, data))
+    proc.stderr?.on('data', data => logWithLabel(label, data))
+    proc.addListener('exit', () => {
+        console.log(`BYE: ${label} quit`)
+        app.quit()
+    })
+}
+
+/**
+ * @type { null | Electron.BrowserWindow }
+ */
 let mainWindow = null;
-let serverProcess = null;
-let isQuitting = false;
 
-function pipeUtilityLogs(stream, label) {
-  if (!stream) {
-    return;
-  }
-
-  stream.on("data", (chunk) => {
-    process.stdout.write(`[${label}] ${chunk}`);
-  });
-}
-
-function pingServer(url) {
-  return new Promise((resolve, reject) => {
-    const request = http.get(url, (response) => {
-      response.resume();
-
-      if (response.statusCode && response.statusCode < 500) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(`Unexpected status code: ${response.statusCode}`));
+const root = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "..", "..")
+async function startServer() {
+    const next = utilityProcess.fork(path.join(root, 'web/node_modules/next/dist/bin/next'), [], {
+        cwd: path.join(root, 'web'),
+        stdio: "pipe"
     });
+    // @ts-ignore
+    watchProc('nextjs', next)
 
-    request.on("error", reject);
-    request.setTimeout(1500, () => {
-      request.destroy(new Error("Timed out"));
-    });
-  });
-}
+    const python = spawn('uv', ['run', 'app.py'], {
+        shell: true,
+        cwd: path.join(root, 'python'),
+        stdio: 'pipe'
+    })
+    watchProc('python', python)
 
-async function waitForServer(url, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-
-  while (Date.now() < deadline) {
-    try {
-      await pingServer(url);
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    const url = 'http://localhost:3000'
+    while (true) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        try {
+            await fetch(url)
+            break
+        } catch (err) {
+            console.warn(`waiting for url ${url}`)
+        }
     }
-  }
-
-  throw lastError || new Error(`Failed to start server at ${url}`);
-}
-
-function getWebRoot() {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, "web");
-  }
-
-  return path.resolve(__dirname, "..", "..", "web");
-}
-
-function getPythonRoot() {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, "python");
-  }
-
-  return path.resolve(__dirname, "..", "..", "python");
-}
-
-function startServer() {
-  if (serverProcess) {
-    return;
-  }
-
-  const childPath = path.join(__dirname, "server-process.cjs");
-
-  serverProcess = utilityProcess.fork(childPath, [], {
-    env: {
-      ...process.env,
-      ELECTRON_SERVER_MODE: app.isPackaged ? "production" : "development",
-      GLASSBEAKER_HOST: HOST,
-      GLASSBEAKER_PORT: PORT,
-      GLASSBEAKER_WEB_DIR: getWebRoot(),
-      GLASSBEAKER_PYTHON_HOST: PYTHON_HOST,
-      GLASSBEAKER_PYTHON_PORT: PYTHON_PORT,
-      GLASSBEAKER_PYTHON_ROOT: getPythonRoot()
-    },
-    stdio: "pipe"
-  });
-
-  pipeUtilityLogs(serverProcess.stdout, "server");
-  pipeUtilityLogs(serverProcess.stderr, "server");
-
-  serverProcess.on("exit", (code) => {
-    if (!isQuitting) {
-      console.error(`utility process exited with code ${code}`);
-      app.quit();
-    }
-
-    serverProcess = null;
-  });
+    return url
 }
 
 async function createMainWindow() {
-  const url = `http://${HOST}:${PORT}`;
-  const pythonHealthUrl = `http://${PYTHON_HOST}:${PYTHON_PORT}/healthz`;
-  startServer();
-  await Promise.all([
-    waitForServer(url, app.isPackaged ? 30000 : 90000),
-    waitForServer(pythonHealthUrl, app.isPackaged ? 30000 : 90000)
-  ]);
+    const url = await startServer();
+    mainWindow = new BrowserWindow({
+        width: 1200,
+        height: 760,
+        backgroundColor: "#07111f",
+        show: false,
+        webPreferences: {
+            additionalArguments: [`--glassbeaker-packaged=${app.isPackaged ? "1" : "0"}`],
+            preload: path.join(__dirname, "preload.cjs")
+        }
+    });
 
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 760,
-    minWidth: 960,
-    minHeight: 640,
-    backgroundColor: "#07111f",
-    show: false,
-    webPreferences: {
-      additionalArguments: [`--glassbeaker-packaged=${app.isPackaged ? "1" : "0"}`],
-      preload: path.join(__dirname, "preload.cjs")
-    }
-  });
+    mainWindow.once("ready-to-show", () => {
+        mainWindow?.show();
+    });
 
-  mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
-  });
+    mainWindow.on("closed", () => {
+        mainWindow = null;
+    });
 
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
-
-  await mainWindow.loadURL(url);
-}
-
-function stopServer() {
-  if (!serverProcess) {
-    return;
-  }
-
-  serverProcess.kill();
-  serverProcess = null;
+    await mainWindow.loadURL(url);
 }
 
 app.on("before-quit", () => {
-  isQuitting = true;
-  stopServer();
+    // cleanup
 });
 
 app.whenReady().then(async () => {
-  try {
-    await createMainWindow();
-  } catch (error) {
-    console.error("Failed to start desktop app:", error);
-    app.quit();
-  }
+    try {
+        await createMainWindow();
+    } catch (error) {
+        console.error("Failed to start desktop app:", error);
+        app.quit();
+    }
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+    if (process.platform !== "darwin") {
+        app.quit();
+    }
 });
 
 app.on("activate", async () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    await createMainWindow();
-  }
+    if (BrowserWindow.getAllWindows().length === 0) {
+        await createMainWindow();
+    }
 });

@@ -10,15 +10,15 @@ export const metadata: Metadata = {
   description: "Minimal Next.js + Electron workspace"
 };
 
-type RootLayoutProps = Readonly<{
-  children: ReactNode;
-}>;
-
-export default function RootLayout({ children }: RootLayoutProps) {
+export default function RootLayout({ children }: any) {
   return (
     <html lang="en" className="dark">
       <body>
-        <CopilotKit runtimeUrl="/api/copilotkit" agent="default">
+        <CopilotKit
+          showDevConsole={ false }
+          enableInspector={ false }
+          runtimeUrl="/api/copilotkit"
+          agent="default">
           {children}
         </CopilotKit>
       </body>
