@@ -5,14 +5,15 @@ import platform
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 
+# watch dog
 import sys, threading
 def wait_for_stdin():
     sys.stdin.readline()
     os._exit(0)
 threading.Thread(target=wait_for_stdin, daemon=True).start()
+
 
 app = FastAPI(title="GlassBeaker Python Service")
 
@@ -30,10 +31,9 @@ async def runtime() -> dict[str, Any]:
     }
 
 def main() -> None:
-    host = os.getenv("GLASSBEAKER_PYTHON_HOST", "127.0.0.1")
-    port = int(os.getenv("GLASSBEAKER_PYTHON_PORT", "4000"))
-    log_level = os.getenv("GLASSBEAKER_PYTHON_LOG_LEVEL", "info")
-    uvicorn.run(app, host=host, port=port, log_level=log_level)
+    port = int(os.getenv("LISTEN_PORT", "4000"))
+    log_level = os.getenv("LOG_LEVEL", "info")
+    uvicorn.run(app, port=port, log_level=log_level)
 
 if __name__ == "__main__":
     main()

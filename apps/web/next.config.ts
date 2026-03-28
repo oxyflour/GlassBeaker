@@ -2,22 +2,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 
-const configDir = path.dirname(fileURLToPath(import.meta.url));
-
-function getPythonOrigin(): string {
-  const explicitOrigin = process.env.GLASSBEAKER_PYTHON_ORIGIN?.trim();
-
-  if (explicitOrigin) {
-    return explicitOrigin;
-  }
-
-  const host = process.env.GLASSBEAKER_PYTHON_HOST?.trim() || "127.0.0.1";
-  const port = process.env.GLASSBEAKER_PYTHON_PORT?.trim() || "8000";
-
-  return `http://${host}:${port}`;
-}
-
-const nextConfig: NextConfig = {
+const configDir = path.dirname(fileURLToPath(import.meta.url)),
+  apiRewrite = process.env.API_REWRITE || 'http://127.0.0.1:4000'
+export default {
   output: "standalone",
   outputFileTracingRoot: path.join(configDir, "../../"),
   async rewrites() {
@@ -25,11 +12,9 @@ const nextConfig: NextConfig = {
       fallback: [
         {
           source: "/api/:path*",
-          destination: `${getPythonOrigin()}/api/:path*`
+          destination: `${apiRewrite}/api/:path*`
         }
       ]
     };
   }
-};
-
-export default nextConfig;
+} satisfies NextConfig;

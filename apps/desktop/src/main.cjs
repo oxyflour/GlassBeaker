@@ -34,26 +34,32 @@ function watchProc(label, proc) {
 let mainWindow = null;
 
 const root = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "..", "..")
-async function startServer() {
-    const next = utilityProcess.fork(path.join(root, 'web/node_modules/next/dist/bin/next'), [], {
+async function startServer(nextJsPort = 13000, pythonPort = 13001) {
+    const nextjs = utilityProcess.fork(path.join(root, 'web/node_modules/next/dist/bin/next'), [
+        '-p', `${nextJsPort}`
+    ], {
+        env: { ...process.env, API_REWRITE: `http://127.0.0.1:${pythonPort}/` },
         cwd: path.join(root, 'web'),
         stdio: "pipe"
     });
     // @ts-ignore
-    watchProc('nextjs', next)
+    watchProc('nextjs', nextjs)
 
     const python = spawn('uv', ['run', 'app.py'], {
+        env: { ...process.env, LISTEN_PORT: `${pythonPort}` },
         shell: true,
         cwd: path.join(root, 'python'),
         stdio: 'pipe'
     })
     watchProc('python', python)
 
-    const url = 'http://localhost:3000'
+    const url = `http://127.0.0.1:${nextJsPort}`
     while (true) {
         await new Promise(resolve => setTimeout(resolve, 1000))
         try {
-            await fetch(url)
+            const req = await fetch(`${url}/api/runtime`),
+                runtime = await req.text()
+            console.log(`RUNTIME: ${runtime}`)
             break
         } catch (err) {
             console.warn(`waiting for url ${url}`)
