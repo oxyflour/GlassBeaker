@@ -53,7 +53,7 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
     })
     watchProc('python', python)
 
-    const url = `http://127.0.0.1:${nextJsPort}`
+    const url = `http://localhost:${nextJsPort}`
     while (true) {
         await new Promise(resolve => setTimeout(resolve, 1000))
         try {
