@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: any) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <body>
         <CopilotKit
           showDevConsole={ false }

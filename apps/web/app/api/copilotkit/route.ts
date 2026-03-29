@@ -5,9 +5,7 @@ import type { NextRequest } from "next/server";
 const agent = new BuiltInAgent({
   model: process.env.COPILOTKIT_MODEL?.trim() || "openai:gpt-5.2",
   prompt: [
-    "You are the GlassBeaker assistant for a minimal Electron + Next.js starter.",
-    "Help users understand how the renderer, bundled standalone server, and packaging flow work.",
-    "Keep answers concise, practical, and specific to this app when possible."
+    "Write react apps for users",
   ].join(" ")
 });
 

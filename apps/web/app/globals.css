@@ -21,6 +21,12 @@ body {
 .copilotkit-fix .cpk\:overflow-y-scroll.cpk\:overflow-x-hidden {
   overflow-y: auto;
 }
+.copilotkit-fix [data-language] {
+  background-color: var(--text);
+}
+.copilotkit-fix code .block {
+  display: block;
+}
 
 .tool-budget {
   background: #bcbcbc;

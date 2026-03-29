@@ -8,13 +8,13 @@ import {
   SandpackPreview,
   SandpackProvider,
   SandpackState,
-  defaultDark,
+  defaultLight,
   useSandpack
 } from "@codesandbox/sandpack-react"
 
 const APP_CODE = `
 import { useState, useEffect } from 'react'
-import Entry from "./entry.js"
+import Entry from './entry'
 import Props from './props.json'
 export default function App() {
     const [props, setProps] = useState(Props)
@@ -33,11 +33,6 @@ export default function App() {
     return <Entry { ...props } />
 }
 `
-const DEFAULT_FILES = {
-    '/App.js': APP_CODE,
-    '/entry.js': 'export default () => "Hi"',
-    '/props.json': '{}'
-} as SandpackFiles
 
 function FetchSandpack({ setSandpack }: { setSandpack: (value: SandpackState) => void }) {
     const { sandpack } = useSandpack()
@@ -59,7 +54,7 @@ export default function HomePage() {
         value: props
     }, [props])
 
-    const [files, setFiles] = useState(DEFAULT_FILES)
+    const [files, setFiles] = useState({ } as SandpackFiles)
     useFrontendTool({
         name: "set_app_code",
         description:
@@ -85,7 +80,8 @@ export default function HomePage() {
             setProps(props)
             setFiles({
                 ...files,
-                '/App.js': entry,
+                '/App.js': APP_CODE,
+                '/entry.tsx': entry,
                 '/props.json': JSON.stringify(props),
             })
             return { ok: true };
@@ -125,31 +121,35 @@ export default function HomePage() {
         }
     }, []);
 
+    const hasApp = '/App.js' in files
     return <div className="h-full w-full flex">
-        <div className="flex-1 h-full">
-            <SandpackProvider
-                style={{ height: '100%' }}
-                template="react"
-                theme={defaultDark}
-                files={files}
-                customSetup={{
-                    dependencies: {
-                        three: 'latest'
-                    }
-                }}
-                options={{
-                    recompileMode: 'delayed',
-                    recompileDelay: 250
-                }}>
-                <FetchSandpack setSandpack={ setSandpack } />
-                <SandpackPreview
-                    className="h-full"
-                    showOpenInCodeSandbox={false}
-                    showOpenNewtab={false}
-                    showSandpackErrorOverlay={true}
-                />
-            </SandpackProvider>
-        </div>
-        <CopilotChat className="copilotkit-fix" style={{ width: 480 }} />
+        {
+            hasApp &&
+            <div className="flex-1 h-full">
+                <SandpackProvider
+                    style={{ height: '100%' }}
+                    template="react"
+                    theme={defaultLight}
+                    files={files}
+                    customSetup={{
+                        dependencies: {
+                            three: 'latest'
+                        }
+                    }}
+                    options={{
+                        recompileMode: 'delayed',
+                        recompileDelay: 250
+                    }}>
+                    <FetchSandpack setSandpack={ setSandpack } />
+                    <SandpackPreview
+                        className="h-full"
+                        showOpenInCodeSandbox={false}
+                        showOpenNewtab={false}
+                        showSandpackErrorOverlay={true}
+                    />
+                </SandpackProvider>
+            </div>
+        }
+        <CopilotChat className="copilotkit-fix" style={{ width: hasApp ? 400 : '100%' }} />
     </div>
 }
