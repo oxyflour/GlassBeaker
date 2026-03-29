@@ -22,3 +22,9 @@ body {
   overflow-y: auto;
 }
 
+.tool-budget {
+  background: #bcbcbc;
+  border-radius: 8px;
+  padding: 8px;
+}
+
