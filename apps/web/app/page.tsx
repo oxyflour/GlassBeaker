@@ -34,6 +34,14 @@ export default function App() {
 }
 `
 
+const DEFAULT_FILES = {
+    '/App.js': `
+export default () => {
+    return <div style={{ display: 'grid', placeItems: 'center', width: '100%', height: '100%' }}>Hello World</div>
+}
+`
+} as SandpackFiles
+
 function FetchSandpack({ setSandpack }: { setSandpack: (value: SandpackState) => void }) {
     const { sandpack } = useSandpack()
     useEffect(() => setSandpack(sandpack), [Object.keys(sandpack.clients).join(';')])
@@ -54,7 +62,7 @@ export default function HomePage() {
         value: props
     }, [props])
 
-    const [files, setFiles] = useState({ } as SandpackFiles)
+    const [files, setFiles] = useState(DEFAULT_FILES)
     useFrontendTool({
         name: "set_app_code",
         description:
