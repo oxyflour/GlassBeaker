@@ -3,18 +3,34 @@ import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 
 const configDir = path.dirname(fileURLToPath(import.meta.url)),
-  apiRewrite = process.env.API_REWRITE || 'http://127.0.0.1:4000'
+    bundlerURL = process.env.SANDPACK_BUNDLER || 'https://2-19-8-sandpack.codesandbox.io/'
 export default {
-  output: "standalone",
-  outputFileTracingRoot: path.join(configDir, "../../"),
-  async rewrites() {
-    return {
-      fallback: [
-        {
-          source: "/api/:path*",
-          destination: `${apiRewrite}/api/:path*`
+    output: "standalone",
+    outputFileTracingRoot: path.join(configDir, "../../"),
+    allowedDevOrigins: ['dev.yff.me'],
+    async rewrites() {
+        return {
+            // need this to override homepage
+            beforeFiles: [{
+                source: "/",
+                destination: bundlerURL,
+                has: [{
+                    type: 'host',
+                    value: 'dev.yff.me'
+                }]
+            }],
+            // redirect python api
+            fallback: [{
+                source: "/api/:path*",
+                destination: `${process.env.API_REWRITE}/api/:path*`
+            }, {
+                source: "/:path(.*)",
+                destination: `${bundlerURL}:path*`,
+                has: [{
+                    type: 'host',
+                    value: 'dev.yff.me'
+                }]
+            }]
         }
-      ]
-    };
-  }
+    }
 } satisfies NextConfig;

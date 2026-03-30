@@ -1,0 +1,2 @@
+- [ ] boundle standalone next into electron installer
+- [ ] fetch sandpack errors

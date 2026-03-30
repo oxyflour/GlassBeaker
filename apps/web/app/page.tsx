@@ -132,11 +132,15 @@ export default function HomePage() {
                     theme={defaultLight}
                     files={files}
                     customSetup={{
-                        dependencies: {
-                            three: 'latest'
-                        }
+                        npmRegistries: [{
+                            registryUrl: '/npm',
+                            enabledScopes: [],
+                            limitToScopes: false,
+                            proxyEnabled: false,
+                        }]
                     }}
                     options={{
+                        bundlerURL: 'http://dev.yff.me:13000/',
                         recompileMode: 'delayed',
                         recompileDelay: 250
                     }}>
