@@ -1,3 +1,5 @@
+'use client'
+
 import { Agent, ThinkingLevel } from '@mariozechner/pi-agent-core';
 import {
   ChatPanel,

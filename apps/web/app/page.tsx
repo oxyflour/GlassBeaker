@@ -11,13 +11,13 @@ import {
   defaultLight,
   useSandpack
 } from "@codesandbox/sandpack-react"
-import { CustomProvider } from "@mariozechner/pi-web-ui";
-import Pi from "../components/agent/pi";
+import type { CustomProvider } from "@mariozechner/pi-web-ui";
 
-const baseUrl = Object.assign(new URL(location.href), {
-     pathname: '/cors/moonshot/v1'
-}).toString()
+import dynamic from "next/dynamic";
+// pi-ai has dynamic imports
+const Pi = dynamic(() => import('../components/agent/pi'), { ssr: false })
 
+const baseUrl = 'http://localhost:13000/cors/moonshot/v1'
 const PROVIDER = {
     id: 'moonshot',
     name: 'moonshot',
