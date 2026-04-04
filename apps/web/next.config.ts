@@ -21,6 +21,9 @@ export default {
             }],
             // redirect python api
             fallback: [{
+                source: "/cors/moonshot/:path*",
+                destination: `https://api.moonshot.cn/:path*`
+            }, {
                 source: "/api/:path*",
                 destination: `${process.env.API_REWRITE}/api/:path*`
             }, {

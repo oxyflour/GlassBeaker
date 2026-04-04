@@ -11,6 +11,40 @@ import {
   defaultLight,
   useSandpack
 } from "@codesandbox/sandpack-react"
+import { CustomProvider } from "@mariozechner/pi-web-ui";
+import Pi from "../components/agent/pi";
+
+const SETTINGS = {
+    'proxy.enabled': true,
+}
+
+const baseUrl = Object.assign(new URL(location.href), {
+     pathname: '/cors/moonshot/v1'
+}).toString()
+
+const PROVIDER = {
+    id: 'moonshot',
+    name: 'moonshot',
+    baseUrl,
+    type: 'openai-completions',
+    models: [{
+        id: 'kimi-k2.5',
+        name: 'Kimi K2.5',
+        api: 'openai-completions',
+        provider: 'moonshot',
+        baseUrl,
+        reasoning: false,
+        input: ['text'],
+        contextWindow: 131072,
+        maxTokens: 32000,
+        cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+        }
+    }]
+} satisfies CustomProvider
 
 const APP_CODE = `
 import { useState, useEffect } from 'react'
@@ -35,16 +69,12 @@ export default function App() {
 `
 
 const DEFAULT_FILES = {
-    '/App.js': `
-export default () => {
-    return <div style={{ display: 'grid', placeItems: 'center', width: '100%', height: '100%' }}>Hello World</div>
-}
-`
+    '/App.js': `export default () => "Hi"`
 } as SandpackFiles
 
 function FetchSandpack({ setSandpack }: { setSandpack: (value: SandpackState) => void }) {
     const { sandpack } = useSandpack()
-    useEffect(() => setSandpack(sandpack), [Object.keys(sandpack.clients).join(';')])
+    useEffect(() => setSandpack(sandpack), [Object.keys(sandpack.clients).join(';'), sandpack.error])
     return null
 }
 
@@ -129,7 +159,8 @@ export default function HomePage() {
         }
     }, []);
 
-    const hasApp = '/App.js' in files
+    const hasApp = '/App.js' in files,
+        width = hasApp ? 400 : '100%' 
     return <div className="h-full w-full flex">
         {
             hasApp &&
@@ -162,6 +193,10 @@ export default function HomePage() {
                 </SandpackProvider>
             </div>
         }
-        <CopilotChat className="copilotkit-fix" style={{ width: hasApp ? 400 : '100%' }} />
+        {
+            0 ?
+            <CopilotChat className="copilotkit-fix" style={{ width }} /> :
+            <Pi provider={ PROVIDER } settings={ SETTINGS } style={{ width }} />
+        }
     </div>
 }
