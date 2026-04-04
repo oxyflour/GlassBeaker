@@ -23,6 +23,9 @@ call %PYTHON_CMD% "%SCRIPT_DIR%run_render.py" ^
   --project-root "%PROJECT_ROOT%" ^
   --project-name "HeadlessObjRender" ^
   --obj "C:\Users\oxyfl\Downloads\basic-phone.obj" ^
+  --hdr "%SCRIPT_DIR%Assets\HDRI\studio_kominka_01_1k.hdr" ^
+  --hdr-intensity 6.0 ^
+  --hdr-angle 0.0 ^
   --output-dir "%SCRIPT_DIR%Shots" ^
   --width 1920 ^
   --height 1080

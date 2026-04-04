@@ -1,7 +1,7 @@
 import json
 import os
 import traceback
-import unreal
+import unreal #type: ignore
 
 
 CONFIG_ENV = "UE_HEADLESS_RENDER_CONFIG"
@@ -54,7 +54,7 @@ def import_obj(obj_path: str, dest_path: str) -> tuple[object, str]:
         fail(f"OBJ import returned no assets: {obj_path}")
 
     mesh_asset = None
-    mesh_path = None
+    mesh_path = ''
     for p in imported_paths:
         asset = unreal.EditorAssetLibrary.load_asset(p)
         if isinstance(asset, unreal.StaticMesh):
@@ -70,6 +70,45 @@ def import_obj(obj_path: str, dest_path: str) -> tuple[object, str]:
 
     log(f"Imported mesh: {mesh_path}")
     return mesh_asset, mesh_path
+
+
+def import_texture_cube(texture_path: str, dest_path: str):
+    ensure_content_dir(dest_path)
+
+    task = unreal.AssetImportTask()
+    task.filename = texture_path
+    task.destination_path = dest_path
+    task.automated = True
+    task.save = True
+    task.replace_existing = True
+    task.replace_existing_settings = True
+
+    unreal.AssetToolsHelpers.get_asset_tools().import_asset_tasks([task])
+
+    imported_paths = list(task.get_editor_property("imported_object_paths") or [])
+    if not imported_paths:
+        fail(f"HDR import returned no assets: {texture_path}")
+
+    cubemap_asset = None
+    cubemap_path = ""
+    found_assets = []
+    for p in imported_paths:
+        asset = unreal.EditorAssetLibrary.load_asset(p)
+        asset_name = asset.get_class().get_name() if asset else "None"
+        found_assets.append(f"{p} ({asset_name})")
+        if isinstance(asset, unreal.TextureCube):
+            cubemap_asset = asset
+            cubemap_path = p
+            break
+
+    if cubemap_asset is None:
+        fail(
+            "HDR import completed, but no TextureCube was found.\n"
+            f"Imported assets: {found_assets}"
+        )
+
+    log(f"Imported HDR cubemap: {cubemap_path}")
+    return cubemap_asset
 
 
 def new_blank_level(map_path: str) -> None:
@@ -102,20 +141,26 @@ def spawn_actor_from_mesh(mesh_asset, rotation_deg) -> unreal.Actor:
     return actor
 
 
-def setup_lighting(bounds_origin: unreal.Vector, bounds_extent: unreal.Vector) -> None:
-    # Directional light
-    sun = unreal.EditorLevelLibrary.spawn_actor_from_class(
-        unreal.DirectionalLight,
-        unreal.Vector(bounds_origin.x - 300.0, bounds_origin.y - 300.0, bounds_origin.z + 800.0),
-        unreal.Rotator(-45.0, 45.0, 0.0),
-    )
-    if sun:
-        sun.set_actor_label("AutoSun")
-        comp = sun.get_component_by_class(unreal.DirectionalLightComponent)
-        if comp:
-            comp.set_editor_property("intensity", 10.0)
+def setup_lighting(
+    bounds_origin: unreal.Vector,
+    bounds_extent: unreal.Vector,
+    hdr_cubemap=None,
+    hdr_angle: float = 0.0,
+    hdr_intensity: float = 6.0,
+) -> None:
+    if hdr_cubemap is None:
+        sun = unreal.EditorLevelLibrary.spawn_actor_from_class(
+            unreal.DirectionalLight,
+            unreal.Vector(bounds_origin.x - 300.0, bounds_origin.y - 300.0, bounds_origin.z + 800.0),
+            unreal.Rotator(-45.0, 45.0, 0.0),
+        )
+        if sun:
+            sun.set_actor_label("AutoSun")
+            comp = sun.get_component_by_class(unreal.DirectionalLightComponent)
+            if comp:
+                comp.set_editor_property("mobility", unreal.ComponentMobility.MOVABLE)
+                comp.set_editor_property("intensity", 10.0)
 
-    # Sky light
     sky = unreal.EditorLevelLibrary.spawn_actor_from_class(
         unreal.SkyLight,
         unreal.Vector(bounds_origin.x, bounds_origin.y, bounds_origin.z + 200.0),
@@ -125,23 +170,45 @@ def setup_lighting(bounds_origin: unreal.Vector, bounds_extent: unreal.Vector) -
         sky.set_actor_label("AutoSky")
         comp = sky.get_component_by_class(unreal.SkyLightComponent)
         if comp:
-            comp.set_editor_property("intensity", 1.0)
-            try:
-                comp.set_editor_property("real_time_capture", True)
-            except Exception:
-                pass
+            comp.set_editor_property("mobility", unreal.ComponentMobility.MOVABLE)
+            if hdr_cubemap is not None:
+                comp.set_editor_property("source_type", unreal.SkyLightSourceType.SLS_SPECIFIED_CUBEMAP)
+                comp.set_editor_property("intensity", hdr_intensity)
+                try:
+                    comp.set_cubemap(hdr_cubemap)
+                except Exception:
+                    comp.set_editor_property("cubemap", hdr_cubemap)
+                try:
+                    comp.set_source_cubemap_angle(hdr_angle)
+                except Exception:
+                    comp.set_editor_property("source_cubemap_angle", hdr_angle)
+                try:
+                    comp.set_editor_property("real_time_capture", False)
+                except Exception:
+                    pass
+                try:
+                    comp.recapture_sky()
+                except Exception:
+                    pass
+                log(f"Configured SkyLight with HDR cubemap. intensity={hdr_intensity}, angle={hdr_angle}")
+            else:
+                comp.set_editor_property("intensity", 1.0)
+                try:
+                    comp.set_editor_property("real_time_capture", True)
+                except Exception:
+                    pass
 
-    # Sky atmosphere
-    try:
-        atm = unreal.EditorLevelLibrary.spawn_actor_from_class(
-            unreal.SkyAtmosphere,
-            unreal.Vector(0.0, 0.0, 0.0),
-            unreal.Rotator(0.0, 0.0, 0.0),
-        )
-        if atm:
-            atm.set_actor_label("AutoSkyAtmosphere")
-    except Exception:
-        pass
+    if hdr_cubemap is None:
+        try:
+            atm = unreal.EditorLevelLibrary.spawn_actor_from_class(
+                unreal.SkyAtmosphere,
+                unreal.Vector(0.0, 0.0, 0.0),
+                unreal.Rotator(0.0, 0.0, 0.0),
+            )
+            if atm:
+                atm.set_actor_label("AutoSkyAtmosphere")
+        except Exception:
+            pass
 
     # Post process volume to avoid aggressive auto exposure
     try:
@@ -155,9 +222,9 @@ def setup_lighting(bounds_origin: unreal.Vector, bounds_extent: unreal.Vector) -
             ppv.set_editor_property("b_unbound", True)
             settings = ppv.get_editor_property("settings")
             settings.set_editor_property("auto_exposure_method", unreal.AutoExposureMethod.AEM_MANUAL)
-            settings.set_editor_property("camera_iso", 100.0)
-            settings.set_editor_property("camera_shutter_speed", 100.0)
-            settings.set_editor_property("camera_aperture", 8.0)
+            settings.set_editor_property("camera_iso", 800.0)
+            settings.set_editor_property("camera_shutter_speed", 25.0)
+            settings.set_editor_property("camera_aperture", 2.8)
             ppv.set_editor_property("settings", settings)
     except Exception:
         pass
@@ -324,6 +391,10 @@ def main():
     rotation_deg = cfg.get("rotation_deg", [0.0, 0.0, 0.0])
     sequence_frames = int(cfg.get("sequence_frames", 2))
     import_dest = cfg["import_dest"]
+    hdr_path = cfg.get("hdr_path", "").strip()
+    hdr_import_dest = cfg.get("hdr_import_dest", "/Game/Auto/HDRI")
+    hdr_angle = float(cfg.get("hdr_angle", 0.0))
+    hdr_intensity = float(cfg.get("hdr_intensity", 6.0))
     map_path = cfg["map_path"]
     sequence_path = cfg["sequence_path"]
     job_name = cfg.get("job_name", "obj_render")
@@ -331,13 +402,20 @@ def main():
     unreal.EditorPythonScripting.set_keep_python_script_alive(True)
 
     mesh_asset, _mesh_path = import_obj(obj_path, import_dest)
+    hdr_cubemap = import_texture_cube(hdr_path, hdr_import_dest) if hdr_path else None
 
     new_blank_level(map_path)
 
     mesh_actor = spawn_actor_from_mesh(mesh_asset, rotation_deg)
     bounds_origin, bounds_extent = mesh_actor.get_actor_bounds(False)
 
-    setup_lighting(bounds_origin, bounds_extent)
+    setup_lighting(
+        bounds_origin,
+        bounds_extent,
+        hdr_cubemap=hdr_cubemap,
+        hdr_angle=hdr_angle,
+        hdr_intensity=hdr_intensity,
+    )
     camera_actor = setup_camera(bounds_origin, bounds_extent)
 
     create_level_sequence(sequence_path, camera_actor, sequence_frames)

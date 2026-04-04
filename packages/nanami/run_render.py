@@ -80,6 +80,9 @@ def main():
     parser.add_argument("--project-name", default="HeadlessObjRender")
     parser.add_argument("--engine-association", default="5.6")
     parser.add_argument("--obj", required=True, help=r"D:\assets\model.obj")
+    parser.add_argument("--hdr", default=None, help=r"D:\assets\lighting.hdr")
+    parser.add_argument("--hdr-intensity", type=float, default=6.0)
+    parser.add_argument("--hdr-angle", type=float, default=0.0)
     parser.add_argument("--output-dir", required=True, help=r"D:\renders\shot01")
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
@@ -93,10 +96,13 @@ def main():
     engine_root = Path(args.engine_root).resolve()
     project_root = Path(args.project_root).resolve()
     obj_path = Path(args.obj).resolve()
+    hdr_path = Path(args.hdr).resolve() if args.hdr else None
     output_dir = Path(args.output_dir).resolve()
 
     if not obj_path.exists():
         raise FileNotFoundError(f"OBJ not found: {obj_path}")
+    if hdr_path is not None and not hdr_path.exists():
+        raise FileNotFoundError(f"HDR not found: {hdr_path}")
 
     uproject_path = ensure_project(project_root, args.project_name, args.engine_association)
     unreal_cmd = find_unreal_editor_cmd(engine_root)
@@ -119,6 +125,10 @@ def main():
         "map_path": "/Game/Auto/Maps/AutoMap",
         "sequence_path": "/Game/Auto/Sequences/LS_Auto",
         "job_name": "obj_render",
+        "hdr_path": str(hdr_path) if hdr_path else "",
+        "hdr_import_dest": "/Game/Auto/HDRI",
+        "hdr_intensity": args.hdr_intensity,
+        "hdr_angle": args.hdr_angle,
     }
 
     cfg_path = project_root / "Temp" / "render_config.json"

@@ -18,6 +18,7 @@ import {
 
 import './app.css';
 import { DetailedHTMLProps, HTMLAttributes, useEffect, useRef } from 'react';
+import { streamFn } from './stream-fn';
 
 function setupStorage(options: { provider?: CustomProvider, settings?: Record<string, any> }) {
     const settings = new SettingsStore();
@@ -83,6 +84,7 @@ export default function Pi(props: DivProps & {
                 tools: [],
             },
             convertToLlm: defaultConvertToLlm,
+            streamFn,
         });
 
         const chatPanel = new ChatPanel()

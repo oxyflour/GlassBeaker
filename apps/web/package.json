@@ -12,6 +12,7 @@
     "@copilotkit/react-ui": "1.54.0",
     "@copilotkit/runtime": "1.54.0",
     "@mariozechner/pi-agent-core": "^0.64.0",
+    "@mariozechner/pi-coding-agent": "^0.65.0",
     "@mariozechner/pi-web-ui": "^0.64.0",
     "katex": "^0.16.44",
     "next": "16.2.1",
