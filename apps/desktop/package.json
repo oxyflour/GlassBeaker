@@ -5,7 +5,7 @@
   "description": "Minimal Next.js + Electron desktop shell",
   "main": "src/main.cjs",
   "scripts": {
-    "dev": "node scripts/dev.cjs",
+    "dev": "electron .",
     "package:dir": "pnpm --dir ../python build && electron-builder --dir --publish never",
     "dist": "pnpm --dir ../python build && electron-builder --publish never"
   },

@@ -57,7 +57,7 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
     while (true) {
         await new Promise(resolve => setTimeout(resolve, 1000))
         try {
-            const req = await fetch(`${url}/api/runtime`),
+            const req = await fetch(`${url}/python/runtime`),
                 runtime = await req.text()
             console.log(`RUNTIME: ${runtime}`)
             break

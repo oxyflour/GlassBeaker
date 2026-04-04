@@ -1,1 +1,2 @@
 - all files are in utf8-encoded. note windows shell does not support utf8
+- Ask me if you have to modify files outside current workspace.

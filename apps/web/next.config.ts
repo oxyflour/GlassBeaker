@@ -24,8 +24,8 @@ export default {
                 source: "/cors/moonshot/:path*",
                 destination: `https://api.moonshot.cn/:path*`
             }, {
-                source: "/api/:path*",
-                destination: `${process.env.API_REWRITE}/api/:path*`
+                source: "/python/:path*",
+                destination: `${process.env.API_REWRITE}/python/:path*`
             }, {
                 source: "/:path(.*)",
                 destination: `${bundlerURL}:path*`,

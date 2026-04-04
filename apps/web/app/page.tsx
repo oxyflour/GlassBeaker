@@ -14,10 +14,6 @@ import {
 import { CustomProvider } from "@mariozechner/pi-web-ui";
 import Pi from "../components/agent/pi";
 
-const SETTINGS = {
-    'proxy.enabled': true,
-}
-
 const baseUrl = Object.assign(new URL(location.href), {
      pathname: '/cors/moonshot/v1'
 }).toString()
@@ -69,7 +65,7 @@ export default function App() {
 `
 
 const DEFAULT_FILES = {
-    '/App.js': `export default () => "Hi"`
+//    '/App.js': `export default () => "Hi"`
 } as SandpackFiles
 
 function FetchSandpack({ setSandpack }: { setSandpack: (value: SandpackState) => void }) {
@@ -196,7 +192,7 @@ export default function HomePage() {
         {
             0 ?
             <CopilotChat className="copilotkit-fix" style={{ width }} /> :
-            <Pi provider={ PROVIDER } settings={ SETTINGS } style={{ width }} />
+            <Pi provider={ PROVIDER } style={{ width }} />
         }
     </div>
 }
