@@ -1,0 +1,8 @@
+Config/
+Content/
+DerivedDataCache/
+Intermediate/
+Saved/
+Shots/
+Temp/
+*.uproject
