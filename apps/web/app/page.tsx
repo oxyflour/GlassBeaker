@@ -13,9 +13,7 @@ import {
 } from "@codesandbox/sandpack-react"
 import type { CustomProvider } from "@mariozechner/pi-web-ui";
 
-import dynamic from "next/dynamic";
-// pi-ai has dynamic imports
-const Pi = dynamic(() => import('../components/agent/pi'), { ssr: false })
+import Pi from "../components/agent/pi";
 
 const baseUrl = 'http://localhost:13000/cors/moonshot/v1'
 const PROVIDER = {

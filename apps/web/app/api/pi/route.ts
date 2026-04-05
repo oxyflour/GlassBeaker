@@ -6,36 +6,20 @@ import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "
 export const runtime = "nodejs";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-
-type PiUsage = {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  totalTokens: number;
-  cost: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    total: number;
-  };
+type PiEvent = Record<string, any> & { type: string };
+type PiMessage = {
+  content?: Array<Record<string, any>>;
+  role?: string;
+  timestamp?: number;
+};
+type PiModel = {
+  api?: string;
+  id?: string;
+  provider?: string;
 };
 
-type PiStreamEvent =
-  | { type: "start" }
-  | { type: "text_start"; contentIndex: number }
-  | { type: "text_delta"; contentIndex: number; delta: string }
-  | { type: "text_end"; contentIndex: number }
-  | { type: "done"; reason: "stop" | "length" | "toolUse"; usage: PiUsage }
-  | { type: "error"; reason: "aborted" | "error"; errorMessage?: string; usage: PiUsage };
-
 type PiRequestBody = {
-  model?: {
-    api?: string;
-    provider?: string;
-    id?: string;
-  };
+  model?: PiModel;
   context?: {
     systemPrompt?: string;
     messages?: PiMessage[];
@@ -44,14 +28,6 @@ type PiRequestBody = {
     apiKey?: string;
     reasoning?: ThinkingLevel;
   };
-};
-
-type PiMessage = {
-  role?: string;
-  content?: Array<{ type?: string; text?: string }>;
-  usage?: PiUsage;
-  stopReason?: string;
-  errorMessage?: string;
 };
 
 const encoder = new TextEncoder();
@@ -76,54 +52,7 @@ function resolveWorkspaceDir() {
   return process.cwd();
 }
 
-function createUsage(): PiUsage {
-  return {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      total: 0,
-    },
-  };
-}
-
-function sumUsage(total: PiUsage, usage?: PiUsage) {
-  if (!usage) {
-    return total;
-  }
-
-  total.input += usage.input || 0;
-  total.output += usage.output || 0;
-  total.cacheRead += usage.cacheRead || 0;
-  total.cacheWrite += usage.cacheWrite || 0;
-  total.totalTokens += usage.totalTokens || 0;
-  total.cost.input += usage.cost?.input || 0;
-  total.cost.output += usage.cost?.output || 0;
-  total.cost.cacheRead += usage.cost?.cacheRead || 0;
-  total.cost.cacheWrite += usage.cost?.cacheWrite || 0;
-  total.cost.total += usage.cost?.total || 0;
-
-  return total;
-}
-
-function getMessageText(message: { content?: Array<{ type?: string; text?: string }> } | undefined) {
-  if (!message?.content) {
-    return "";
-  }
-
-  return message.content
-    .filter((part) => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text || "")
-    .join("");
-}
-
-function sendEvent(controller: ReadableStreamDefaultController<Uint8Array>, event: PiStreamEvent) {
+function sendEvent(controller: ReadableStreamDefaultController<Uint8Array>, event: PiEvent) {
   controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
 }
 
@@ -169,11 +98,7 @@ export async function POST(request: Request) {
       new ReadableStream<Uint8Array>({
         start(controller) {
           let closed = false;
-          let streamStarted = false;
-          let pendingSeparator = false;
-          let currentAssistantText = "";
-          let usage = createUsage();
-          let lastAssistant: PiMessage | undefined;
+          let unsubscribe = () => {};
 
           const finish = () => {
             if (closed) {
@@ -187,108 +112,28 @@ export async function POST(request: Request) {
             controller.close();
           };
 
-          const ensureTextStream = () => {
-            if (streamStarted) {
-              return;
-            }
-
-            streamStarted = true;
-            sendEvent(controller, { type: "start" });
-            sendEvent(controller, { type: "text_start", contentIndex: 0 });
-          };
-
-          const pushText = (delta: string) => {
-            if (!delta || closed) {
-              return;
-            }
-
-            ensureTextStream();
-            if (pendingSeparator) {
-              sendEvent(controller, { type: "text_delta", contentIndex: 0, delta: "\n\n" });
-              pendingSeparator = false;
-            }
-            sendEvent(controller, { type: "text_delta", contentIndex: 0, delta });
-          };
-
-          const finalize = () => {
-            if (closed) {
-              return;
-            }
-
-            const stopReason = lastAssistant?.stopReason;
-            if (streamStarted) {
-              sendEvent(controller, { type: "text_end", contentIndex: 0 });
-            }
-
-            if (stopReason === "error" || stopReason === "aborted") {
-              sendEvent(controller, {
-                type: "error",
-                reason: stopReason,
-                errorMessage: lastAssistant?.errorMessage,
-                usage,
-              });
-            } else {
-              sendEvent(controller, {
-                type: "done",
-                reason: stopReason === "length" || stopReason === "toolUse" ? stopReason : "stop",
-                usage,
-              });
-            }
-
-            finish();
-          };
-
           const abort = () => {
             session.agent.abort();
           };
 
-          const unsubscribe = session.subscribe((event) => {
+          unsubscribe = session.subscribe((event) => {
             if (closed) {
               return;
             }
 
-            if (event.type === "message_start" && event.message.role === "assistant") {
-              currentAssistantText = "";
-              pendingSeparator = streamStarted;
-              return;
-            }
-
-            if ((event.type === "message_update" || event.type === "message_end") && event.message.role === "assistant") {
-              const nextText = getMessageText(event.message as PiMessage);
-              if (nextText.length > currentAssistantText.length) {
-                pushText(nextText.slice(currentAssistantText.length));
-              }
-              currentAssistantText = nextText;
-
-              if (event.type === "message_end") {
-                lastAssistant = event.message as PiMessage;
-                usage = sumUsage(usage, event.message.usage);
-                pendingSeparator = false;
-              }
-              return;
-            }
-
+            sendEvent(controller, event as PiEvent);
             if (event.type === "agent_end") {
-              finalize();
+              finish();
             }
           });
 
           request.signal.addEventListener("abort", abort);
 
-          void session.agent.prompt(prompt as never).catch((error) => {
+          void session.agent.prompt(prompt as never).catch(() => {
             if (closed) {
               return;
             }
 
-            if (streamStarted) {
-              sendEvent(controller, { type: "text_end", contentIndex: 0 });
-            }
-            sendEvent(controller, {
-              type: "error",
-              reason: request.signal.aborted ? "aborted" : "error",
-              errorMessage: error instanceof Error ? error.message : String(error),
-              usage,
-            });
             finish();
           });
         },

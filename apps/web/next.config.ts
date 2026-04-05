@@ -8,6 +8,12 @@ export default {
     output: "standalone",
     outputFileTracingRoot: path.join(configDir, "../../"),
     allowedDevOrigins: ['dev.yff.me'],
+    serverExternalPackages: [
+        "@mariozechner/pi-coding-agent",
+        "@mariozechner/pi-tui",
+        "@mariozechner/clipboard",
+        "koffi",
+    ],
     async rewrites() {
         return {
             // need this to override homepage
@@ -25,7 +31,7 @@ export default {
                 destination: `https://api.moonshot.cn/:path*`
             }, {
                 source: "/python/:path*",
-                destination: `${process.env.API_REWRITE}/api/:path*`
+                destination: `${process.env.API_REWRITE || 'http://localhost:13001'}/api/:path*`
             }, {
                 source: "/:path(.*)",
                 destination: `${bundlerURL}:path*`,

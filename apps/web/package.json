@@ -15,9 +15,11 @@
     "@mariozechner/pi-coding-agent": "^0.65.0",
     "@mariozechner/pi-web-ui": "^0.64.0",
     "katex": "^0.16.44",
+    "manifold-3d": "^3.4.1",
     "next": "16.2.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "three": "^0.183.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {
@@ -25,6 +27,7 @@
     "@types/node": "^24.12.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
+    "@types/three": "^0.183.1",
     "postcss": "^8.5.8",
     "tailwindcss": "^4.2.2",
     "tsx": "^4.20.6",

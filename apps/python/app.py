@@ -7,6 +7,8 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI
 
+from utils.mount import mount_routes
+
 # watch dog
 import sys, threading
 def wait_for_stdin():
@@ -14,8 +16,8 @@ def wait_for_stdin():
     os._exit(0)
 threading.Thread(target=wait_for_stdin, daemon=True).start()
 
-
 app = FastAPI(title="GlassBeaker Python Service")
+mount_routes(app, 'api')
 
 
 @app.get("/healthz")

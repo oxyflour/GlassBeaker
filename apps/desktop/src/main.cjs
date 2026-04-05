@@ -33,8 +33,32 @@ function watchProc(label, proc) {
  */
 let mainWindow = null;
 
+/**
+ * 
+ * @param { string } url 
+ */
+async function assetUrl(url){
+    while (true) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        try {
+            const req = await fetch(url)
+            return await req.text()
+        } catch (err) {
+            console.warn(`waiting for url ${url}`)
+        }
+    }
+}
+
 const root = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "..", "..")
 async function startServer(nextJsPort = 13000, pythonPort = 13001) {
+    const python = spawn('uv', ['run', 'app.py'], {
+        env: { ...process.env, LISTEN_PORT: `${pythonPort}` },
+        shell: true,
+        cwd: path.join(root, 'python'),
+        stdio: 'pipe'
+    })
+    watchProc('python', python)
+
     const nextjs = utilityProcess.fork(path.join(root, 'web/node_modules/next/dist/bin/next'), [
         '-p', `${nextJsPort}`
     ], {
@@ -45,26 +69,9 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
     // @ts-ignore
     watchProc('nextjs', nextjs)
 
-    const python = spawn('uv', ['run', 'app.py'], {
-        env: { ...process.env, LISTEN_PORT: `${pythonPort}` },
-        shell: true,
-        cwd: path.join(root, 'python'),
-        stdio: 'pipe'
-    })
-    watchProc('python', python)
-
-    const url = `http://localhost:${nextJsPort}`
-    while (true) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        try {
-            const req = await fetch(`${url}/python/runtime`),
-                runtime = await req.text()
-            console.log(`RUNTIME: ${runtime}`)
-            break
-        } catch (err) {
-            console.warn(`waiting for url ${url}`)
-        }
-    }
+    const url = `http://localhost:${nextJsPort}`,
+        runtime = await assetUrl(`${url}/python/runtime`)
+    console.log(`RUNTIME: ${runtime}`)
     return url
 }
 
