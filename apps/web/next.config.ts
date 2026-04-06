@@ -31,7 +31,7 @@ export default {
                 destination: `https://api.moonshot.cn/:path*`
             }, {
                 source: "/python/:path*",
-                destination: `${process.env.API_REWRITE || 'http://localhost:13001'}/api/:path*`
+                destination: `${process.env.API_REWRITE || 'http://localhost:13001/'}api/:path*`
             }, {
                 source: "/:path(.*)",
                 destination: `${bundlerURL}:path*`,

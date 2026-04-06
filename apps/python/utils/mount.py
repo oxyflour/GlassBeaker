@@ -1,30 +1,69 @@
-import os
+from __future__ import annotations
+
+import hashlib
 import importlib.util
-
 import inspect
-from fastapi import FastAPI
+import sys
+from pathlib import Path
 
-api_root = os.path.normpath(f'{__file__}/../../')
+from fastapi import APIRouter, FastAPI
 
-def mount_module(app: FastAPI, sub_path: str, abs_path: str):
-    filename = os.path.basename(abs_path).replace('.py', '')
-    spec = importlib.util.spec_from_file_location(filename, abs_path)
+API_ROOT = Path(__file__).resolve().parents[1]
+
+
+def module_name(abs_path: Path) -> str:
+    digest = hashlib.sha1(str(abs_path.resolve()).encode("utf-8")).hexdigest()[:12]
+    return f"glassbeaker_dynamic_{abs_path.stem}_{digest}"
+
+
+def load_module(abs_path: Path):
+    name = module_name(abs_path)
+    loaded = sys.modules.get(name)
+    if loaded is not None:
+        return loaded
+    spec = importlib.util.spec_from_file_location(name, abs_path)
     module = spec and importlib.util.module_from_spec(spec)
     if module and spec and spec.loader:
-        spec.loader.exec_module(module)
-        for name, member in inspect.getmembers(module):
-            if inspect.iscoroutinefunction(member):
-                prefix = f'/{sub_path}/{filename}/{name}'
-                print(f'INFO: adding api {prefix}')
-                app.add_api_route(prefix, endpoint=member, methods=["GET"])
-    else:
-        print(f'WARN: load from {abs_path} failed')
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(name, None)
+            raise
+        return module
+    print(f"WARN: load from {abs_path} failed")
+    return None
 
-def mount_routes(api: FastAPI, sub_path: str):
-    path = os.path.join(api_root, sub_path)
-    for item in os.listdir(path):
-        abs_path = os.path.join(path, item)
-        if os.path.isdir(abs_path):
-            mount_routes(api, abs_path)
-        elif abs_path.endswith('.py'):
-            mount_module(api, sub_path, abs_path)
+
+def route_prefix(root: Path, sub_path: str, abs_path: Path) -> str:
+    rel_path = abs_path.relative_to(root).with_suffix("")
+    parts = [part for part in rel_path.parts if part != "index"]
+    return "/" + "/".join((sub_path, *parts))
+
+
+def mount_module(app: FastAPI, root: Path, sub_path: str, abs_path: Path) -> None:
+    module = load_module(abs_path)
+    if module is None:
+        return
+
+    prefix = route_prefix(root, sub_path, abs_path)
+    router = getattr(module, "router", None)
+    if isinstance(router, APIRouter):
+        print(f"INFO: adding router {prefix}")
+        app.include_router(router, prefix=prefix)
+        return
+
+    for name, member in inspect.getmembers(module):
+        if inspect.iscoroutinefunction(member) and not name.startswith('_'):
+            route = f"{prefix}/{name}"
+            print(f"INFO: adding api {route}")
+            app.add_api_route(route, endpoint=member, methods=["GET", "POST"])
+
+
+def mount_routes(app: FastAPI, sub_path: str) -> None:
+    root = API_ROOT / sub_path
+    for abs_path in sorted(root.rglob("*.py")):
+        rel_parts = abs_path.relative_to(root).parts
+        if any(part.startswith("_") for part in rel_parts):
+            continue
+        mount_module(app, root, sub_path, abs_path)

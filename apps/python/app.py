@@ -33,7 +33,7 @@ async def runtime() -> dict[str, Any]:
     }
 
 def main() -> None:
-    port = int(os.getenv("LISTEN_PORT", "4000"))
+    port = int(os.getenv("LISTEN_PORT", "13001"))
     log_level = os.getenv("LOG_LEVEL", "info")
     uvicorn.run(app, port=port, log_level=log_level)
 

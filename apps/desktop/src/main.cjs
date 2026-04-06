@@ -1,7 +1,7 @@
 // @ts-check
 const path = require("node:path"),
     { spawn } = require('child_process'),
-    { app, BrowserWindow, utilityProcess } = require("electron")
+    { app, BrowserWindow, utilityProcess } = require("electron/main")
 
 /**
  * 
@@ -22,14 +22,17 @@ function logWithLabel(label, data) {
 function watchProc(label, proc) {
     proc.stdout?.on('data', data => logWithLabel(label, data))
     proc.stderr?.on('data', data => logWithLabel(label, data))
-    proc.addListener('exit', () => {
-        console.log(`BYE: ${label} quit`)
+    proc.addListener('error', error => {
+        console.error(`[main] ERR: ${label} failed`, error)
+    })
+    proc.addListener('exit', (code, signal) => {
+        console.log(`[main] BYE: ${label} quit (code=${code}, signal=${signal})`)
         app.quit()
     })
 }
 
 /**
- * @type { null | Electron.BrowserWindow }
+ * @type { null | import('electron').BrowserWindow }
  */
 let mainWindow = null;
 
@@ -37,23 +40,28 @@ let mainWindow = null;
  * 
  * @param { string } url 
  */
-async function assetUrl(url){
-    while (true) {
+async function assertUrl(url, retry = 10){
+    while (retry -- > 0) {
         await new Promise(resolve => setTimeout(resolve, 1000))
         try {
-            const req = await fetch(url)
-            return await req.text()
+            const req = await fetch(url),
+                text = await req.text()
+            if (req.status === 200) {
+                return text
+            } else {
+                throw Error(`${req.status}: ${text}`)
+            }
         } catch (err) {
-            console.warn(`waiting for url ${url}`)
+            console.warn(`[main] waiting for url ${url} (${retry} retries left)`)
         }
     }
+    throw Error(`failed to request ${url}`)
 }
 
 const root = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "..", "..")
 async function startServer(nextJsPort = 13000, pythonPort = 13001) {
-    const python = spawn('uv', ['run', 'app.py'], {
+    const python = spawn('uv', ['run', '--project', '.', '--python', '3.12', 'python', 'app.py'], {
         env: { ...process.env, LISTEN_PORT: `${pythonPort}` },
-        shell: true,
         cwd: path.join(root, 'python'),
         stdio: 'pipe'
     })
@@ -70,8 +78,8 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
     watchProc('nextjs', nextjs)
 
     const url = `http://localhost:${nextJsPort}`,
-        runtime = await assetUrl(`${url}/python/runtime`)
-    console.log(`RUNTIME: ${runtime}`)
+        runtime = await assertUrl(`${url}/python/runtime`)
+    console.log(`[main] RUNTIME: ${runtime}`)
     return url
 }
 
@@ -80,7 +88,6 @@ async function createMainWindow() {
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 760,
-        backgroundColor: "#07111f",
         show: false,
         webPreferences: {
             additionalArguments: [`--glassbeaker-packaged=${app.isPackaged ? "1" : "0"}`],
