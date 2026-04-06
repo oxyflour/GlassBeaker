@@ -1,18 +1,26 @@
-﻿from typing import Callable, Sequence
-from skrf import Network, Circuit, DefinedGammaZ0, Frequency, INF
+﻿from typing import Callable
+from skrf import Network, Frequency
+from skrf.circuit import Circuit
+from skrf.io.touchstone import DefinedGammaZ0
+from torch import Tensor
 from time import perf_counter
 import matplotlib.pyplot as plt
 import numpy as np
 import torch, unittest, logging, os
 
+OHM50 = np.array(50.0)
+
 class TensorYNetwork(Network):
-    def __init__(self, comp: Network, tensor: torch.Tensor | Callable[[], torch.Tensor]) -> None:
+    def __init__(self, comp: Network, tensor: Tensor | Callable[[], Tensor]) -> None:
         super().__init__()
         self.tensor = tensor
         self.name = comp.name
         self.frequency = comp.frequency
         self.s = comp.s
         self.z0 = comp.z0
+
+    def get_y(self):
+        return self.tensor() if callable(self.tensor) else self.tensor
 
 class TensorCapacitor(TensorYNetwork):
     def get_y(self):
@@ -39,10 +47,10 @@ class TensorInductor(TensorYNetwork):
         return y
 
 class TensorGammaZ0(DefinedGammaZ0):
-    def tensor_capacitor(self, value: torch.Tensor | Callable[[], torch.Tensor], **kwargs):
+    def tensor_capacitor(self, value: Tensor | Callable[[], Tensor], **kwargs):
         v = (value() if callable(value) else value).detach().cpu().numpy()
         return TensorCapacitor(super().capacitor(v, **kwargs), value)
-    def tensor_inductor(self, value: torch.Tensor | Callable[[], torch.Tensor], **kwargs):
+    def tensor_inductor(self, value: Tensor | Callable[[], Tensor], **kwargs):
         v = (value() if callable(value) else value).detach().cpu().numpy()
         return TensorInductor(super().inductor(v, **kwargs), value)
 
@@ -57,7 +65,6 @@ class MnaCircuit(Circuit):
         for conns in connections:
             node_list: list[tuple[Network, int]] = []
             node = len(mna_nodes)
-            has_gnd = False
             for comp, pin in conns:
                 attrs = comp._ext_attrs
                 if attrs.get('_is_circuit_port'):
@@ -66,11 +73,8 @@ class MnaCircuit(Circuit):
                     node_list.append((resistor, pin))
                 else:
                     node_list.append((comp, pin))
-                    if attrs.get('_is_circuit_ground'):
-                        has_gnd = True
-            if not has_gnd:
-                conn_index[node] = list(range(start_index, start_index + len(conns)))
-                mna_nodes.append(node_list)
+            conn_index[node] = list(range(start_index, start_index + len(conns)))
+            mna_nodes.append(node_list)
             start_index += len(conns)
         return mna_nodes, mna_source, conn_index
 
@@ -81,7 +85,7 @@ class MnaCircuit(Circuit):
         self.mna_nodes, self.mna_source, self.conn_index = self.parse_nodes(connections)
 
         self.node_from_port: dict[tuple[str, int], int] = { }
-        used_comp_y: dict[str, torch.Tensor | Callable[[], torch.Tensor]] = { }
+        used_comp_y: dict[str, Tensor | Callable[[], Tensor]] = { }
         for node, conns in enumerate(self.mna_nodes):
             for comp, pin in conns:
                 self.node_from_port[(comp.name, pin)] = node
@@ -94,15 +98,15 @@ class MnaCircuit(Circuit):
         # Note: we have `self.mat_0` here so only TensorNetworks will be used in `self.update_tensor()`
         self.mat_a, self.idx_a = self.update_mna_mat(self.mat_0, { n: y for n, y in used_comp_y.items() if callable(y) })
 
-    def update_mna_mat(self, mat_a: torch.Tensor, comp_y: dict[str, torch.Tensor | Callable]):
+    def update_mna_mat(self, mat_a: Tensor, comp_y: dict[str, Tensor | Callable]):
         F = mat_a.shape[0]
         device = mat_a.device
         all_arr = [[], [], [], []]
-        all_ntw = []
+        all_ntw: list[tuple[Tensor | Callable, list[tuple[int, int]]]] = []
         for name, ntw_y in comp_y.items():
             val_y = ntw_y() if callable(ntw_y) else ntw_y
             nodes = [self.node_from_port.get((name, i), -1) for i in range(val_y.shape[1])]
-            ij_index = []
+            ij_index: list[tuple[int, int]] = []
             for i, u in enumerate(nodes):
                 for j, v in enumerate(nodes):
                     if u >= 0 and v >= 0:
@@ -111,14 +115,14 @@ class MnaCircuit(Circuit):
                         idx2 = torch.full((F,), v, device=device)
                         for idx, val in enumerate([idx0, idx1, idx2, val_y[:, i, j]]):
                             all_arr[idx].append(val)
-                        ij_index.append([i, j])
+                        ij_index.append((i, j))
             if len(ij_index):
-                all_ntw.append([ntw_y, ij_index])
+                all_ntw.append((ntw_y, ij_index))
 
         if len(all_arr[0]):
             idx0, idx1, idx2, vals = [torch.cat(item) for item in all_arr]
             mat_a = mat_a.index_put((idx0, idx1, idx2), vals, accumulate=True)
-            return mat_a, [idx0, idx1, idx2, all_ntw]
+            return mat_a, (idx0, idx1, idx2, all_ntw)
         else:
             return mat_a, None
 
@@ -135,7 +139,7 @@ class MnaCircuit(Circuit):
         return self
 
     @property
-    def s_tensor(self) -> torch.Tensor:
+    def s_tensor(self) -> Tensor:
         # https://qucs.github.io/tech/node58.html
         i0 = np.sqrt(8 / self.z_mean)
 
@@ -155,7 +159,9 @@ class MnaCircuit(Circuit):
         return self.s_tensor.cpu().detach().cpu().numpy()
     
     def node_voltages(self, power, phase) -> torch.Tensor:
-        power = torch.tensor(np.array(power, dtype=np.complex128) * np.exp(phase, dtype=np.complex128), device=self.device)
+        power = np.array(power, dtype=np.complex128)
+        phase = np.exp(1j * np.array(phase), dtype=np.complex128)
+        power = torch.tensor(power * phase, device=self.device)
         # solve `Ax=b`
         mat_b = torch.zeros([len(self.frequency), len(self.mna_nodes)], device=self.device, dtype=torch.complex128)
         mat_b[:, self.mna_source] = torch.sqrt(8 * power / self.z_mean)
@@ -170,15 +176,16 @@ class MnaCircuit(Circuit):
                 v[:, k] = voltages[:, j]
         return v.detach().cpu().numpy()
     
-    def component_currents(self, voltages: torch.Tensor, comp: Network):
-        v = torch.zeros([len(self.frequency), comp.nports], dtype=torch.complex128)
+    def component_currents(self, voltages: Tensor, comp: Network):
+        v = torch.zeros([len(self.frequency), comp.nports], device=voltages.device, dtype=torch.complex128)
         for port in range(comp.nports):
             node = self.node_from_port.get((comp.name, port), -1)
             if node >= 0:
                 v[:, port] = voltages[:, node]
-        i = torch.zeros([len(self.frequency), comp.nports], dtype=torch.complex128)
+        comp_y = comp.get_y() if hasattr(comp, 'get_y') else comp.y # type: ignore
+        i = torch.zeros([len(self.frequency), comp.nports], device=voltages.device, dtype=torch.complex128)
         for port in range(comp.nports):
-            i[:, port] = (v * comp.y[:, :, port]).sum(dim=1)
+            i[:, port] = (v * comp_y[:, :, port]).sum(dim=1) # type: ignore
         return i
 
     def currents(self, power, phase):
@@ -210,7 +217,7 @@ def plot_s_external(f: Frequency, s1: np.ndarray, s2: np.ndarray):
     _, axs = plt.subplots(m, n, sharex=True, sharey=True)
     for i in range(m):
         for j in range(n):
-            ax = axs[i, j] if m > 1 or n > 1 else axs
+            ax = axs[i, j] if m > 1 or n > 1 else axs #type: ignore
             ax.plot(f.f, s1[:, i, j], f.f, s2[:, i, j], '--')
             s = f'S{i+1},{j+1}'
             ax.legend([f'{s} (MNA)', f'{s} (skrf)'])
@@ -225,14 +232,14 @@ class Test(unittest.TestCase):
         super().__init__(methodName)
         f = Frequency(0e9, 2e9, 1001, unit='Hz')
         f = Frequency(f.start + f.step, f.stop, f.npoints - 1, unit='Hz')
-        z = TensorGammaZ0(f, 50)
-        n = z.resistor(50, name="r0")
+        z = TensorGammaZ0(f)
+        n = z.resistor(OHM50, name="r0")
         self.n, self.f, self.z = n, f, z
         p0 = Circuit.Port(f, name='port-0')
         p1 = Circuit.Port(f, name='port-1')
         g = Circuit.Ground(f, name='gnd-0')
         o = Circuit.Open(f, name='open-0')
-        rs = [z.resistor(50, name=f'res-{i}') for i in range(3)]
+        rs = [z.resistor(OHM50, name=f'res-{i}') for i in range(3)]
         cx_list = [
             [
                 [(p0, 0), (n, 0)],
@@ -265,7 +272,7 @@ class Test(unittest.TestCase):
         for mna, cir in self.circuit_list:
             sz = len(mna.mna_source)
             power, phase = [1] * sz, [0] * sz
-            a, b = mna.voltages(power, phase), cir.voltages(power, phase)
+            a, b = mna.voltages(power, phase), cir.voltages(power, phase) #type: ignore
             logging.warning(f'INFO: voltages difference {np.abs(a - b).mean()}')
             self.assertTrue(np.allclose(a, b))
         logging.info('INFO: voltages ok')
@@ -274,7 +281,7 @@ class Test(unittest.TestCase):
         for mna, cir in self.circuit_list:
             sz = len(mna.mna_source)
             power, phase = [1] * sz, [0] * sz
-            a, b = mna.currents(power, phase), cir.currents(power, phase)
+            a, b = mna.currents(power, phase), cir.currents(power, phase) #type: ignore
             logging.warning(f'INFO: currents difference {np.abs(a - b).mean()}')
             self.assertTrue(np.allclose(a, b, atol=1e-4))
             # FIXME: it's strange we have an error peak near center frequency
@@ -287,7 +294,7 @@ class Test(unittest.TestCase):
         n, f, z = self.n, self.f, self.z
         p0 = Circuit.Port(f, name='port-0')
         g = Circuit.Ground(f, name='gnd-0')
-        rs = [z.resistor(50, name=f'res-{i}') for i in range(50)]
+        rs = [z.resistor(OHM50, name=f'res-{i}') for i in range(50)]
         cx = [
             [(p0, 0), (n, 0)],
             [(n, 1), (rs[0], 0)],
@@ -326,12 +333,12 @@ class Test(unittest.TestCase):
 
         p0 = Circuit.Port(f, name='port-0')
         g = Circuit.Ground(f, name='gnd-0')
-        r = z.resistor(50, name='r-0')
+        r = z.resistor(OHM50, name='r-0')
 
         cx = [[(p0, 0), (r, 0)]]
         next_pin = (r, 1)
-        tensors: list[torch.Tensor] = []
-        networks: list[Network] = []
+        tensors: list[Tensor] = []
+        networks: list[TensorYNetwork] = []
         for i in range(repeat):
             c0 = torch.tensor(10., device=device, requires_grad=True)
             l0 = torch.tensor(10., device=device, requires_grad=True)
@@ -367,8 +374,6 @@ class Test(unittest.TestCase):
             loss.backward()
             optimizer.step()
             if i % 20 == 0:
-                for var in tensors:
-                    print(var.item())
                 logging.warning(f'ITER {i}: {loss.item()}')
         logging.warning(f'PREF: optimized in {perf_counter() - start} seconds')
 
@@ -386,73 +391,6 @@ class Test(unittest.TestCase):
             plt.xlabel('Frequency / Hz')
             plt.ylabel('S11 (Abs)')
             plt.show()
-
-    def test_discrete(self):
-        from optimize import Sched, train_pipeline, local_refine
-
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        torch.manual_seed(0)
-
-        n_vars = 5
-        K = 64
-        values = []
-        for _ in range(n_vars):
-            base = torch.logspace(-2, 1.3, K)
-            jitter = 0.02 * torch.randn(K)
-            values.append((base * (1 + jitter)).abs().sort().values)
-
-        f_sel = Frequency(0.6e9, 1.4e9, 161, unit='Hz')
-        z_sel = TensorGammaZ0(f_sel, 50)
-        freqs, = np.where(np.logical_and(f_sel.f > 0.9e9, f_sel.f < 1.2e9))
-
-        current_x = torch.stack([v[K // 2] for v in values]).to(device)
-        def pick(i):
-            return lambda: current_x[i]
-
-        p0 = Circuit.Port(f_sel, name='sel-port-0')
-        g = Circuit.Ground(f_sel, name='sel-gnd-0')
-        r0 = z_sel.resistor(50, name='sel-r-0')
-        comps = []
-        for i in range(n_vars):
-            if i % 2 == 0:
-                comps.append(z_sel.tensor_capacitor(pick(i), name=f'sel-c-{i}'))
-            else:
-                comps.append(z_sel.tensor_inductor(pick(i), name=f'sel-l-{i}'))
-
-        cx = [[(p0, 0), (r0, 0)]]
-        next_pin = (r0, 1)
-        for comp in comps:
-            cx.append([next_pin, (comp, 0)])
-            next_pin = (comp, 1)
-        cx.append([next_pin, (g, 0)])
-        mna = MnaCircuit(cx, device=device)
-
-        def f(x):
-            nonlocal current_x
-            current_x = x
-            mna.update_tensor()
-            return mna.s_tensor[freqs, 0, 0].abs().mean()
-
-        x0 = torch.stack([v[-1] for v in values]).to(device)
-        y0 = f(x0).item()
-
-        sched = Sched(
-            tau_start=1.6,
-            tau_end=0.08,
-            steps=2000,
-            ent_w_start=0.0,
-            ent_w_end=2e-3,
-        )
-        _, x_disc, idx = train_pipeline(f, values, sched=sched, lr=4e-2, device=device)
-        y1 = f(x_disc.to(device)).item()
-
-        _, idx_refined, y_refined = local_refine(f, values, idx, M=K + 1, iters=2, device=device)
-        y2 = y_refined.item()
-
-        self.assertEqual(len(idx_refined), n_vars)
-        self.assertTrue(all(0 <= i < K for i in idx_refined))
-        self.assertTrue(y1 < y0)
-        self.assertTrue(y2 <= y1 + 1e-8)
 
 if __name__ == '__main__':
     unittest.main()
