@@ -1,3 +1,4 @@
+import { buildPreviewLibraryModuleUrl, findPreviewLibraryComponent, isPreviewLibrarySpecifier } from "./library";
 import type { PreviewFiles } from "./state";
 import {
   isAliasSpecifier,
@@ -25,6 +26,7 @@ export async function buildPreviewModule(
   source: string,
   files: PreviewFiles,
   esmBaseUrl: string,
+  previewOrigin: string,
 ): Promise<PreviewModule> {
   if (filePath.endsWith(".json")) {
     return { code: createJsonModule(filePath, source), dependencies: [] };
@@ -40,7 +42,7 @@ export async function buildPreviewModule(
   }
 
   const transpiled = await transpileScriptModule(filePath, source);
-  return await rewriteModuleSpecifiers(filePath, transpiled, files, esmBaseUrl);
+  return await rewriteModuleSpecifiers(filePath, transpiled, files, esmBaseUrl, previewOrigin);
 }
 
 function createCssModule(filePath: string, source: string) {
@@ -66,7 +68,13 @@ function createJsonModule(filePath: string, source: string) {
   }
 }
 
-async function rewriteModuleSpecifiers(filePath: string, code: string, files: PreviewFiles, esmBaseUrl: string): Promise<PreviewModule> {
+async function rewriteModuleSpecifiers(
+  filePath: string,
+  code: string,
+  files: PreviewFiles,
+  esmBaseUrl: string,
+  previewOrigin: string,
+): Promise<PreviewModule> {
   const { parse } = await loadLexer();
   const [imports] = parse(code);
   const dependencies: string[] = [];
@@ -85,7 +93,7 @@ async function rewriteModuleSpecifiers(filePath: string, code: string, files: Pr
       continue;
     }
 
-    const replacement = resolvePreviewSpecifier(filePath, entry.n, files, esmBaseUrl);
+    const replacement = resolvePreviewSpecifier(filePath, entry.n, files, esmBaseUrl, previewOrigin);
     rewritten += code.slice(cursor, entry.s);
     rewritten += replacement.specifier;
     cursor = entry.e;
@@ -98,7 +106,13 @@ async function rewriteModuleSpecifiers(filePath: string, code: string, files: Pr
   return { code: rewritten, dependencies: Array.from(new Set(dependencies)) };
 }
 
-function resolvePreviewSpecifier(filePath: string, specifier: string, files: PreviewFiles, esmBaseUrl: string) {
+function resolvePreviewSpecifier(
+  filePath: string,
+  specifier: string,
+  files: PreviewFiles,
+  esmBaseUrl: string,
+  previewOrigin: string,
+) {
   if (isProtocolSpecifier(specifier)) {
     throw new Error(`Remote URLs are not supported in preview imports: ${specifier}`);
   }
@@ -110,6 +124,12 @@ function resolvePreviewSpecifier(filePath: string, specifier: string, files: Pre
   }
   if (isWorkspaceSpecifier(specifier)) {
     throw new Error(`Workspace packages are not supported in preview imports: ${specifier}`);
+  }
+  if (isPreviewLibrarySpecifier(specifier)) {
+    if (!findPreviewLibraryComponent(specifier)) {
+      throw new Error(`Preview library component is not whitelisted: ${specifier}`);
+    }
+    return { specifier: buildPreviewLibraryModuleUrl(previewOrigin, specifier) };
   }
   if (isBareSpecifier(specifier)) {
     return { specifier: joinEsmSpecifierUrl(esmBaseUrl, specifier) };

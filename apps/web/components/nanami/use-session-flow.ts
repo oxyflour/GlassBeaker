@@ -13,10 +13,12 @@ function messageOf(error: unknown, fallback: string) {
     return error instanceof Error ? error.message : fallback
 }
 
-function loadStatusText(status?: string) {
-    if (status === "queued") return "Waiting for Unreal to start"
-    if (status === "loaded") return "Robot loaded"
-    return "Loading robot"
+function runtimeStatusText(runtimeState?: string, reused?: boolean) {
+    if (runtimeState === "loaded" && reused) return "Attaching warm runtime"
+    if (runtimeState === "loaded") return "Robot loaded"
+    if (runtimeState === "loading") return "Loading robot"
+    if (runtimeState === "starting") return reused ? "Reattaching runtime" : "Starting Unreal worker"
+    return "Creating session"
 }
 
 function emptyValues(groups: ControlGroup[]) {
@@ -36,7 +38,6 @@ export function useSessionFlow(autoRun = false) {
     const [status, setStatus] = useState("Idle")
     const sourceRef = useRef<EventSource | null>(null)
     const sessionRef = useRef("")
-    const autoLoadedRef = useRef(false)
     const autoExportedRef = useRef(false)
     const createRunRef = useRef(0)
 
@@ -46,18 +47,12 @@ export function useSessionFlow(autoRun = false) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
         })
-        if (!response.ok) {
-            throw new Error(await response.text())
-        }
+        if (!response.ok) throw new Error(await response.text())
         return response.json()
     }
 
-    function resetFlow() {
-        autoLoadedRef.current = false
-        autoExportedRef.current = false
-    }
-
     function resetSessionState() {
+        autoExportedRef.current = false
         setSessionId("")
         setPreviewUrl("")
         setControls([])
@@ -68,7 +63,7 @@ export function useSessionFlow(autoRun = false) {
         if (sessionRef.current !== activeSessionId) return
         setEvents((items) => [event, ...items].slice(0, 10))
         if (event.type === "session_ready") setStatus("Session ready")
-        if (event.type === "assets_cached") setStatus((current) => current.startsWith("Waiting") ? current : event.cache_hit ? "Assets cached (hit)" : "Assets cached")
+        if (event.type === "assets_cached") setStatus(event.cache_hit ? "Assets cached (hit)" : "Assets cached")
         if (event.type === "robot_load_started") setStatus("Loading robot")
         if (event.type === "robot_loaded") {
             const nextControls = event.controls || []
@@ -79,6 +74,7 @@ export function useSessionFlow(autoRun = false) {
         if (event.type === "export_started") setStatus(`Exporting ${event.job_id}`)
         if (event.type === "export_done") setStatus(event.result_path ? `Exported: ${event.result_path}` : "Export finished")
         if (event.type === "worker_error") setStatus(event.message || "Worker error")
+        if (event.type === "worker_exit") setStatus("Runtime exited")
     }
 
     async function destroySession(targetId = sessionRef.current) {
@@ -88,25 +84,27 @@ export function useSessionFlow(autoRun = false) {
             sessionRef.current = ""
             sourceRef.current?.close()
             sourceRef.current = null
-            resetFlow()
             resetSessionState()
         }
         await post("session/destroy", { session_id: targetId })
-        if (isCurrent) setStatus("Session destroyed")
+        if (isCurrent) setStatus("Session released")
     }
 
     async function createSession() {
         const createRun = createRunRef.current + 1
         createRunRef.current = createRun
-        if (sessionRef.current) {
-            await destroySession(sessionRef.current).catch(() => undefined)
-        }
-        resetFlow()
+        if (sessionRef.current) await destroySession(sessionRef.current).catch(() => undefined)
         resetSessionState()
         setEvents([])
         setStatus("Creating session")
-        const data = await post("session/create", { source: SOURCE })
-        const activeSessionId = data.session_id as string
+        const data = await post("session/create", { source: SOURCE }) as {
+            events_url: string
+            preview_url: string
+            runtime_reused?: boolean
+            runtime_state?: string
+            session_id: string
+        }
+        const activeSessionId = data.session_id
         if (createRun !== createRunRef.current) {
             await post("session/destroy", { session_id: activeSessionId }).catch(() => undefined)
             return activeSessionId
@@ -121,15 +119,8 @@ export function useSessionFlow(autoRun = false) {
         sessionRef.current = activeSessionId
         setSessionId(activeSessionId)
         setPreviewUrl(data.preview_url)
-        setStatus("Starting Unreal worker")
+        setStatus(runtimeStatusText(data.runtime_state, data.runtime_reused))
         return activeSessionId
-    }
-
-    async function loadRobot(targetId = sessionRef.current) {
-        if (!targetId) return
-        setStatus("Loading robot")
-        const data = await post("robot/load", { session_id: targetId }) as { status?: string }
-        setStatus(loadStatusText(data.status))
     }
 
     async function exportFinal(targetId = sessionRef.current) {
@@ -157,15 +148,6 @@ export function useSessionFlow(autoRun = false) {
     }, [autoRun])
 
     useEffect(() => {
-        if (!autoRun || !sessionId || autoLoadedRef.current) return
-        autoLoadedRef.current = true
-        void loadRobot(sessionId).catch((error) => {
-            autoLoadedRef.current = false
-            setStatus(messageOf(error, "Load robot failed"))
-        })
-    }, [autoRun, sessionId])
-
-    useEffect(() => {
         if (!sessionId || controls.length === 0) return
         const timer = window.setTimeout(() => {
             const shouldExport = autoRun && !autoExportedRef.current
@@ -183,17 +165,5 @@ export function useSessionFlow(autoRun = false) {
         return () => window.clearTimeout(timer)
     }, [autoRun, controls.length, sessionId, values])
 
-    return {
-        controls,
-        createSession,
-        destroySession,
-        events,
-        exportFinal,
-        loadRobot,
-        previewUrl,
-        sessionId,
-        setValues,
-        status,
-        values,
-    }
+    return { controls, createSession, destroySession, events, exportFinal, previewUrl, sessionId, setValues, status, values }
 }

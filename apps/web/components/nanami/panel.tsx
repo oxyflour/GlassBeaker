@@ -11,7 +11,6 @@ export default function NanamiPanel({ autoRun = false }: NanamiPanelProps) {
         destroySession,
         events,
         exportFinal,
-        loadRobot,
         previewUrl,
         sessionId,
         setValues,
@@ -29,14 +28,13 @@ export default function NanamiPanel({ autoRun = false }: NanamiPanelProps) {
                     </div>
                     <div style={{ display: "flex", gap: 10 }}>
                         <button type="button" onClick={() => void createSession()} style={{ padding: "10px 14px", borderRadius: 999, border: 0, background: "#ff9b45", color: "#08131f", fontWeight: 700 }}>{autoRun ? "Restart Session" : "Create Session"}</button>
-                        <button type="button" onClick={() => void loadRobot()} disabled={!sessionId} style={{ padding: "10px 14px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.16)", background: "transparent", color: "#d9e8f4" }}>Load R1</button>
                         <button type="button" onClick={() => void exportFinal()} disabled={!controls.length} style={{ padding: "10px 14px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.16)", background: "transparent", color: "#d9e8f4" }}>Final Render</button>
-                        <button type="button" onClick={() => void destroySession()} disabled={!sessionId} style={{ padding: "10px 14px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.16)", background: "transparent", color: "#d9e8f4" }}>Destroy</button>
+                        <button type="button" onClick={() => void destroySession()} disabled={!sessionId} style={{ padding: "10px 14px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.16)", background: "transparent", color: "#d9e8f4" }}>Release Session</button>
                     </div>
                 </div>
                 <div style={{ display: "grid", gap: 8, padding: "16px 20px", borderBottom: "1px solid rgba(150,180,210,0.14)", background: "rgba(4, 12, 20, 0.42)" }}>
                     <div style={{ fontSize: 12, opacity: 0.72 }}>Asset source: local <code>packages/nanami/Temp/URDF/R1</code></div>
-                    {autoRun ? <div style={{ fontSize: 12, opacity: 0.72 }}>Auto flow: create, load, update state, export, destroy on unmount.</div> : null}
+                    {autoRun ? <div style={{ fontSize: 12, opacity: 0.72 }}>Auto flow: create, wait ready, update state, export, release on unmount.</div> : null}
                 </div>
                 <div data-testid="nanami-preview" style={{ aspectRatio: "16 / 9", background: "#000" }}>
                     {previewUrl ? <img alt="Nanami preview" src={previewUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : null}

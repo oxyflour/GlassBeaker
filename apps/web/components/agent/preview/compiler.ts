@@ -11,11 +11,11 @@ export type CompiledPreview = {
   srcDoc: string;
 };
 
-export async function compilePreview(files: PreviewFiles, esmBaseUrl: string): Promise<CompiledPreview> {
+export async function compilePreview(files: PreviewFiles, esmBaseUrl: string, previewOrigin: string): Promise<CompiledPreview> {
   const normalizedFiles = normalizePreviewFiles(files);
   const modules = new Map<string, string>();
 
-  await visitModule(ROOT_FILE, normalizedFiles, esmBaseUrl, modules);
+  await visitModule(ROOT_FILE, normalizedFiles, esmBaseUrl, previewOrigin, modules);
   modules.set(BOOT_FILE, createBootModule(esmBaseUrl));
 
   const urls: string[] = [];
@@ -32,7 +32,13 @@ export async function compilePreview(files: PreviewFiles, esmBaseUrl: string): P
   };
 }
 
-async function visitModule(filePath: string, files: PreviewFiles, esmBaseUrl: string, modules: Map<string, string>) {
+async function visitModule(
+  filePath: string,
+  files: PreviewFiles,
+  esmBaseUrl: string,
+  previewOrigin: string,
+  modules: Map<string, string>,
+) {
   if (modules.has(filePath)) {
     return;
   }
@@ -42,11 +48,11 @@ async function visitModule(filePath: string, files: PreviewFiles, esmBaseUrl: st
     throw new Error(`Preview entry file is missing: ${filePath}`);
   }
 
-  const module = await buildPreviewModule(filePath, source, files, esmBaseUrl);
+  const module = await buildPreviewModule(filePath, source, files, esmBaseUrl, previewOrigin);
   modules.set(filePath, module.code);
 
   for (const dependency of module.dependencies) {
-    await visitModule(dependency, files, esmBaseUrl, modules);
+    await visitModule(dependency, files, esmBaseUrl, previewOrigin, modules);
   }
 }
 

@@ -1,8 +1,8 @@
 import type { PreviewFiles } from "./state";
 
 export const PREVIEW_VIRTUAL_ORIGIN = "https://preview.local";
+export const PREVIEW_SUPPORTED_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".json", ".css"];
 
-const SUPPORTED_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".json", ".css"];
 const NODE_BUILTINS = new Set([
   "assert",
   "buffer",
@@ -89,11 +89,11 @@ export function resolveVirtualPath(fromFile: string, specifier: string, files: P
 
 function createPathCandidates(filePath: string) {
   const candidates = [filePath];
-  const hasExtension = SUPPORTED_EXTENSIONS.some((extension) => filePath.endsWith(extension));
+  const hasExtension = PREVIEW_SUPPORTED_EXTENSIONS.some((extension) => filePath.endsWith(extension));
   const indexBase = filePath.endsWith("/") ? filePath.slice(0, -1) : filePath;
 
   if (!hasExtension) {
-    for (const extension of SUPPORTED_EXTENSIONS) {
+    for (const extension of PREVIEW_SUPPORTED_EXTENSIONS) {
       candidates.push(`${filePath}${extension}`);
       candidates.push(`${indexBase}/index${extension}`);
     }

@@ -3,14 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { compilePreview } from "./compiler";
-import { resolvePreviewEsmBaseUrl } from "./config";
+import { resolvePreviewEsmBaseUrl, resolvePreviewOrigin } from "./config";
 import { createPreviewHostMessage, isPreviewFrameMessage } from "./messages";
 import type { PreviewFiles } from "./state";
 
 const EMPTY_SRC_DOC = "<!doctype html><html><body></body></html>";
 
 type PreviewStatus = "building" | "error" | "idle" | "loading" | "ready";
-type EsmConfig = { error: string; kind: "error" } | { kind: "ready"; value: string };
+type PreviewConfig = { error: string; kind: "error" } | { esmBaseUrl: string; kind: "ready"; origin: string };
 
 type AgentPreviewProps = {
   className?: string;
@@ -27,7 +27,7 @@ export function AgentPreview(props: AgentPreviewProps) {
   const [srcDoc, setSrcDoc] = useState(EMPTY_SRC_DOC);
   const [status, setStatus] = useState<PreviewStatus>("idle");
 
-  const esmConfig = useMemo(resolveEsmConfig, []);
+  const previewConfig = useMemo(resolvePreviewConfig, []);
   const hasApp = Boolean(files["/App.js"] || files["App.js"]);
 
   const postProps = useCallback(() => {
@@ -42,8 +42,8 @@ export function AgentPreview(props: AgentPreviewProps) {
       setStatus("idle");
       return;
     }
-    if (esmConfig.kind === "error") {
-      setError(esmConfig.error);
+    if (previewConfig.kind === "error") {
+      setError(previewConfig.error);
       setStatus("error");
       return;
     }
@@ -52,7 +52,7 @@ export function AgentPreview(props: AgentPreviewProps) {
     setError(undefined);
     setStatus("building");
 
-    void compilePreview(files, esmConfig.value)
+    void compilePreview(files, previewConfig.esmBaseUrl, previewConfig.origin)
       .then((compiled) => {
         if (cancelled) {
           compiled.revoke();
@@ -76,7 +76,7 @@ export function AgentPreview(props: AgentPreviewProps) {
     return () => {
       cancelled = true;
     };
-  }, [esmConfig, files, hasApp]);
+  }, [files, hasApp, previewConfig]);
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -130,9 +130,9 @@ function PreviewOverlay(props: { error?: string; status: PreviewStatus }) {
   );
 }
 
-function resolveEsmConfig(): EsmConfig {
+function resolvePreviewConfig(): PreviewConfig {
   try {
-    return { kind: "ready", value: resolvePreviewEsmBaseUrl() };
+    return { esmBaseUrl: resolvePreviewEsmBaseUrl(), kind: "ready", origin: resolvePreviewOrigin() };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error), kind: "error" };
   }

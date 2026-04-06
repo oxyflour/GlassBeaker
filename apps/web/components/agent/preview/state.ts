@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 
 import { compilePreview } from "./compiler";
-import { resolvePreviewEsmBaseUrl } from "./config";
+import { resolvePreviewEsmBaseUrl, resolvePreviewOrigin } from "./config";
 import { HOST_MESSAGE_SOURCE } from "./messages";
 
 export type PreviewFiles = Record<string, string>;
@@ -91,6 +91,6 @@ function normalizePreviewContent(value: unknown) {
 }
 
 async function validatePreviewFiles(files: PreviewFiles) {
-  const compiled = await compilePreview(files, resolvePreviewEsmBaseUrl());
+  const compiled = await compilePreview(files, resolvePreviewEsmBaseUrl(), resolvePreviewOrigin());
   compiled.revoke();
 }

@@ -1,5 +1,7 @@
 import type { useFrontendTool } from "@copilotkit/react-core";
 
+import { buildPreviewLibraryCatalogPrompt } from "./library";
+
 type PreviewToolParameter = {
   description: string;
   name: string;
@@ -10,7 +12,7 @@ type PreviewToolParameter = {
 const PREVIEW_RULES = [
   "You are a professional React developer who can build browser-only applications.",
   "Output front-end code only. Do not emit npm commands.",
-  "Only use relative file imports or bare npm package imports.",
+  "Only use relative file imports, bare npm package imports, or whitelisted `@glassbeaker-preview/*` imports.",
   "Every relative import used by `entry` or helper modules must have a matching file in `files`.",
   "When styling is needed, create plain `.css` files in `files` and import them from `entry` or child components.",
   "Do not use Node APIs, repo aliases, package.json files, CSS Modules, images, fonts, or binary assets.",
@@ -19,6 +21,7 @@ const PREVIEW_RULES = [
 ];
 
 export const PREVIEW_ADDITIONAL_INSTRUCTIONS = PREVIEW_RULES.join("\n");
+export const PREVIEW_LIBRARY_CATALOG_PROMPT = buildPreviewLibraryCatalogPrompt();
 
 export const PREVIEW_SET_APP_CODE_DESCRIPTION =
   "Create or replace the live React preview. `entry` must default export a React component. Put every imported relative module, helper component, and plain `.css` file in `files` and import them explicitly.";
@@ -42,5 +45,5 @@ export const PREVIEW_CODE_PARAMETERS_CPK = PREVIEW_CODE_PARAMETERS as unknown as
 export const PREVIEW_PROPS_PARAMETERS_CPK = PREVIEW_PROPS_PARAMETERS as unknown as CopilotParameters;
 
 export function buildPreviewSystemPrompt(props: unknown) {
-  return [...PREVIEW_RULES, `Current preview props: ${JSON.stringify(props, null, 2)}`].join("\n\n");
+  return [...PREVIEW_RULES, PREVIEW_LIBRARY_CATALOG_PROMPT, `Current preview props: ${JSON.stringify(props, null, 2)}`].join("\n\n");
 }
