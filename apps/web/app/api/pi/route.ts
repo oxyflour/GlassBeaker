@@ -1,17 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
 
+import type { PiFrontendToolDefinition, PiRequestMessage } from "../../../components/agent/pi/protocol";
+import { cleanupFrontendToolCalls, createFrontendTools } from "./frontend-tools";
+import { convertPiMessages } from "./messages";
+
 export const runtime = "nodejs";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 type PiEvent = Record<string, any> & { type: string };
-type PiMessage = {
-  content?: Array<Record<string, any>>;
-  role?: string;
-  timestamp?: number;
-};
 type PiModel = {
   api?: string;
   id?: string;
@@ -21,8 +21,9 @@ type PiModel = {
 type PiRequestBody = {
   model?: PiModel;
   context?: {
+    frontendTools?: PiFrontendToolDefinition[];
     systemPrompt?: string;
-    messages?: PiMessage[];
+    messages?: PiRequestMessage[];
   };
   options?: {
     apiKey?: string;
@@ -33,6 +34,7 @@ type PiRequestBody = {
 const encoder = new TextEncoder();
 const WORKSPACE_DIR = resolveWorkspaceDir();
 const AGENT_DIR = path.join(WORKSPACE_DIR, ".pi", "agent");
+const ATTACHMENTS_DIR = path.join(AGENT_DIR, "uploads");
 
 function resolveWorkspaceDir() {
   let current = process.cwd();
@@ -68,22 +70,30 @@ export async function POST(request: Request) {
   const model = body.model;
   const context = body.context;
   const messages = context?.messages;
-  const prompt = messages?.[messages.length - 1];
 
-  if (!model?.api || !model.provider || !model.id || !Array.isArray(messages) || !prompt || prompt.role !== "user") {
+  if (!model?.api || !model.provider || !model.id || !Array.isArray(messages) || messages.length === 0) {
     return Response.json({ error: "Invalid Pi request payload." }, { status: 400 });
   }
 
   try {
+    const convertedMessages = await convertPiMessages(messages, WORKSPACE_DIR, ATTACHMENTS_DIR);
+    const prompt = convertedMessages[convertedMessages.length - 1];
+    if (!prompt || prompt.role !== "user") {
+      return Response.json({ error: "Invalid Pi request payload." }, { status: 400 });
+    }
+
     const authStorage = AuthStorage.inMemory();
     if (body.options?.apiKey) {
       authStorage.setRuntimeApiKey(model.provider, body.options.apiKey);
     }
 
     const modelRegistry = ModelRegistry.inMemory(authStorage);
+    const requestId = randomUUID();
+    let controllerRef: { current: ReadableStreamDefaultController<Uint8Array> | null } = { current: null };
     const { session } = await createAgentSession({
       cwd: WORKSPACE_DIR,
       agentDir: AGENT_DIR,
+      customTools: createFrontendTools(requestId, context?.frontendTools, (event) => sendEvent(controllerRef.current!, event)),
       model: model as never,
       thinkingLevel: body.options?.reasoning ?? "off",
       authStorage,
@@ -91,12 +101,15 @@ export async function POST(request: Request) {
       sessionManager: SessionManager.inMemory(),
     });
 
-    session.agent.state.systemPrompt = context?.systemPrompt || session.agent.state.systemPrompt;
-    session.agent.state.messages = messages.slice(0, -1) as never[];
+    if (context?.systemPrompt) {
+      session.agent.state.systemPrompt = `${session.agent.state.systemPrompt}\n\n${context.systemPrompt}`;
+    }
+    session.agent.state.messages = convertedMessages.slice(0, -1) as never[];
 
     return new Response(
       new ReadableStream<Uint8Array>({
         start(controller) {
+          controllerRef = { current: controller };
           let closed = false;
           let unsubscribe = () => {};
 
@@ -108,6 +121,7 @@ export async function POST(request: Request) {
             closed = true;
             unsubscribe();
             request.signal.removeEventListener("abort", abort);
+            cleanupFrontendToolCalls(requestId);
             session.dispose();
             controller.close();
           };
@@ -138,6 +152,7 @@ export async function POST(request: Request) {
           });
         },
         cancel() {
+          cleanupFrontendToolCalls(requestId);
           session.agent.abort();
           session.dispose();
         },

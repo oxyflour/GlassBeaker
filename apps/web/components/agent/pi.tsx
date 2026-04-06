@@ -11,6 +11,7 @@ import type { DetailedHTMLProps, HTMLAttributes } from "react";
 import "./app.css";
 
 import { usePiAutoScroll } from "./pi/auto-scroll";
+import { usePiFrontendToolsBridge } from "./pi/frontend-tools";
 import { MessageEditorHost, MessageListHost, StreamingMessageHost } from "./pi/hosts";
 import { usePiModelState } from "./pi/model-state";
 import { usePiSession } from "./pi/session";
@@ -53,11 +54,14 @@ type PiProps = DivProps & {
 export default function Pi(props: PiProps) {
   const { className, provider = PROVIDER, settings, style, systemPrompt, thinkingLevel, ...divProps } = props;
   const { ensureStorage } = usePiStorage({ provider, settings });
+  const frontendTools = usePiFrontendToolsBridge();
   const modelState = usePiModelState({ provider, thinkingLevel });
   const session = usePiSession({
     currentModel: modelState.currentModel,
     currentThinkingLevel: modelState.currentThinkingLevel,
     ensureStorage,
+    executeFrontendTool: frontendTools?.executeTool,
+    frontendTools: frontendTools?.definitions,
     systemPrompt,
   });
   const { onScroll, scrollRef } = usePiAutoScroll({
@@ -105,3 +109,5 @@ export default function Pi(props: PiProps) {
     </div>
   );
 }
+
+export { PiFrontendToolProvider, usePiFrontendTool } from "./pi/frontend-tools";

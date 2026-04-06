@@ -7,13 +7,15 @@
     "start": "node .next/standalone/server.js"
   },
   "dependencies": {
-    "@codesandbox/sandpack-react": "^2.20.0",
+    "@ai-sdk/openai-compatible": "^2.0.38",
+    "@babel/standalone": "^7.29.2",
     "@copilotkit/react-core": "1.54.0",
     "@copilotkit/react-ui": "1.54.0",
     "@copilotkit/runtime": "1.54.0",
     "@mariozechner/pi-agent-core": "^0.64.0",
     "@mariozechner/pi-coding-agent": "^0.65.0",
     "@mariozechner/pi-web-ui": "^0.64.0",
+    "es-module-lexer": "^2.0.0",
     "katex": "^0.16.44",
     "manifold-3d": "^3.4.1",
     "next": "16.2.1",
@@ -24,6 +26,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",
+    "@types/babel__standalone": "^7.1.9",
     "@types/node": "^24.12.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",

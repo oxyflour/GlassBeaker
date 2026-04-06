@@ -1,7 +1,8 @@
 # General
-- all files are in utf8-encoded. note windows shell does not support utf8
+- All files are in utf8-encoded. note windows shell does not support utf8
 - Ask me if you have to modify files outside current workspace.
-- use `uv` Python environment in `apps/python`
+- Use `uv` Python environment in `apps/python`
+- Attention: codex will inject ELECTRON_RUN_AS_NODE and will break debugging
 
 # Coding styles
-- each file should not contain more than 150 lines
+- Try to limit content of each file in 200 lines

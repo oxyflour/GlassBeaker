@@ -5,9 +5,10 @@ import type {
   UserMessageWithAttachments,
 } from "@mariozechner/pi-web-ui";
 
+import type { PiRequestMessage, PiSerializableAttachment } from "./protocol";
 import type { ToolResultMessage, UserMessage } from "./types";
 
-export const DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant.";
+export const DEFAULT_SYSTEM_PROMPT = "";
 
 export function classNames(...values: Array<string | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -95,4 +96,22 @@ export function collectToolResultsById(messages: AgentMessage[]) {
     }
   }
   return toolResultsById;
+}
+
+function serializeAttachment(attachment: Attachment): PiSerializableAttachment {
+  const { id, type, fileName, mimeType, size, content, extractedText } = attachment;
+  return { id, type, fileName, mimeType, size, content, extractedText };
+}
+
+export function serializeMessagesForPi(messages: AgentMessage[]) {
+  return messages.map((message) => {
+    if (message.role !== "user-with-attachments" || !message.attachments) {
+      return message as PiRequestMessage;
+    }
+
+    return {
+      ...message,
+      attachments: message.attachments.map(serializeAttachment),
+    } satisfies PiRequestMessage;
+  });
 }

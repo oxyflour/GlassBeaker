@@ -3,12 +3,12 @@ import {
   type AgentMessage,
   type AppStorage,
   type Attachment,
-  defaultConvertToLlm,
   type Model,
   type ThinkingLevel,
 } from "@mariozechner/pi-web-ui";
 import { useEffect, useRef, useState } from "react";
 
+import type { PiFrontendToolDefinition, PiFrontendToolRequestEvent } from "./protocol";
 import { applyAgentEvent } from "./session-events";
 import { consumeAgentStream } from "./stream";
 import {
@@ -17,12 +17,15 @@ import {
   createUserMessage,
   DEFAULT_SYSTEM_PROMPT,
   isSameMessage,
+  serializeMessagesForPi,
 } from "./utils";
 
 type SessionOptions = {
   currentModel?: Model<any>;
   currentThinkingLevel: ThinkingLevel;
   ensureStorage: () => Promise<AppStorage>;
+  executeFrontendTool?: (event: PiFrontendToolRequestEvent) => Promise<unknown>;
+  frontendTools?: PiFrontendToolDefinition[];
   systemPrompt?: string;
 };
 
@@ -39,6 +42,37 @@ export function usePiSession(options: SessionOptions) {
   useEffect(() => void (messagesRef.current = messages), [messages]);
   useEffect(() => void (streamingMessageRef.current = streamingMessage), [streamingMessage]);
   useEffect(() => () => abortControllerRef.current?.abort(), []);
+
+  async function submitFrontendToolResult(body: Record<string, unknown>) {
+    const response = await fetch("/api/pi/tool", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(`Frontend tool callback failed: ${response.status} ${response.statusText}`);
+    }
+  }
+
+  async function resolveFrontendToolRequest(event: PiFrontendToolRequestEvent) {
+    try {
+      if (!options.executeFrontendTool) {
+        throw new Error(`Frontend tool "${event.toolName}" is not available.`);
+      }
+      const result = await options.executeFrontendTool(event);
+      await submitFrontendToolResult({ requestId: event.requestId, toolCallId: event.toolCallId, result });
+    } catch (error) {
+      try {
+        await submitFrontendToolResult({
+          requestId: event.requestId,
+          toolCallId: event.toolCallId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } catch {
+      }
+    }
+  }
+
   function appendTerminalMessage(errorMessage: string, stopReason: "error" | "aborted", model = options.currentModel) {
     const terminalMessage = createTerminalAssistantMessage(errorMessage, model, stopReason, streamingMessageRef.current);
     setStreamingMessage(null);
@@ -92,8 +126,9 @@ export function usePiSession(options: SessionOptions) {
           body: JSON.stringify({
             model,
             context: {
-              systemPrompt: options.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-              messages: defaultConvertToLlm(nextMessages),
+              frontendTools: options.frontendTools,
+              messages: serializeMessagesForPi(nextMessages),
+              systemPrompt: options.systemPrompt || DEFAULT_SYSTEM_PROMPT || undefined,
             },
             options: { apiKey, reasoning: options.currentThinkingLevel },
           }),
@@ -102,7 +137,12 @@ export function usePiSession(options: SessionOptions) {
 
         await consumeAgentStream({
           controller,
-          onEvent: (event) =>
+          onEvent: (event) => {
+            if (event.type === "frontend_tool_request") {
+              void resolveFrontendToolRequest(event);
+              return;
+            }
+
             applyAgentEvent(event, {
               addPendingToolCall: (toolCallId) => setPendingToolCalls((previous) => new Set(previous).add(toolCallId)),
               appendMessage: (message) => setMessages((previous) => [...previous, message]),
@@ -117,7 +157,8 @@ export function usePiSession(options: SessionOptions) {
                 }),
               setIsStreaming,
               setStreamingMessage,
-            }),
+            });
+          },
           onTerminalFailure: (message, stopReason) => appendTerminalMessage(message, stopReason, model),
           response,
         });
