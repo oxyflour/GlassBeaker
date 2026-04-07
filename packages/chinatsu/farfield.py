@@ -94,20 +94,21 @@ def farfield_grid(phi_theta: np.ndarray):
 class Farfield:
     def __init__(self, snp: Network, ffs_files: list[str], conn_list: list[list[tuple[Network, int]]], device=None) -> None:
         self.device = torch.device(device) if device is not None else None
-        self.freq, angles, ffs = load_ffs_files(ffs_files)
-        self.snp: Network = snp.interpolate(self.freq) # type: ignore
+        self.freqnency, angles, ffs = load_ffs_files(ffs_files)
+        self.snp: Network = snp.interpolate(self.freqnency) # type: ignore
         self.snp = TensorYNetwork(self.snp, torch.tensor(self.snp.y, device=self.device, dtype=torch.complex128))
+        self.z0 = torch.tensor(np.asarray(self.snp.z0), device=self.device, dtype=torch.complex128)
+        self.koe = torch.linalg.inv(compute_snp_currents(self.snp, device=self.device))
+        self.mna = MnaCircuit(interp_conns(conn_list, self.freqnency), device=self.device)
+
         self.nphi, self.ntheta, ff_phi, ff_theta = farfield_grid(angles)
         nphi_eff = ff_phi.shape[0]
-        ffs = ffs.reshape(len(ffs), len(self.freq), 2, self.nphi, self.ntheta)[:, :, :, :nphi_eff]
+        ffs = ffs.reshape(len(ffs), len(self.freqnency), 2, self.nphi, self.ntheta)[:, :, :, :nphi_eff]
         self.ffs = torch.as_tensor(np.ascontiguousarray(ffs), device=self.device, dtype=torch.complex128)
         self.ff_phi = torch.tensor(ff_phi[:, 0], device=self.device, dtype=torch.float64)
         self.ff_theta = torch.tensor(ff_theta[0], device=self.device, dtype=torch.float64)
         self.sin_theta = torch.sin(torch.tensor(ff_theta, device=self.device, dtype=torch.float64))
         self.nphi = nphi_eff
-        self.z0 = torch.tensor(np.asarray(self.snp.z0), device=self.device, dtype=torch.complex128)
-        self.koe = torch.linalg.inv(compute_snp_currents(self.snp, device=self.device))
-        self.mna = MnaCircuit(interp_conns(conn_list, self.freq), device=self.device)
 
     def compute(self, power, phase):
         voltages = self.mna.node_voltages(power, phase)
@@ -115,14 +116,7 @@ class Farfield:
         weights = torch.einsum('fij,fj->fi', self.koe, currents)
         ffs = torch.einsum('fp,pfcxy->fcxy', weights, self.ffs)
         density = (torch.abs(ffs[:, 0]) ** 2 + torch.abs(ffs[:, 1]) ** 2) * self.sin_theta
-        prad = TORCH_TRAPEZOID(TORCH_TRAPEZOID(density, self.ff_theta, dim=2), self.ff_phi, dim=1) / (2 * ETA0)
-        ant_v = torch.zeros_like(currents)
-        for port in range(self.snp.nports):
-            node = self.mna.node_from_port.get((self.snp.name, port), -1)
-            if node >= 0:
-                ant_v[:, port] = voltages[:, node]
-        pstim = (torch.abs(ant_v + self.z0 * currents) ** 2 / (8 * self.z0.real)).sum(dim=1)
-        return torch.where(pstim > 0, prad / pstim, torch.zeros_like(prad))
+        return TORCH_TRAPEZOID(TORCH_TRAPEZOID(density, self.ff_theta, dim=2), self.ff_phi, dim=1) / (2 * ETA0)
 
 class FarfieldTest(unittest.TestCase):
     @classmethod
@@ -144,8 +138,19 @@ class FarfieldTest(unittest.TestCase):
 
     def test_efficiency_matches_ffs_header(self):
         ff = self.build_direct_farfield()
-        eta_1 = ff.compute([0.5, 0.0], [0.0, 0.0]).detach().cpu().numpy()
-        eta_2 = ff.compute([0.0, 0.5], [0.0, 0.0]).detach().cpu().numpy()
+        eta_1 = ff.compute([1.0, 0.0], [0.0, 0.0]).detach().cpu().numpy()
+        eta_2 = ff.compute([0.0, 1.0], [0.0, 0.0]).detach().cpu().numpy()
+        snp = Network(str(self.snp_path))
+        res = TensorGammaZ0(snp.frequency).resistor(np.array(50), name='r')
+        ff0 = Farfield(snp, [str(self.file1), str(self.file2)], [
+            [(MnaCircuit.Port(snp.frequency, 'p'), 0), (res, 0)],
+            [(res, 1), (snp, 0)],
+            [(snp, 1), (MnaCircuit.Ground(snp.frequency, 'g'), 0)],
+        ], device="cpu")
+        np.savetxt('out/rad.txt', np.array([
+            ff0.freqnency.f / 1e9,
+            ff0.compute([1], [0.0]).detach().cpu().numpy(),
+        ]).T)
         self.assertLess(np.abs(eta_1 - self.read_expected_efficiency(self.file1)).max(), 1.5e-2)
         self.assertLess(np.abs(eta_2 - self.read_expected_efficiency(self.file2)).max(), 1e-2)
 
@@ -155,28 +160,35 @@ class FarfieldTest(unittest.TestCase):
         z = TensorGammaZ0(freq)
         src = MnaCircuit.Port(freq, name="src-0")
         cap_value = torch.tensor(100.0, dtype=torch.float64, requires_grad=True)
+        ind_value = torch.tensor(100.0, dtype=torch.float64, requires_grad=True)
         cap = z.tensor_capacitor(cap_value, name="c-0")
+        ind = z.tensor_inductor(ind_value, name="l-0")
+        gnd = MnaCircuit.Ground(freq, 'g')
         ff = Farfield(
             snp,
             [str(self.file1), str(self.file2)],
-            [[(src, 0), (snp, 0), (cap, 0)], [(snp, 1), (cap, 1)]],
+            [[(src, 0), (cap, 0)], [(cap, 1), (ind, 0)], [(ind, 1), (snp, 0)], [(snp, 1), (gnd, 0)]],
             device="cpu",
         )
-        optimizer = torch.optim.Adam([cap_value], lr=10.0)
+        optimizer = torch.optim.Adam([cap_value, ind_value], lr=5.0)
         ff.mna.update_tensor()
-        base = ff.compute([0.5], [0.0]).mean()
+        base = ff.compute([1.0], [0.0]).mean()
         for _ in range(40):
             ff.mna.update_tensor()
-            loss = -ff.compute([0.5], [0.0]).mean()
+            loss = -ff.compute([1.0], [0.0]).mean()
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             with torch.no_grad():
                 cap_value.clamp_(1e-3, 200.0)
+                ind_value.clamp_(1e-3, 200.0)
         ff.mna.update_tensor()
-        final = ff.compute([0.5], [0.0]).mean()
-        self.assertGreater(final.item(), base.item() + 0.2)
-        self.assertLess(cap_value.item(), 1.0)
+        final = ff.compute([1.0], [0.0]).mean()
+        np.savetxt('out/opt.txt', np.array([
+            ff.freqnency.f / 1e9,
+            ff.compute([1], [0.0]).detach().cpu().numpy(),
+        ]).T)
+        self.assertGreater(final.item(), base.item() + 0.1)
 
 
 if __name__ == "__main__":

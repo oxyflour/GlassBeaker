@@ -60,6 +60,7 @@ class MnaCircuit(Circuit):
         z = DefinedGammaZ0(self.frequency, self.z_mean)
         mna_nodes = connections[0:0]
         mna_source: list[int] = []
+        mna_gnd: list[tuple[Network, int]] = []
         conn_index: dict[int, list[int]] = { }
         start_index = 0
         for conns in connections:
@@ -70,12 +71,15 @@ class MnaCircuit(Circuit):
                 if attrs.get('_is_circuit_port'):
                     resistor = z.resistor(self.z_mean, name=f'-res-{comp.name}')
                     mna_source.append(node)
-                    node_list.append((resistor, pin))
+                    node_list.append((resistor, 0))
+                    mna_gnd.append((resistor, 1))
                 else:
                     node_list.append((comp, pin))
             conn_index[node] = list(range(start_index, start_index + len(conns)))
             mna_nodes.append(node_list)
             start_index += len(conns)
+        if len(mna_gnd):
+            mna_nodes.append(mna_gnd + [(Circuit.Ground(self.frequency, 'mna_gnd'), 0)])
         return mna_nodes, mna_source, conn_index
 
     def __init__(self, connections: list[list[tuple[Network, int]]], device=None) -> None:
