@@ -1,105 +1,140 @@
 from __future__ import annotations
 
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from nanami.github_cache import AssetBundle
 from nanami.manager import NanamiManager
+from nanami.models import ControlGroup, JointControl, RobotManifest, SourceConfig
+from nanami.runtime import RuntimeBusyError, RuntimeHost
 
 
-class FakeWorker:
-    def __init__(self, *_args, **_kwargs):
-        self.stopped = False
+def fake_manifest() -> RobotManifest:
+    return RobotManifest(
+        robot_id="r1",
+        package_name="r1",
+        resolved_commit="deadbeef",
+        source=SourceConfig(robot_path="R1"),
+        links=[],
+        joints=[],
+        movable_joint_count=1,
+        link_count=2,
+        controls=[ControlGroup(name="left_arm", joints=[JointControl(name="j1", kind="revolute", lower=-1.0, upper=1.0)])],
+    )
 
-    def write_session_config(self, _payload: dict) -> None:
-        pass
 
-    def start(self) -> None:
-        raise RuntimeError("boom")
+def fake_bundle(tmp: str) -> AssetBundle:
+    cache_root = Path(tmp) / "asset-cache" / "R1_local" / "abc123"
+    return AssetBundle(
+        manifest=fake_manifest(),
+        cache_hit=True,
+        cache_root=cache_root,
+        runtime_key=str(cache_root),
+        asset_key="r1_local_abc123",
+    )
 
-    def stop(self, timeout: float = 5.0) -> None:
-        self.stopped = True
+
+def fake_start(self: RuntimeHost) -> None:
+    self.worker = SimpleNamespace(send=mock.Mock(), stop=mock.Mock())
 
 
 class NanamiManagerTest(unittest.TestCase):
-    def seed_session(self, manager: NanamiManager, session_id: str, *, ready: bool, loaded: bool):
-        session = mock.Mock()
-        session.ready = ready
-        session.robot_loaded = loaded
-        manager.sessions[session_id] = session
-        manager.manifests[session_id] = SimpleNamespace(
-            robot_id="r1",
-            link_count=8,
-            movable_joint_count=6,
-            to_dict=mock.Mock(return_value={"robot_id": "r1"}),
-        )
-        manager.cache_hit[session_id] = True
-        manager.workers[session_id] = mock.Mock()
-        return session, manager.workers[session_id]
+    def make_manager(self) -> NanamiManager:
+        return NanamiManager(runtime_ttl_seconds=0.05, reaper_poll_seconds=0.01)
 
-    def test_destroy_session_clears_state_and_stops_worker(self):
-        manager = NanamiManager()
-        session = mock.Mock()
-        worker = mock.Mock()
-        manager.sessions["s1"] = session
-        manager.manifests["s1"] = SimpleNamespace()
-        manager.cache_hit["s1"] = True
-        manager.workers["s1"] = worker
+    def test_create_session_reuses_warm_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = fake_bundle(tmp)
+            manager = self.make_manager()
+            try:
+                with mock.patch("nanami.manager.ensure_r1_asset_cache", return_value=bundle):
+                    with mock.patch.object(RuntimeHost, "start", fake_start):
+                        first = manager.create_session(None)
+                        runtime_id = first["runtime_id"]
+                        manager.on_worker_event(bundle.runtime_key, {"type": "hello"})
+                        manager.on_worker_event(bundle.runtime_key, {"type": "robot_loaded"})
+                        manager.destroy_session(first["session_id"])
 
-        manager.destroy_session("s1")
+                        second = manager.create_session(None)
 
-        session.close.assert_called_once_with()
-        worker.stop.assert_called_once_with()
-        self.assertNotIn("s1", manager.sessions)
-        self.assertNotIn("s1", manager.manifests)
-        self.assertNotIn("s1", manager.cache_hit)
-        self.assertNotIn("s1", manager.workers)
+                self.assertFalse(first["runtime_reused"])
+                self.assertTrue(second["runtime_reused"])
+                self.assertEqual(second["runtime_id"], runtime_id)
+            finally:
+                manager.shutdown()
 
-    def test_create_session_rolls_back_when_worker_start_fails(self):
-        manager = NanamiManager()
-        manifest = SimpleNamespace(resolved_commit="deadbeef")
-        with mock.patch("nanami.manager.ensure_r1_asset_cache", return_value=(manifest, False)):
-            with mock.patch("nanami.manager.NanamiWorker", FakeWorker):
-                with self.assertRaisesRegex(RuntimeError, "boom"):
-                    manager.create_session(None)
+    def test_create_session_rejects_busy_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = fake_bundle(tmp)
+            manager = self.make_manager()
+            try:
+                with mock.patch("nanami.manager.ensure_r1_asset_cache", return_value=bundle):
+                    with mock.patch.object(RuntimeHost, "start", fake_start):
+                        manager.create_session(None)
+                        with self.assertRaises(RuntimeBusyError):
+                            manager.create_session(None)
+            finally:
+                manager.shutdown()
 
-        self.assertEqual(manager.sessions, {})
-        self.assertEqual(manager.manifests, {})
-        self.assertEqual(manager.cache_hit, {})
-        self.assertEqual(manager.workers, {})
+    def test_destroy_session_keeps_runtime_until_ttl_then_reaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = fake_bundle(tmp)
+            manager = self.make_manager()
+            try:
+                with mock.patch("nanami.manager.ensure_r1_asset_cache", return_value=bundle):
+                    with mock.patch.object(RuntimeHost, "start", fake_start):
+                        data = manager.create_session(None)
+                        runtime = manager.runtimes[bundle.runtime_key]
+                        manager.destroy_session(data["session_id"])
+                        self.assertIn(bundle.runtime_key, manager.runtimes)
+                        time.sleep(0.08)
+                        self.assertNotIn(bundle.runtime_key, manager.runtimes)
+                        runtime.worker.stop.assert_called_once_with()
+            finally:
+                manager.shutdown()
 
-    def test_load_robot_queues_until_worker_is_ready(self):
-        manager = NanamiManager()
-        session, worker = self.seed_session(manager, "s1", ready=False, loaded=False)
+    def test_failed_runtime_is_replaced_after_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = fake_bundle(tmp)
+            manager = self.make_manager()
+            try:
+                with mock.patch("nanami.manager.ensure_r1_asset_cache", return_value=bundle):
+                    with mock.patch.object(RuntimeHost, "start", fake_start):
+                        first = manager.create_session(None)
+                        first_runtime_id = first["runtime_id"]
+                        manager.on_worker_event(bundle.runtime_key, {"type": "worker_exit"})
+                        manager.destroy_session(first["session_id"])
+                        second = manager.create_session(None)
 
-        data = manager.load_robot("s1")
+                self.assertFalse(second["runtime_reused"])
+                self.assertNotEqual(second["runtime_id"], first_runtime_id)
+            finally:
+                manager.shutdown()
 
-        self.assertEqual(data["status"], "queued")
-        worker.send.assert_not_called()
+    def test_robot_load_endpoint_reports_runtime_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = fake_bundle(tmp)
+            manager = self.make_manager()
+            try:
+                with mock.patch("nanami.manager.ensure_r1_asset_cache", return_value=bundle):
+                    with mock.patch.object(RuntimeHost, "start", fake_start):
+                        data = manager.create_session(None)
+                        starting = manager.load_robot(data["session_id"])
+                        manager.on_worker_event(bundle.runtime_key, {"type": "hello"})
+                        loading = manager.load_robot(data["session_id"])
+                        manager.on_worker_event(bundle.runtime_key, {"type": "robot_loaded"})
+                        loaded = manager.load_robot(data["session_id"])
 
-        manager.on_worker_event("s1", {"type": "hello"})
-
-        worker.send.assert_called_once_with({"type": "load_robot", "manifest": {"robot_id": "r1"}})
-        session.publish.assert_any_call({"type": "session_ready", "session_id": "s1"})
-        session.publish.assert_any_call({"type": "robot_load_started", "session_id": "s1"})
-
-    def test_load_robot_is_idempotent_and_retriable_after_error(self):
-        manager = NanamiManager()
-        _session, worker = self.seed_session(manager, "s1", ready=True, loaded=False)
-
-        first = manager.load_robot("s1")
-        second = manager.load_robot("s1")
-
-        self.assertEqual(first["status"], "loading")
-        self.assertEqual(second["status"], "loading")
-        worker.send.assert_called_once_with({"type": "load_robot", "manifest": {"robot_id": "r1"}})
-
-        manager.on_worker_event("s1", {"type": "worker_error", "message": "boom"})
-
-        third = manager.load_robot("s1")
-
-        self.assertEqual(third["status"], "loading")
-        self.assertEqual(worker.send.call_count, 2)
+                self.assertEqual(starting["status"], "starting")
+                self.assertEqual(loading["status"], "loading")
+                self.assertEqual(loaded["status"], "loaded")
+                self.assertEqual(loaded["robot_id"], "r1")
+            finally:
+                manager.shutdown()
 
 
 if __name__ == "__main__":

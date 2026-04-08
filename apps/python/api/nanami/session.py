@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from pydantic import BaseModel
 
 from nanami.manager import MANAGER
+from nanami.runtime import RuntimeBusyError
 
 
 class SourceRequest(BaseModel):
@@ -18,6 +19,8 @@ async def create(body: SessionRequest):
     try:
         source = body.source.model_dump(exclude_none=True) if body.source else None
         data = MANAGER.create_session(source)
+    except RuntimeBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Nanami runtime busy.") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

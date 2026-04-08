@@ -34,17 +34,19 @@ class NanamiCacheTest(unittest.TestCase):
             (robot_root / "urdf" / "demo.urdf").write_text(URDF_SAMPLE, encoding="utf-8")
             (robot_root / "meshes" / "base.STL").write_text(ASCII_STL, encoding="utf-8")
 
-            manifest, cache_hit = ensure_r1_asset_cache(SourceConfig(robot_path=str(robot_root)))
-            cached, second_hit = ensure_r1_asset_cache(SourceConfig(robot_path=str(robot_root)))
+            bundle = ensure_r1_asset_cache(SourceConfig(robot_path=str(robot_root)))
+            cached = ensure_r1_asset_cache(SourceConfig(robot_path=str(robot_root)))
 
-        self.assertFalse(cache_hit)
-        self.assertTrue(second_hit)
+        self.assertFalse(bundle.cache_hit)
+        self.assertTrue(cached.cache_hit)
+        manifest = bundle.manifest
         self.assertEqual(manifest.robot_id, "demo")
         mesh_obj_path = manifest.links[0].mesh_obj_path or ''
         self.assertTrue(mesh_obj_path.endswith("base.obj"))
         self.assertTrue(Path(mesh_obj_path).exists())
-        self.assertEqual(cached.resolved_commit, manifest.resolved_commit)
+        self.assertEqual(cached.manifest.resolved_commit, manifest.resolved_commit)
         self.assertTrue(manifest.resolved_commit.startswith("local:"))
+        self.assertEqual(bundle.asset_key, cached.asset_key)
 
 
 if __name__ == "__main__":

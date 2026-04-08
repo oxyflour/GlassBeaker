@@ -11,6 +11,7 @@ SCRIPTS_ROOT = PROJECT_ROOT / "Scripts"
 SHOTS_ROOT = PROJECT_ROOT / "Shots"
 SESSION_ROOT = TEMP_ROOT / "sessions"
 CACHE_ROOT = TEMP_ROOT / "asset-cache"
+RUNTIME_ROOT = TEMP_ROOT / "runtimes"
 DEFAULT_ENGINE_ROOT = Path(
     os.getenv("NANAMI_ENGINE_ROOT", r"C:\Program Files\Epic Games\UE_5.7")
 )
@@ -23,5 +24,5 @@ SESSION_DEFAULT_SOURCE = {"robot_path": "R1"}
 
 
 def ensure_roots() -> None:
-    for path in [TEMP_ROOT, URDF_ROOT, SESSION_ROOT, SHOTS_ROOT, CACHE_ROOT]:
+    for path in [TEMP_ROOT, URDF_ROOT, SESSION_ROOT, SHOTS_ROOT, CACHE_ROOT, RUNTIME_ROOT]:
         path.mkdir(parents=True, exist_ok=True)

@@ -26,14 +26,15 @@ def _console_safe_text(text: str) -> str:
 
 
 class NanamiWorker:
-    def __init__(self, session, config_path: Path, on_event):
-        self.session = session
+    def __init__(self, runtime_id: str, config_path: Path, on_event):
+        self.runtime_id = runtime_id
         self.config_path = config_path
         self.on_event = on_event
         self.proc: subprocess.Popen[bytes] | None = None
         self.sock: socket.socket | None = None
         self.file = None
         self.writer_lock = threading.Lock()
+        self.pending_payloads: list[bytes] = []
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(1)
@@ -54,10 +55,10 @@ class NanamiWorker:
             "-NoSplash",
             "-NoSound",
         ]
-        print(f"[nanami:{self.session.session_id}] Starting worker: {exe}")
-        print(f"[nanami:{self.session.session_id}] Command: {' '.join(cmd)}")
+        print(f"[nanami:{self.runtime_id}] Starting worker: {exe}")
+        print(f"[nanami:{self.runtime_id}] Command: {' '.join(cmd)}")
         self.proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        print(f"[nanami:{self.session.session_id}] Worker process started, pid={self.proc.pid}")
+        print(f"[nanami:{self.runtime_id}] Worker process started, pid={self.proc.pid}")
         threading.Thread(target=self._accept_loop, daemon=True).start()
         threading.Thread(target=self._log_loop, daemon=True).start()
 
@@ -66,27 +67,34 @@ class NanamiWorker:
             return
         for raw in self.proc.stdout:
             line = _decode_log_line(raw).rstrip()
-            print(_console_safe_text(f"[nanami:{self.session.session_id}] {line}"))
+            print(_console_safe_text(f"[nanami:{self.runtime_id}] {line}"))
         self.on_event({"type": "worker_exit"})
 
     def _accept_loop(self) -> None:
-        print(f"[nanami:{self.session.session_id}] Waiting for worker connection on port {self.port}...")
-        conn, addr = self.listener.accept()
-        print(f"[nanami:{self.session.session_id}] Worker connected from {addr}")
-        self.sock = conn
+        print(f"[nanami:{self.runtime_id}] Waiting for worker connection on port {self.port}...")
+        try:
+            conn, addr = self.listener.accept()
+        except OSError:
+            return
+        print(f"[nanami:{self.runtime_id}] Worker connected from {addr}")
+        with self.writer_lock:
+            self.sock = conn
+            for payload in self.pending_payloads:
+                conn.sendall(payload)
+            self.pending_payloads = []
         self.file = conn.makefile("r", encoding="utf-8")
-        self.session.attach_command_sink(self.send)
         for raw in self.file:
             self.on_event(json.loads(raw))
 
     def send(self, payload: dict) -> None:
-        if not self.sock:
-            return
         data = (json.dumps(payload) + "\n").encode("utf-8")
         with self.writer_lock:
+            if self.sock is None:
+                self.pending_payloads.append(data)
+                return
             self.sock.sendall(data)
 
-    def write_session_config(self, payload: dict) -> None:
+    def write_runtime_config(self, payload: dict) -> None:
         payload.update(
             {
                 "control_host": "127.0.0.1",

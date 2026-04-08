@@ -1,38 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import importlib.util
 import inspect
-import sys
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
 
+from utils.module import load_module
+
 API_ROOT = Path(__file__).resolve().parents[1]
-
-
-def module_name(abs_path: Path) -> str:
-    digest = hashlib.sha1(str(abs_path.resolve()).encode("utf-8")).hexdigest()[:12]
-    return f"glassbeaker_dynamic_{abs_path.stem}_{digest}"
-
-
-def load_module(abs_path: Path):
-    name = module_name(abs_path)
-    loaded = sys.modules.get(name)
-    if loaded is not None:
-        return loaded
-    spec = importlib.util.spec_from_file_location(name, abs_path)
-    module = spec and importlib.util.module_from_spec(spec)
-    if module and spec and spec.loader:
-        sys.modules[name] = module
-        try:
-            spec.loader.exec_module(module)
-        except Exception:
-            sys.modules.pop(name, None)
-            raise
-        return module
-    print(f"WARN: load from {abs_path} failed")
-    return None
 
 
 def route_prefix(root: Path, sub_path: str, abs_path: Path) -> str:

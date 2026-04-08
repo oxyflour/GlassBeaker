@@ -49,12 +49,12 @@ export default function HomePage() {
 
   return (
     <div className="flex h-full w-full">
+      <CopilotChat className="copilotkit-fix" style={{ width: preview.hasApp ? 400 : "100%" }} />
       { preview.hasApp ? (
         <div className="h-full flex-1">
           <AgentPreview className="h-full" files={ preview.files } props={ preview.props } />
         </div>
       ) : null }
-      <CopilotChat className="copilotkit-fix" style={{ width: preview.hasApp ? 400 : "100%" }} />
     </div>
   );
 }

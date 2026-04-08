@@ -3,12 +3,22 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import CACHE_ROOT, URDF_ROOT
 from .models import RobotManifest, SourceConfig, manifest_from_dict
 from .stl_obj import stl_to_obj
 from .urdf import parse_robot_manifest
+
+
+@dataclass(slots=True)
+class AssetBundle:
+    manifest: RobotManifest
+    cache_hit: bool
+    cache_root: Path
+    runtime_key: str
+    asset_key: str
 
 
 def asset_files(robot_root: Path) -> list[Path]:
@@ -33,6 +43,16 @@ def cache_root_for(robot_root: Path, source: SourceConfig) -> Path:
     source_key = hashlib.sha1(str(robot_root.resolve()).encode("utf-8")).hexdigest()[:8]
     name = f"{robot_root.name}-{source_key}"
     return CACHE_ROOT / name / cache_key(robot_root)
+
+
+def runtime_key_for(cache_root: Path) -> str:
+    return str(cache_root.resolve())
+
+
+def asset_key_for(cache_root: Path) -> str:
+    rel = cache_root.resolve().relative_to(CACHE_ROOT.resolve())
+    safe = "_".join(part.replace("-", "_") for part in rel.parts)
+    return safe.lower()
 
 
 def find_robot_root(source: SourceConfig) -> Path:
@@ -88,15 +108,29 @@ def build_manifest(robot_root: Path, cache_root: Path, source: SourceConfig) -> 
     return manifest
 
 
-def ensure_r1_asset_cache(source: SourceConfig) -> tuple[RobotManifest, bool]:
+def ensure_r1_asset_cache(source: SourceConfig) -> AssetBundle:
     robot_root = find_robot_root(source)
     cache_root = cache_root_for(robot_root, source)
+    runtime_key = runtime_key_for(cache_root)
+    asset_key = asset_key_for(cache_root)
     manifest_path = cache_root / "robot_manifest.json"
     if manifest_path.exists():
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        return manifest_from_dict(data), True
+        return AssetBundle(
+            manifest=manifest_from_dict(data),
+            cache_hit=True,
+            cache_root=cache_root,
+            runtime_key=runtime_key,
+            asset_key=asset_key,
+        )
 
     manifest = build_manifest(robot_root, cache_root, source)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest.to_dict(), indent=2), encoding="utf-8")
-    return manifest, False
+    return AssetBundle(
+        manifest=manifest,
+        cache_hit=False,
+        cache_root=cache_root,
+        runtime_key=runtime_key,
+        asset_key=asset_key,
+    )

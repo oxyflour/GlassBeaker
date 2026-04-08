@@ -1,7 +1,17 @@
 // @ts-check
 const path = require("node:path"),
     { spawn } = require('child_process'),
-    { app, BrowserWindow, utilityProcess } = require("electron/main")
+    { app, BrowserWindow, utilityProcess } = require("electron/main"),
+    { existsSync, readFileSync } = require('fs'),
+    env = existsSync('.env') ? readFileSync('.env', 'utf8') : ''
+
+for (const line of env.split('\n')) {
+    const [key, val] = line.trim().split('=').map(item => item.trim())
+    if (key && !key.startsWith('#')) {
+        console.log(`[main] updated env ${key}`)
+        process.env[key] = val
+    }
+}
 
 /**
  * 
@@ -61,25 +71,27 @@ async function assertUrl(url, retry = 10){
 const root = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "..", "..")
 async function startServer(nextJsPort = 13000, pythonPort = 13001) {
     const python = spawn('uv', ['run', '--project', '.', '--python', '3.12', 'python', 'app.py'], {
-        env: { ...process.env, LISTEN_PORT: `${pythonPort}` },
+        env: { ...process.env, LISTEN_PORT: `${pythonPort}`, NO_PROXY: '*' },
         cwd: path.join(root, 'python'),
         stdio: 'pipe'
     })
     watchProc('python', python)
 
+    const runtime = await assertUrl(`http://127.0.0.1:${pythonPort}/runtime`)
+    console.log(`[main] RUNTIME: ${runtime}`)
+
     const nextjs = utilityProcess.fork(path.join(root, 'web/node_modules/next/dist/bin/next'), [
         '-p', `${nextJsPort}`
     ], {
-        env: { ...process.env, API_REWRITE: `http://127.0.0.1:${pythonPort}/` },
+        env: { ...process.env, API_REWRITE: `http://127.0.0.1:${pythonPort}/`, API_RUNTIME: runtime },
         cwd: path.join(root, 'web'),
         stdio: "pipe"
     });
     // @ts-ignore
     watchProc('nextjs', nextjs)
 
-    const url = `http://localhost:${nextJsPort}`,
-        runtime = await assertUrl(`${url}/python/runtime`)
-    console.log(`[main] RUNTIME: ${runtime}`)
+    const url = `http://localhost:${nextJsPort}`
+    await assertUrl(url)
     return url
 }
 

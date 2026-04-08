@@ -41,14 +41,14 @@ function PiAgentPreviewDemo() {
 
   return (
     <div className="flex h-screen w-full">
+      <div className="h-full" style={{ width: preview.hasApp ? 400 : "100%" }}>
+        <Pi className="h-full" systemPrompt={ systemPrompt } />
+      </div>
       { preview.hasApp ? (
         <div className="h-full flex-1">
           <AgentPreview className="h-full" files={ preview.files } props={ preview.props } />
         </div>
       ) : null }
-      <div className="h-full" style={{ width: preview.hasApp ? 400 : "100%" }}>
-        <Pi className="h-full" systemPrompt={ systemPrompt } />
-      </div>
     </div>
   );
 }
