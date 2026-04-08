@@ -3,11 +3,16 @@ from __future__ import annotations
 import os
 import platform
 from typing import Any
+from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+
+from copilotkit import LangGraphAGUIAgent
 from ag_ui_langgraph import add_langgraph_fastapi_endpoint
-from pathlib import Path
+
+from pydantic_ai import Agent
+from pydantic_ai.ui.ag_ui import AGUIAdapter
 
 from utils.mount import mount_routes
 from utils.module import load_module
@@ -33,15 +38,24 @@ mount_routes(app, 'api')
 
 agents = []
 agent_root = Path(os.path.normpath(f'{__file__}/../agents'))
+def create_endpoint(agent: Agent):
+    async def run_agent(request: Request) -> Response:
+        return await AGUIAdapter.dispatch_request(request, agent=agent)
+    return run_agent
 for item in os.listdir(agent_root):
     agent = None
     if item.endswith('.py'):
         module = load_module(agent_root / item)
         agent = getattr(module, 'agent', None)
     if agent:
-        path = f"/agent/{item}"
-        agents.append({ 'path': path, 'name': item.replace('.py', '') })
-        add_langgraph_fastapi_endpoint(app=app, agent=agent, path=path)
+        name = item.replace('.py', '')
+        path = f"/agent/{name}"
+        agents.append({ 'path': path, 'name': name })
+        if isinstance(agent, LangGraphAGUIAgent):
+            add_langgraph_fastapi_endpoint(app=app, agent=agent, path=path)
+        elif isinstance(agent, Agent):
+            app.add_api_route(path, endpoint=create_endpoint(agent), methods=["POST"])
+
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:

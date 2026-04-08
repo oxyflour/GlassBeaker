@@ -96,7 +96,6 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
 }
 
 async function createMainWindow() {
-    const url = await startServer();
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 760,
@@ -115,6 +114,11 @@ async function createMainWindow() {
         mainWindow = null;
     });
 
+    const htmlContent = '<h1 style="display: flex;align-items: center;justify-content: center;height: 100%;">Loading...</h1>',
+        base64Html = Buffer.from(htmlContent).toString('base64');
+    mainWindow.loadURL(`data:text/html;base64,${base64Html}`);
+
+    const url = await startServer();
     await mainWindow.loadURL(url);
 }
 

@@ -15,6 +15,7 @@ dependencies = [
   "copilotkit>=0.1.85",
   "deepagents>=0.5.1",
   "langchain-openai>=1.1.12",
+  "pydantic-ai-slim[ag-ui]>=1.78.0",
 ]
 
 [tool.uv.sources]
