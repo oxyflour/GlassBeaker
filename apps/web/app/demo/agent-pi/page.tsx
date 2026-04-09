@@ -13,6 +13,7 @@ import {
   PREVIEW_SET_APP_PROPS_DESCRIPTION,
   useAgentPreviewState,
 } from "../../../components/agent/preview";
+import { Group, Panel, Separator } from "react-resizable-panels";
 
 const Pi = dynamic(() => import("../../../components/agent/pi"), { ssr: false });
 
@@ -38,19 +39,19 @@ function PiAgentPreviewDemo() {
   }, [preview.setAppProps]);
 
   const systemPrompt = useMemo(() => buildPreviewSystemPrompt(preview.props), [preview.props]);
-
-  return (
-    <div className="flex h-screen w-full">
-      <div className="h-full" style={{ width: preview.hasApp ? 400 : "100%" }}>
-        <Pi className="h-full" systemPrompt={ systemPrompt } />
-      </div>
-      { preview.hasApp ? (
-        <div className="h-full flex-1">
-          <AgentPreview className="h-full" files={ preview.files } props={ preview.props } />
-        </div>
-      ) : null }
-    </div>
-  );
+  return <Group>
+    <Panel>
+      <Pi className="h-full" systemPrompt={ systemPrompt } />
+    </Panel>
+    {
+      preview.hasApp && <>
+        <Separator />
+        <Panel>
+          <AgentPreview files={ preview.files } props={ preview.props } />
+        </Panel>
+      </>
+    }
+  </Group>
 }
 
 export default function PiDemoPage() {

@@ -14,6 +14,7 @@ import {
   getPreviewLibraryReadableCatalog,
   useAgentPreviewState,
 } from "../../../components/agent/preview";
+import { Group, Panel, Separator } from "react-resizable-panels";
 
 export default function HomePage() {
   const preview = useAgentPreviewState();
@@ -47,14 +48,17 @@ export default function HomePage() {
     render: ({ status }) => (status === "inProgress" ? <div className="tool-badge">Updating props...</div> : <div className="tool-badge">Props updated</div>),
   }, [preview.setAppProps]);
 
-  return (
-    <div className="flex h-full w-full">
+  return <Group>
+    <Panel>
       <CopilotChat className="copilotkit-fix" style={{ width: preview.hasApp ? 400 : "100%" }} />
-      { preview.hasApp ? (
-        <div className="h-full flex-1">
-          <AgentPreview className="h-full" files={ preview.files } props={ preview.props } />
-        </div>
-      ) : null }
-    </div>
-  );
+    </Panel>
+    {
+        preview.hasApp && <>
+            <Separator />
+            <Panel>
+                <AgentPreview files={ preview.files } props={ preview.props } />
+            </Panel>
+        </>
+    }
+  </Group>
 }
