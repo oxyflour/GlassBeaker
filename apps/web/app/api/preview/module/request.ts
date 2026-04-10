@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { findPreviewLibraryComponent, PREVIEW_LIBRARY_DEP_SEGMENT, type PreviewLibraryComponent } from "../../../../components/agent/preview/library";
+import { findPreviewLibraryComponent, PREVIEW_LIBRARY_DEP_SEGMENT, type PreviewLibraryComponent } from "../../../../components/preview/library";
 
 export class PreviewModuleError extends Error {
   constructor(message: string) {

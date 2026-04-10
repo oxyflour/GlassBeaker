@@ -12,7 +12,7 @@ import {
   PREVIEW_SET_APP_CODE_DESCRIPTION,
   PREVIEW_SET_APP_PROPS_DESCRIPTION,
   useAgentPreviewState,
-} from "../../../components/agent/preview";
+} from "../../../components/preview";
 import { Group, Panel, Separator } from "react-resizable-panels";
 
 const Pi = dynamic(() => import("../../../components/agent/pi"), { ssr: false });

@@ -3,7 +3,6 @@ node_modules
 *.tsbuildinfo
 
 apps/web/.next
-apps/web/.env*
 !apps/web/.env.example
 apps/desktop/release
 apps/python/.venv
@@ -14,6 +13,7 @@ __pycache__/
 dist
 out
 
+.env*
 .vscode/
 .venv/
 .claude/

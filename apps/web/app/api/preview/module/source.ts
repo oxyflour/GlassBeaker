@@ -5,8 +5,8 @@ import path from "node:path";
 import { init, parse } from "es-module-lexer";
 import ts from "typescript";
 
-import { resolvePreviewEsmBaseUrl } from "../../../../components/agent/preview/config";
-import { buildPreviewLibraryModuleUrl, findPreviewLibraryComponent, isPreviewLibrarySpecifier } from "../../../../components/agent/preview/library";
+import { resolvePreviewEsmBaseUrl } from "../../../../components/preview/config";
+import { buildPreviewLibraryModuleUrl, findPreviewLibraryComponent, isPreviewLibrarySpecifier } from "../../../../components/preview/library";
 import {
   isAliasSpecifier,
   isBareSpecifier,
@@ -16,7 +16,7 @@ import {
   isScriptPath,
   isWorkspaceSpecifier,
   PREVIEW_SUPPORTED_EXTENSIONS,
-} from "../../../../components/agent/preview/paths";
+} from "../../../../components/preview/paths";
 import { PreviewModuleError, type ResolvedPreviewModuleRequest } from "./request";
 
 const lexerReady = Promise.resolve(init).then(() => undefined);

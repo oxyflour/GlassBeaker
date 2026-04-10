@@ -11,7 +11,10 @@ export default function HomePage() {
                 <a href="/demo/agent-pi">Agent Pi</a>
             </li>
             <li>
-                <a href="/demo/chinatsu">Antenna design</a>
+                <a href="/demo/chinatsu">Circuit design</a>
+            </li>
+            <li>
+                <a href="/demo/nijika">Antenna design</a>
             </li>
             <li>
                 <a href="/demo/nanami">Robotic rendering</a>

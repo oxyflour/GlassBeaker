@@ -3,7 +3,7 @@ import { BuiltInAgent } from "@copilotkit/runtime/v2";
 import type { NextRequest } from "next/server";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 
-import { PREVIEW_ADDITIONAL_INSTRUCTIONS, PREVIEW_LIBRARY_CATALOG_PROMPT } from "../../../components/agent/preview/instructions";
+import { PREVIEW_ADDITIONAL_INSTRUCTIONS, PREVIEW_LIBRARY_CATALOG_PROMPT } from "../../../components/preview/instructions";
 
 import { AbstractAgent } from "@copilotkit/react-core/v2";
 import { LangGraphHttpAgent } from "@copilotkit/runtime/langgraph";

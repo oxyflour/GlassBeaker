@@ -13,7 +13,7 @@ import {
   PREVIEW_SET_APP_PROPS_DESCRIPTION,
   getPreviewLibraryReadableCatalog,
   useAgentPreviewState,
-} from "../../../components/agent/preview";
+} from "../../../components/preview";
 import { Group, Panel, Separator } from "react-resizable-panels";
 
 export default function HomePage() {
