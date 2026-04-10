@@ -7,6 +7,7 @@ import ts from "typescript";
 
 import { resolvePreviewEsmBaseUrl } from "../../../../components/preview/config";
 import { buildPreviewLibraryModuleUrl, findPreviewLibraryComponent, isPreviewLibrarySpecifier } from "../../../../components/preview/library";
+import { buildPreviewPackageModuleUrl } from "../../../../components/preview/packages";
 import {
   isAliasSpecifier,
   isBareSpecifier,
@@ -75,11 +76,15 @@ async function rewriteImportSpecifiers(code: string, request: ResolvedPreviewMod
     }
 
     rewritten += code.slice(cursor, entry.s);
-    rewritten += resolveImportSpecifier(entry.n, request, origin);
+    rewritten += formatResolvedSpecifier(resolveImportSpecifier(entry.n, request, origin), entry.d > -1);
     cursor = entry.e;
   }
 
   return `${rewritten}${code.slice(cursor)}`;
+}
+
+function formatResolvedSpecifier(specifier: string, isDynamicImport: boolean) {
+  return isDynamicImport ? JSON.stringify(specifier) : specifier;
 }
 
 function createCssModule(filePath: string, source: string) {
@@ -130,6 +135,10 @@ function resolveImportSpecifier(specifier: string, request: ResolvedPreviewModul
       throw new PreviewModuleError(`Preview library component is not whitelisted: ${specifier}`);
     }
     return buildPreviewLibraryModuleUrl(origin, specifier);
+  }
+  const previewPackageUrl = buildPreviewPackageModuleUrl(origin, specifier);
+  if (previewPackageUrl) {
+    return previewPackageUrl;
   }
   if (isBareSpecifier(specifier)) {
     return `${resolvePreviewEsmBaseUrl()}/${specifier}`;

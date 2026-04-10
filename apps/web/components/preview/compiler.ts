@@ -9,13 +9,15 @@ const ROOT_FILE = "/App.js";
 export type CompiledPreview = {
   revoke: () => void;
   srcDoc: string;
+  validationImports: string[];
 };
 
 export async function compilePreview(files: PreviewFiles, esmBaseUrl: string, previewOrigin: string): Promise<CompiledPreview> {
   const normalizedFiles = normalizePreviewFiles(files);
   const modules = new Map<string, string>();
+  const validationImports = new Set<string>();
 
-  await visitModule(ROOT_FILE, normalizedFiles, esmBaseUrl, previewOrigin, modules);
+  await visitModule(ROOT_FILE, normalizedFiles, esmBaseUrl, previewOrigin, modules, validationImports);
   modules.set(BOOT_FILE, createBootModule(esmBaseUrl));
 
   const urls: string[] = [];
@@ -29,6 +31,7 @@ export async function compilePreview(files: PreviewFiles, esmBaseUrl: string, pr
   return {
     revoke: () => urls.forEach((url) => URL.revokeObjectURL(url)),
     srcDoc: createPreviewSrcDoc(imports, toVirtualModuleUrl(BOOT_FILE)),
+    validationImports: Array.from(validationImports),
   };
 }
 
@@ -38,6 +41,7 @@ async function visitModule(
   esmBaseUrl: string,
   previewOrigin: string,
   modules: Map<string, string>,
+  validationImports: Set<string>,
 ) {
   if (modules.has(filePath)) {
     return;
@@ -50,9 +54,10 @@ async function visitModule(
 
   const module = await buildPreviewModule(filePath, source, files, esmBaseUrl, previewOrigin);
   modules.set(filePath, module.code);
+  module.validationImports.forEach((url) => validationImports.add(url));
 
   for (const dependency of module.dependencies) {
-    await visitModule(dependency, files, esmBaseUrl, previewOrigin, modules);
+    await visitModule(dependency, files, esmBaseUrl, previewOrigin, modules, validationImports);
   }
 }
 

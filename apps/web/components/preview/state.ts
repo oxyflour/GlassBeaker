@@ -92,5 +92,13 @@ function normalizePreviewContent(value: unknown) {
 
 async function validatePreviewFiles(files: PreviewFiles) {
   const compiled = await compilePreview(files, resolvePreviewEsmBaseUrl(), resolvePreviewOrigin());
-  compiled.revoke();
+  try {
+    await Promise.all(compiled.validationImports.map((url) => importPreviewValidationModule(url)));
+  } finally {
+    compiled.revoke();
+  }
+}
+
+async function importPreviewValidationModule(url: string) {
+  await import(/* webpackIgnore: true */ url);
 }

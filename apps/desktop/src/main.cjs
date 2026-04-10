@@ -114,7 +114,10 @@ async function createMainWindow() {
         mainWindow = null;
     });
 
-    const htmlContent = '<h1 style="display: flex;align-items: center;justify-content: center;height: 100%;">Loading...</h1>',
+    const htmlContent = `
+        <h1 style="padding: 0;margin: 0;display: flex;align-items: center;justify-content: center;height: 100%;">
+            Loading...
+        </h1>`,
         base64Html = Buffer.from(htmlContent).toString('base64');
     mainWindow.loadURL(`data:text/html;base64,${base64Html}`);
 

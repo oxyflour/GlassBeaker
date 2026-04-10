@@ -1,4 +1,5 @@
 import { buildPreviewLibraryModuleUrl, findPreviewLibraryComponent, isPreviewLibrarySpecifier } from "./library";
+import { buildPreviewPackageModuleUrl } from "./packages";
 import type { PreviewFiles } from "./state";
 import {
   isAliasSpecifier,
@@ -19,6 +20,7 @@ let lexerPromise: Promise<typeof import("es-module-lexer")> | null = null;
 export type PreviewModule = {
   code: string;
   dependencies: string[];
+  validationImports: string[];
 };
 
 export async function buildPreviewModule(
@@ -29,13 +31,13 @@ export async function buildPreviewModule(
   previewOrigin: string,
 ): Promise<PreviewModule> {
   if (filePath.endsWith(".json")) {
-    return { code: createJsonModule(filePath, source), dependencies: [] };
+    return { code: createJsonModule(filePath, source), dependencies: [], validationImports: [] };
   }
   if (filePath.endsWith(".css")) {
     if (isCssModulePath(filePath)) {
       throw new Error(`CSS Modules are not supported in preview: ${filePath}`);
     }
-    return { code: createCssModule(filePath, source), dependencies: [] };
+    return { code: createCssModule(filePath, source), dependencies: [], validationImports: [] };
   }
   if (!isScriptPath(filePath)) {
     throw new Error(`Unsupported preview file type: ${filePath}`);
@@ -78,9 +80,10 @@ async function rewriteModuleSpecifiers(
   const { parse } = await loadLexer();
   const [imports] = parse(code);
   const dependencies: string[] = [];
+  const validationImports: string[] = [];
 
   if (imports.length === 0) {
-    return { code, dependencies };
+    return { code, dependencies, validationImports };
   }
 
   let rewritten = "";
@@ -95,15 +98,26 @@ async function rewriteModuleSpecifiers(
 
     const replacement = resolvePreviewSpecifier(filePath, entry.n, files, esmBaseUrl, previewOrigin);
     rewritten += code.slice(cursor, entry.s);
-    rewritten += replacement.specifier;
+    rewritten += formatResolvedSpecifier(replacement.specifier, entry.d > -1);
     cursor = entry.e;
     if (replacement.internalPath) {
       dependencies.push(replacement.internalPath);
     }
+    if (replacement.validationImport) {
+      validationImports.push(replacement.validationImport);
+    }
   }
 
   rewritten += code.slice(cursor);
-  return { code: rewritten, dependencies: Array.from(new Set(dependencies)) };
+  return {
+    code: rewritten,
+    dependencies: Array.from(new Set(dependencies)),
+    validationImports: Array.from(new Set(validationImports)),
+  };
+}
+
+function formatResolvedSpecifier(specifier: string, isDynamicImport: boolean) {
+  return isDynamicImport ? JSON.stringify(specifier) : specifier;
 }
 
 function resolvePreviewSpecifier(
@@ -129,7 +143,12 @@ function resolvePreviewSpecifier(
     if (!findPreviewLibraryComponent(specifier)) {
       throw new Error(`Preview library component is not whitelisted: ${specifier}`);
     }
-    return { specifier: buildPreviewLibraryModuleUrl(previewOrigin, specifier) };
+    const url = buildPreviewLibraryModuleUrl(previewOrigin, specifier);
+    return { specifier: url, validationImport: url };
+  }
+  const previewPackageUrl = buildPreviewPackageModuleUrl(previewOrigin, specifier);
+  if (previewPackageUrl) {
+    return { specifier: previewPackageUrl };
   }
   if (isBareSpecifier(specifier)) {
     return { specifier: joinEsmSpecifierUrl(esmBaseUrl, specifier) };
