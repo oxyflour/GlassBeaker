@@ -39,6 +39,76 @@ const BASE_SPECS: Record<CircuitBlockType, BaseSpec> = {
   },
 }
 
+function extractPortCountFromSnp(value: string | undefined): number {
+  if (!value) return 2
+  const match = value.match(/\bs(\d+)p\b/i)
+  if (match) {
+    const count = Number.parseInt(match[1], 10)
+    return count >= 1 && count <= 99 ? count : 2
+  }
+  return 2
+}
+
+function calculateSnpHeight(portCount: number): number {
+  if (portCount > 6) {
+    return Math.max(60, portCount * 12)
+  } else if (portCount > 4) {
+    return 80
+  }
+  return 60
+}
+
+function generateSnpPins(portCount: number, height: number): Point[] {
+  const pins: Point[] = []
+  const width = 120
+
+  if (portCount <= 2) {
+    pins.push({ x: 0, y: height / 2 })
+    pins.push({ x: width, y: height / 2 })
+  } else if (portCount <= 4) {
+    const leftY = height / 3
+    const rightY = (height * 2) / 3
+    pins.push({ x: 0, y: leftY })
+    pins.push({ x: width, y: leftY })
+    pins.push({ x: 0, y: rightY })
+    pins.push({ x: width, y: rightY })
+  } else if (portCount <= 6) {
+    const leftY1 = height / 4
+    const rightY1 = height / 4
+    const leftY2 = height / 2
+    const rightY2 = height / 2
+    const leftY3 = (height * 3) / 4
+    const rightY3 = (height * 3) / 4
+    pins.push({ x: 0, y: leftY1 })
+    pins.push({ x: width, y: rightY1 })
+    pins.push({ x: 0, y: leftY2 })
+    pins.push({ x: width, y: rightY2 })
+    pins.push({ x: 0, y: leftY3 })
+    pins.push({ x: width, y: rightY3 })
+  } else {
+    const maxPortsPerSide = Math.ceil(portCount / 2)
+    for (let i = 0; i < maxPortsPerSide; i++) {
+      const y = ((i + 1) * height) / (maxPortsPerSide + 1)
+      pins.push({ x: 0, y })
+      if (pins.length < portCount) {
+        pins.push({ x: width, y })
+      }
+    }
+  }
+  return pins.slice(0, portCount)
+}
+
+function generateSnpPinNames(portCount: number): string[] {
+  return Array.from({ length: portCount }, (_, i) => `P${i + 1}`)
+}
+
+function getSnpSpec(block: Block): BaseSpec {
+  const portCount = extractPortCountFromSnp(block.value)
+  const height = calculateSnpHeight(portCount)
+  const pins = generateSnpPins(portCount, height)
+  return { width: 120, height, pins }
+}
+
 function rotatePoint(point: Point, width: number, height: number, rotation: Block["rotation"] = 0): Point {
   switch (rotation) {
     case 90:
@@ -52,9 +122,14 @@ function rotatePoint(point: Point, width: number, height: number, rotation: Bloc
   }
 }
 
-export function getBaseSpec(block: Block) {
+export function getBaseSpec(block: Block): BaseSpec {
+  if (block.type === "snp") {
+    return getSnpSpec(block)
+  }
   return BASE_SPECS[block.type ?? "snp"]
 }
+
+export { generateSnpPinNames }
 
 export function getBlockLayout(block: Block): BlockLayout {
   const spec = getBaseSpec(block)
@@ -83,3 +158,4 @@ export function getPinPoint(block: Block, position: Point, pin: number) {
 }
 
 export { BASE_SPECS }
+export { extractPortCountFromSnp }

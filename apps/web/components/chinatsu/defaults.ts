@@ -1,3 +1,4 @@
+import { generateSnpPinNames } from "./symbol-geometry"
 import { type Block, type CircuitBlockType, type CircuitData, type PaletteItem, type Point, GRID_SIZE } from "./types"
 
 type BlockMeta = {
@@ -7,6 +8,16 @@ type BlockMeta = {
   rotation: 0 | 90 | 180 | 270
   value?: string
   valueFactory?: (index: number) => string | undefined
+}
+
+function extractPortCountFromSnp(value: string | undefined): number {
+  if (!value) return 2
+  const match = value.match(/\bs(\d+)p\b/i)
+  if (match) {
+    const count = Number.parseInt(match[1], 10)
+    return count >= 1 && count <= 99 ? count : 2
+  }
+  return 2
 }
 
 export const BLOCK_META: Record<CircuitBlockType, BlockMeta> = {
@@ -76,13 +87,19 @@ function nextOrdinal(type: CircuitBlockType, blocks: Block[]) {
   }, 0) + 1
 }
 
+function getSnpPinNames(value: string | undefined): string[] {
+  const count = extractPortCountFromSnp(value)
+  return generateSnpPinNames(count)
+}
+
 function normalizeBlock(block: Block, index: number): Block {
   const type = block.type ?? "snp"
   const meta = BLOCK_META[type]
+  const pinNames = type === "snp" ? getSnpPinNames(block.value) : meta.pinNames
   return {
     ...block,
     label: block.label ?? meta.label,
-    pins: block.pins?.length === meta.pinNames.length ? block.pins : buildPins(meta.pinNames),
+    pins: block.pins?.length === pinNames.length ? block.pins : buildPins(pinNames),
     position: block.position ?? getDefaultPosition(index),
     rotation: block.rotation ?? meta.rotation,
     type,

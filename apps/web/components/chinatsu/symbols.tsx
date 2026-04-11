@@ -1,7 +1,7 @@
 import { type CSSProperties } from "react"
 
 import type { Block, BlockLayout, CircuitBlockType, Point } from "./types"
-import { BASE_SPECS, getBlockLayout } from "./symbol-geometry"
+import { BASE_SPECS, extractPortCountFromSnp, getBlockLayout } from "./symbol-geometry"
 
 const SYMBOL_COLOR = "#305bc9"
 const LABEL_COLOR = "#254ba9"
@@ -9,7 +9,7 @@ const LABEL_COLOR = "#254ba9"
 type RenderSpec = {
   height: number
   pins: Point[]
-  render: (selected: boolean) => React.ReactNode
+  render: (selected: boolean, block?: Block) => React.ReactNode
   width: number
 }
 
@@ -79,22 +79,42 @@ const RENDER_SPECS: Record<CircuitBlockType, RenderSpec> = {
   },
   snp: {
     ...BASE_SPECS.snp,
-    render: (selected) => (
-      <g {...STROKE} stroke={selected ? "#b2458f" : SYMBOL_COLOR}>
-        <line x1={0} y1={30} x2={18} y2={30} />
-        <rect x={18} y={10} width={84} height={40} />
-        <line x1={102} y1={30} x2={120} y2={30} />
-        <text x={60} y={35} fill={selected ? "#b2458f" : SYMBOL_COLOR} fontFamily="Consolas, monospace" fontSize={16} textAnchor="middle">
-          SNP
-        </text>
-      </g>
-    ),
+    render: () => null,
   },
 }
 
 function getRenderSpec(block: Block): RenderSpec {
   const spec = RENDER_SPECS[block.type ?? "snp"]
   return spec
+}
+
+function getSnpRenderSpec(block: Block): RenderSpec {
+  const portCount = extractPortCountFromSnp(block.value)
+  const pins = Array.from({ length: portCount }, (_, i) => ({
+    x: i % 2 === 0 ? 0 : 120,
+    y: 30 + Math.floor(i / 2) * 20,
+  }))
+  return {
+    width: 120,
+    height: Math.max(60, (Math.ceil(portCount / 2) + 1) * 20),
+    pins,
+    render: (selected) => {
+      const layout = getBlockLayout(block)
+      const { width, height } = layout
+      const pinPoints = layout.pinPoints
+      return (
+        <g {...STROKE} stroke={selected ? "#b2458f" : SYMBOL_COLOR}>
+          {pinPoints.map((pin, i) => (
+            <line key={i} x1={pin.x} y1={pin.y} x2={pin.x < width / 2 ? pin.x + 18 : pin.x - 18} y2={pin.y} />
+          ))}
+          <rect x={18} y={10} width={width - 36} height={height - 20} />
+          <text x={width / 2} y={height / 2 + 5} fill={selected ? "#b2458f" : SYMBOL_COLOR} fontFamily="Consolas, monospace" fontSize={16} textAnchor="middle">
+            {portCount}P
+          </text>
+        </g>
+      )
+    },
+  }
 }
 
 export { getBlockLayout }
@@ -114,20 +134,20 @@ export function getBlockLabelColor() {
 }
 
 export function CircuitSymbol({ block, selected }: { block: Block; selected: boolean }) {
-  const spec = getRenderSpec(block)
   const layout = getBlockLayout(block)
+  const spec = block.type === "snp" ? getSnpRenderSpec(block) : getRenderSpec(block)
   const transform =
     block.rotation === 90
-      ? `translate(${spec.height} 0) rotate(90)`
+      ? `translate(${layout.height} 0) rotate(90)`
       : block.rotation === 180
-        ? `translate(${spec.width} ${spec.height}) rotate(180)`
+        ? `translate(${layout.width} ${layout.height}) rotate(180)`
         : block.rotation === 270
-          ? `translate(0 ${spec.width}) rotate(270)`
+          ? `translate(0 ${layout.width}) rotate(270)`
           : undefined
 
   return (
     <svg width={layout.width} height={layout.height} viewBox={`0 0 ${layout.width} ${layout.height}`} style={{ display: "block", overflow: "visible" }}>
-      <g transform={transform}>{spec.render(selected)}</g>
+      <g transform={transform}>{spec.render(selected, block)}</g>
     </svg>
   )
 }

@@ -17,7 +17,7 @@ import { getRouteSegments, moveRouteSegment, projectPointToSegment, type RouteSe
 
 export type { Block, BlockPin, CircuitBlockType, CircuitData, Link, LinkPin } from "./types"
 
-type DragState = { id: string; offsetX: number; offsetY: number }
+type DragState = { ids: string[]; startMouse: Point; startPositions: Record<string, Point> }
 type SegmentDragState = {
   axis: number
   moved: boolean
@@ -275,28 +275,33 @@ export default function Circuit({ data: controlledData, onChange }: { data?: Cir
 
     const dragState = dragging
     function handlePointerMove(event: PointerEvent) {
-      const block = latestRef.current.data.blocks.find((item) => item.id === dragState.id)
       const point = toCanvasPoint(event.clientX, event.clientY, false)
-      if (!block || !point) {
+      if (!point) {
         return
       }
-      setPositions((previous) => ({
-        ...previous,
-        [dragState.id]: findNearestLegalPosition(block, {
-          x: clamp(Math.round((point.x - dragState.offsetX) / GRID_SIZE) * GRID_SIZE, 0, CANVAS_WIDTH),
-          y: clamp(Math.round((point.y - dragState.offsetY) / GRID_SIZE) * GRID_SIZE, 0, CANVAS_HEIGHT),
-        }),
-      }))
+      const deltaX = point.x - dragState.startMouse.x
+      const deltaY = point.y - dragState.startMouse.y
+      setPositions((previous) => {
+        const next: Record<string, Point> = { ...previous }
+        for (const id of dragState.ids) {
+          const block = latestRef.current.data.blocks.find((item) => item.id === id)
+          const startPos = dragState.startPositions[id]
+          if (!block || !startPos) continue
+          next[id] = findNearestLegalPosition(block, {
+            x: clamp(Math.round((startPos.x + deltaX) / GRID_SIZE) * GRID_SIZE, 0, CANVAS_WIDTH),
+            y: clamp(Math.round((startPos.y + deltaY) / GRID_SIZE) * GRID_SIZE, 0, CANVAS_HEIGHT),
+          })
+        }
+        return next
+      })
     }
 
     function handlePointerUp() {
-      const next = latestRef.current.positions[dragState.id]
-      if (next) {
-        emitChange({
-          ...latestRef.current.data,
-          blocks: latestRef.current.data.blocks.map((block) => block.id === dragState.id ? { ...block, position: next } : block),
-        })
-      }
+      const blocks = latestRef.current.data.blocks.map((block) => {
+        const next = latestRef.current.positions[block.id]
+        return next ? { ...block, position: next } : block
+      })
+      emitChange({ ...latestRef.current.data, blocks })
       setDragging(null)
     }
 
@@ -504,12 +509,20 @@ export default function Circuit({ data: controlledData, onChange }: { data?: Cir
     }
 
     event.stopPropagation()
-    selectBlock(id)
-    setDragging({
-      id,
-      offsetX: clamp(point.x - position.x, 0, getBlockLayout(blockMap[id] ?? { id, type: "snp" }).width),
-      offsetY: clamp(point.y - position.y, 0, getBlockLayout(blockMap[id] ?? { id, type: "snp" }).height),
-    })
+    // If the clicked block is not selected, select it alone
+    if (!selectedBlockIds.includes(id)) {
+      selectBlock(id)
+    }
+
+    const idsToDrag = selectedBlockIds.includes(id) ? selectedBlockIds : [id]
+    const startPositions: Record<string, Point> = {}
+    for (const blockId of idsToDrag) {
+      const blockPos = positions[blockId]
+      if (blockPos) {
+        startPositions[blockId] = { ...blockPos }
+      }
+    }
+    setDragging({ ids: idsToDrag, startMouse: point, startPositions })
   }
 
   function deleteSelection() {
@@ -754,7 +767,7 @@ export default function Circuit({ data: controlledData, onChange }: { data?: Cir
                 key={block.id}
                 activeSource={activeSource}
                 block={block}
-                draggingId={dragging?.id ?? null}
+                draggingId={dragging?.ids.includes(block.id) ? block.id : null}
                 onBeginDrag={beginDrag}
                 onPinClick={handleEndpointClick}
                 onSelect={selectBlock}
@@ -849,6 +862,7 @@ export default function Circuit({ data: controlledData, onChange }: { data?: Cir
                 添加器件
               </div>
               {([
+                { type: "port" as const, label: "端口" },
                 { type: "snp" as const, label: "S参数文件" },
                 { type: "resistor" as const, label: "电阻" },
                 { type: "capacitor" as const, label: "电容" },
@@ -938,32 +952,77 @@ export default function Circuit({ data: controlledData, onChange }: { data?: Cir
                 <label style={{ display: "block", color: "#8b9bb4", fontSize: 12, marginBottom: 6 }}>
                   值
                 </label>
-                <textarea
-                  id="block-value-input"
-                  defaultValue={editingBlock.block.value ?? ""}
-                  rows={3}
-                  style={{
-                    width: "100%",
-                    padding: "8px 12px",
-                    background: "#161c29",
-                    border: "1px solid #2d3a52",
-                    borderRadius: 4,
-                    color: "#e8ecf5",
-                    fontSize: 14,
-                    outline: "none",
-                    resize: "vertical",
-                    boxSizing: "border-box",
-                    fontFamily: "inherit",
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && e.ctrlKey) {
-                      const labelInput = document.getElementById("block-label-input") as HTMLInputElement
-                      const valueInput = document.getElementById("block-value-input") as HTMLInputElement
-                      updateBlockValue(editingBlock.block.id, labelInput?.value ?? "", valueInput?.value ?? "")
-                      setEditingBlock(null)
-                    }
-                  }}
-                />
+                {editingBlock.block.type === "snp" ? (
+                  <div>
+                    <input
+                      id="block-value-input"
+                      type="text"
+                      defaultValue={editingBlock.block.value ?? ""}
+                      placeholder="file=network.s2p"
+                      style={{
+                        width: "100%",
+                        padding: "8px 12px",
+                        background: "#161c29",
+                        border: "1px solid #2d3a52",
+                        borderRadius: 4,
+                        color: "#e8ecf5",
+                        fontSize: 14,
+                        outline: "none",
+                        boxSizing: "border-box",
+                        marginBottom: 8,
+                      }}
+                    />
+                    <input
+                      type="file"
+                      accept=".s1p,.s2p,.s3p,.s4p,.s5p,.s6p,.snp"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (file) {
+                          const valueInput = document.getElementById("block-value-input") as HTMLInputElement
+                          if (valueInput) {
+                            valueInput.value = `file=${file.name}`
+                          }
+                        }
+                      }}
+                      style={{
+                        width: "100%",
+                        padding: "6px 0",
+                        color: "#8b9bb4",
+                        fontSize: 13,
+                      }}
+                    />
+                    <div style={{ color: "#5a6a85", fontSize: 11, marginTop: 4 }}>
+                      选择 SNP 文件或手动输入文件名
+                    </div>
+                  </div>
+                ) : (
+                  <textarea
+                    id="block-value-input"
+                    defaultValue={editingBlock.block.value ?? ""}
+                    rows={3}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      background: "#161c29",
+                      border: "1px solid #2d3a52",
+                      borderRadius: 4,
+                      color: "#e8ecf5",
+                      fontSize: 14,
+                      outline: "none",
+                      resize: "vertical",
+                      boxSizing: "border-box",
+                      fontFamily: "inherit",
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && e.ctrlKey) {
+                        const labelInput = document.getElementById("block-label-input") as HTMLInputElement
+                        const valueInput = document.getElementById("block-value-input") as HTMLInputElement
+                        updateBlockValue(editingBlock.block.id, labelInput?.value ?? "", valueInput?.value ?? "")
+                        setEditingBlock(null)
+                      }
+                    }}
+                  />
+                )}
               </div>
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <button
