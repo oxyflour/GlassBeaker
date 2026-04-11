@@ -69,21 +69,44 @@ async function assertUrl(url, retry = 10){
 }
 
 const root = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "..", "..")
+function resolvePythonRuntime() {
+    if (!app.isPackaged) {
+        return {
+            command: 'uv',
+            args: ['run', '--project', '.', '--python', '3.12', 'python', 'app.py'],
+            cwd: path.join(root, 'python')
+        }
+    }
+
+    const exeName = process.platform === 'win32'
+            ? 'glassbeaker-python.exe'
+            : 'glassbeaker-python',
+        cwd = path.join(root, 'python', 'glassbeaker-python'),
+        command = path.join(cwd, exeName)
+
+    if (!existsSync(command)) {
+        throw Error(`missing packaged python executable: ${command}`)
+    }
+
+    return { command, args: [], cwd }
+}
+
 async function startServer(nextJsPort = 13000, pythonPort = 13001) {
-    const python = spawn('uv', ['run', '--project', '.', '--python', '3.12', 'python', 'app.py'], {
+    const runtime = resolvePythonRuntime(),
+        python = spawn(runtime.command, runtime.args, {
         env: { ...process.env, LISTEN_PORT: `${pythonPort}`, NO_PROXY: '*' },
-        cwd: path.join(root, 'python'),
+        cwd: runtime.cwd,
         stdio: 'pipe'
     })
     watchProc('python', python)
 
-    const runtime = await assertUrl(`http://127.0.0.1:${pythonPort}/runtime`)
-    console.log(`[main] RUNTIME: ${runtime}`)
+    const apiRuntime = await assertUrl(`http://127.0.0.1:${pythonPort}/runtime`)
+    console.log(`[main] RUNTIME: ${apiRuntime}`)
 
     const nextjs = utilityProcess.fork(path.join(root, 'web/node_modules/next/dist/bin/next'), [
         '-p', `${nextJsPort}`
     ], {
-        env: { ...process.env, API_REWRITE: `http://127.0.0.1:${pythonPort}/`, API_RUNTIME: runtime },
+        env: { ...process.env, API_REWRITE: `http://127.0.0.1:${pythonPort}/`, API_RUNTIME: apiRuntime },
         cwd: path.join(root, 'web'),
         stdio: "pipe"
     });
@@ -114,12 +137,7 @@ async function createMainWindow() {
         mainWindow = null;
     });
 
-    const htmlContent = `
-        <h1 style="padding: 0;margin: 0;display: flex;align-items: center;justify-content: center;height: 100%;">
-            Loading...
-        </h1>`,
-        base64Html = Buffer.from(htmlContent).toString('base64');
-    mainWindow.loadURL(`data:text/html;base64,${base64Html}`);
+    await mainWindow.loadFile(path.join(root, 'desktop', 'index.html'))
 
     const url = await startServer();
     await mainWindow.loadURL(url);

@@ -16,6 +16,7 @@ import { MessageEditorHost, MessageListHost, StreamingMessageHost } from "./pi/h
 import { usePiModelState } from "./pi/model-state";
 import { usePiSession } from "./pi/session";
 import { usePiStorage } from "./pi/storage";
+import { usePiToolCallCollapse } from "./pi/tool-call-collapse";
 import { classNames } from "./pi/utils";
 
 const baseUrl = 'http://localhost:13000/cors/moonshot/v1'
@@ -70,6 +71,7 @@ export default function Pi(props: PiProps) {
     pendingToolCalls: session.pendingToolCalls,
     streamingMessage: session.streamingMessage,
   });
+  usePiToolCallCollapse(scrollRef);
 
   return (
     <div
