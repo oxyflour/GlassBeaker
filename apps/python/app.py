@@ -14,6 +14,10 @@ from ag_ui_langgraph import add_langgraph_fastapi_endpoint
 from pydantic_ai import Agent
 from pydantic_ai.ui.ag_ui import AGUIAdapter
 
+# FIXME: without this line there will be random stucks
+# maybe module name conflicts
+from skrf import Frequency
+
 from utils.mount import mount_routes
 from utils.module import load_module
 
@@ -42,6 +46,7 @@ def create_endpoint(agent: Agent):
     async def run_agent(request: Request) -> Response:
         return await AGUIAdapter.dispatch_request(request, agent=agent)
     return run_agent
+
 for item in os.listdir(agent_root):
     agent = None
     if item.endswith('.py'):
