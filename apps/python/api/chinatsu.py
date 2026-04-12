@@ -162,8 +162,8 @@ def build_connections(circuit: CircuitData) -> tuple[list[list[tuple[Any, int]]]
         if from_pin.kind == "point" or to_pin.kind == "point":
             continue
 
-        from_tuple = (from_pin.node, from_pin.pin)
-        to_tuple = (to_pin.node, to_pin.pin)
+        from_tuple = (from_pin.node, from_pin.pin) # type: ignore
+        to_tuple = (to_pin.node, to_pin.pin)       # type: ignore
 
         # Find or create connection set
         found_set = None
@@ -187,7 +187,7 @@ def build_connections(circuit: CircuitData) -> tuple[list[list[tuple[Any, int]]]
     # Sort ports by number for consistent ordering
     port_blocks.sort(key=lambda x: get_port_number(x) or 0)
 
-    return connections, port_blocks
+    return [list(conns) for conns in connections], port_blocks
 
 
 def create_component(block: Block, frequency: Frequency, z: TensorGammaZ0):
@@ -199,12 +199,15 @@ def create_component(block: Block, frequency: Frequency, z: TensorGammaZ0):
 
     if comp_type == "capacitor":
         value = parse_value(value_str, "F")
+        value = np.array(value)
         return z.capacitor(value, name=block.id)
     elif comp_type == "inductor":
         value = parse_value(value_str, "H")
+        value = np.array(value)
         return z.inductor(value, name=block.id)
     elif comp_type == "resistor":
         value = parse_value(value_str, "Ohm")
+        value = np.array(value)
         return z.resistor(value, name=block.id)
     elif comp_type == "port":
         # Ports are handled specially - create a circuit port
@@ -221,7 +224,8 @@ def create_component(block: Block, frequency: Frequency, z: TensorGammaZ0):
         # For SNP blocks, we would need to load from file
         # For now, create a placeholder (user needs to implement file loading)
         # Default to a 50 Ohm resistor if no file specified
-        return z.resistor(50, name=block.id)
+        value = np.array(50)
+        return z.resistor(value, name=block.id)
     else:
         # Unknown type - default to open
         return Circuit.Open(frequency, name=block.id)
@@ -358,7 +362,7 @@ async def simulate(body: SimulationRequest) -> SParameterResponse:
                 unit='Hz'
             )
 
-        z0 = 50.0  # Default reference impedance
+        z0 = np.array(50.0)  # Default reference impedance
         z = TensorGammaZ0(frequency, z0)
 
         # Build connections
