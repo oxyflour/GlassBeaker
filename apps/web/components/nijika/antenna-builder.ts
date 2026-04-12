@@ -37,8 +37,54 @@ export type GeneratedAntenna = {
     inner: Manifold
 }
 
+const EDGE_ORDER: EdgePosition[] = ["top", "bottom", "left", "right"]
+
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value))
+}
+
+function randomBetween(min: number, max: number): number {
+    return min + Math.random() * (max - min)
+}
+
+function shuffledEdges(): EdgePosition[] {
+    const edges = [...EDGE_ORDER]
+    for (let i = edges.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[edges[i], edges[j]] = [edges[j], edges[i]]
+    }
+    return edges
+}
+
+function crossSizeForEdge(position: EdgePosition, baseWidth: number, baseHeight: number): number {
+    return position === "left" || position === "right" ? baseHeight : baseWidth
+}
+
+function pickOffset(
+    crossSize: number,
+    spanWidth: number,
+    occupied: { center: number; halfWidth: number }[],
+    margin: number
+): number {
+    const limit = Math.max(crossSize / 2 - spanWidth / 2, 0)
+    let best = 0
+    let bestClearance = Number.NEGATIVE_INFINITY
+
+    for (let attempt = 0; attempt < 32; attempt++) {
+        const candidate = randomBetween(-limit, limit)
+        const clearance = occupied.length === 0
+            ? Number.POSITIVE_INFINITY
+            : Math.min(...occupied.map(item => Math.abs(candidate - item.center) - item.halfWidth - spanWidth / 2 - margin))
+        if (clearance >= 0) {
+            return candidate
+        }
+        if (clearance > bestClearance) {
+            best = candidate
+            bestClearance = clearance
+        }
+    }
+
+    return best
 }
 
 function createEdgeSegment(
@@ -240,20 +286,30 @@ export function generateRandomAntennaOptions(
 ): AntennaOptions {
     const frameWidth = baseWidth * (0.04 + Math.random() * 0.03) // 4-7% of width
     const gap = baseWidth * (0.08 + Math.random() * 0.06) // 8-14% of width
+    const nibOccupied = {
+        top: [] as { center: number; halfWidth: number }[],
+        bottom: [] as { center: number; halfWidth: number }[],
+        left: [] as { center: number; halfWidth: number }[],
+        right: [] as { center: number; halfWidth: number }[],
+    }
+    const nibs: AntennaNib[] = Array.from({ length: numNibs }, (_, index) => {
+        const position = EDGE_ORDER[index % EDGE_ORDER.length]
+        const crossSize = crossSizeForEdge(position, baseWidth, baseHeight)
+        const width = randomBetween(crossSize * 0.18, crossSize * 0.42)
+        const distance = pickOffset(crossSize, width, nibOccupied[position], crossSize * 0.06)
+        nibOccupied[position].push({ center: distance, halfWidth: width / 2 })
+        return { position, distance, thickness: baseDepth, translate: [0, 0, 0], width }
+    })
 
-    // Generate nibs at fixed positions with smaller width for better mesh alignment
-    const nibs: AntennaNib[] = [
-        { position: "top", distance: 0, thickness: baseDepth, translate: [0, 0, 0], width: 0.05 },
-        { position: "bottom", distance: 0, thickness: baseDepth, translate: [0, 0, 0], width: 0.05 },
-        { position: "left", distance: 0, thickness: baseDepth, translate: [0, 0, 0], width: 0.05 },
-    ]
-
-    // Generate cuts at fixed positions that don't intersect nibs
-    // Left/right cuts affect left/right nibs, so place them away from nib positions
-    const cuts: AntennaCut[] = [
-        { position: "left", distance: -baseHeight * 0.35, width: 0.02 },
-        { position: "right", distance: baseHeight * 0.35, width: 0.02 },
-    ]
+    const cutCount = 1 + Math.floor(Math.random() * EDGE_ORDER.length)
+    const cutSides = shuffledEdges().slice(0, cutCount)
+    const cuts: AntennaCut[] = cutSides.map(position => {
+        const crossSize = crossSizeForEdge(position, baseWidth, baseHeight)
+        const width = randomBetween(crossSize * 0.10, crossSize * 0.24)
+        const distance = pickOffset(crossSize, width, nibOccupied[position], crossSize * 0.04)
+        nibOccupied[position].push({ center: distance, halfWidth: width / 2 })
+        return { position, distance, width }
+    })
 
     return {
         frame: {

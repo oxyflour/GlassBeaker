@@ -21,9 +21,26 @@ import {
 } from "../components/nijika/antenna-builder.js"
 
 const NIJIKA_EXE = path.resolve("../../build/Debug/nijika.exe")
-const OUTPUT_DIR = path.resolve("../../tmp/antenna-dataset")
-const NUM_SAMPLES = 100
-const NUM_NIBS = 3  // Configurable: number of nibs per antenna
+const DEFAULT_OUTPUT_DIR = path.resolve("../../tmp/antenna-dataset")
+const DEFAULT_NUM_SAMPLES = 100
+const DEFAULT_NUM_NIBS = 3
+const ESSENTIAL_OUTPUT_RE = /^S\d+,\d+\.cst\.txt$/
+
+type CliOptions = {
+    append: boolean
+    keepIntermediates: boolean
+    numNibs: number
+    outputDir: string
+    samples: number
+}
+
+type DatasetEntry = {
+    config: unknown
+    index: number
+    jsonFile: string
+    sParams?: Record<string, number[]>
+    success: boolean
+}
 
 // Simulation parameters for nijika.exe
 const SIMULATION_CONFIG = {
@@ -62,6 +79,74 @@ const PHONE_DIMS = {
     depth: 8,    // mm
 }
 
+function parseCliOptions(argv: string[]): CliOptions {
+    const options: CliOptions = {
+        append: false,
+        keepIntermediates: false,
+        numNibs: DEFAULT_NUM_NIBS,
+        outputDir: DEFAULT_OUTPUT_DIR,
+        samples: DEFAULT_NUM_SAMPLES,
+    }
+
+    for (let index = 0; index < argv.length; index++) {
+        const arg = argv[index]
+        const next = argv[index + 1]
+        const readValue = () => {
+            if (!next || next.startsWith("--")) {
+                throw new Error(`Missing value for ${arg}`)
+            }
+            index += 1
+            return next
+        }
+
+        if (arg === "--append") {
+            options.append = true
+            continue
+        }
+        if (arg === "--keep-intermediates") {
+            options.keepIntermediates = true
+            continue
+        }
+        if (arg === "--samples") {
+            options.samples = Number.parseInt(readValue(), 10)
+            continue
+        }
+        if (arg.startsWith("--samples=")) {
+            options.samples = Number.parseInt(arg.slice("--samples=".length), 10)
+            continue
+        }
+        if (arg === "--nibs") {
+            options.numNibs = Number.parseInt(readValue(), 10)
+            continue
+        }
+        if (arg.startsWith("--nibs=")) {
+            options.numNibs = Number.parseInt(arg.slice("--nibs=".length), 10)
+            continue
+        }
+        if (arg === "--output-dir") {
+            options.outputDir = path.resolve(readValue())
+            continue
+        }
+        if (arg.startsWith("--output-dir=")) {
+            options.outputDir = path.resolve(arg.slice("--output-dir=".length))
+            continue
+        }
+        if (arg === "--help") {
+            console.log("Usage: tsx scripts/batch-antenna.ts [--samples N] [--nibs N] [--append] [--keep-intermediates] [--output-dir DIR]")
+            process.exit(0)
+        }
+        throw new Error(`Unknown argument: ${arg}`)
+    }
+
+    if (!Number.isInteger(options.samples) || options.samples <= 0) {
+        throw new Error(`Invalid --samples value: ${options.samples}`)
+    }
+    if (!Number.isInteger(options.numNibs) || options.numNibs <= 0) {
+        throw new Error(`Invalid --nibs value: ${options.numNibs}`)
+    }
+    return options
+}
+
 function scaleToUnits(mm: number): number {
     return mm * SIMULATION_CONFIG.units.geometry
 }
@@ -74,13 +159,56 @@ async function ensureDir(dir: string) {
     }
 }
 
+async function clearDatasetOutputs(root: string) {
+    const entries = await fs.readdir(root, { withFileTypes: true })
+    await Promise.all(entries.map(async entry => {
+        const shouldDelete = entry.name === "dataset.json"
+            || /^antenna_\d+\.json$/.test(entry.name)
+            || (entry.isDirectory() && /^antenna_\d+$/.test(entry.name))
+        if (!shouldDelete) {
+            return
+        }
+        await fs.rm(path.join(root, entry.name), { recursive: true, force: true })
+    }))
+}
+
+async function pruneSimulationOutputs(outputDir: string) {
+    const entries = await fs.readdir(outputDir, { withFileTypes: true })
+    await Promise.all(entries.map(async entry => {
+        if (!entry.isFile() || ESSENTIAL_OUTPUT_RE.test(entry.name)) {
+            return
+        }
+        await fs.rm(path.join(outputDir, entry.name), { force: true })
+    }))
+    await fs.rm(path.join(outputDir, "plrc"), { recursive: true, force: true })
+}
+
+async function inferNextSampleIndex(root: string) {
+    const entries = await fs.readdir(root, { withFileTypes: true })
+    let maxIndex = -1
+    for (const entry of entries) {
+        const match = entry.name.match(/^antenna_(\d+)(?:\.json)?$/)
+        if (!match) {
+            continue
+        }
+        maxIndex = Math.max(maxIndex, Number.parseInt(match[1], 10))
+    }
+    return maxIndex + 1
+}
+
+function formatDuration(ms: number) {
+    const totalSeconds = Math.max(0, Math.round(ms / 1000))
+    const hours = Math.floor(totalSeconds / 3600)
+    const minutes = Math.floor((totalSeconds % 3600) / 60)
+    const seconds = totalSeconds % 60
+    return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`
+}
+
 async function runNijikaSimulation(jsonPath: string, outputDir: string): Promise<{
     success: boolean
     sParams?: Record<string, number[]>
     error?: string
 }> {
-    const baseName = path.basename(jsonPath, ".json")
-
     try {
         // Run nijika.exe
         const cmd = [
@@ -98,37 +226,8 @@ async function runNijikaSimulation(jsonPath: string, outputDir: string): Promise
         execSync(cmd, { stdio: "pipe", cwd: path.dirname(jsonPath) })
 
         // Parse S-parameters from output (CST format)
-        const sParamPath = path.join(outputDir, "S1,1.cst.txt")
-        let sParams: Record<string, number[]> = {}
-
-        try {
-            const sParamContent = await fs.readFile(sParamPath, "utf-8")
-            const lines = sParamContent.split("\n")
-
-            const freqs: number[] = []
-            const realParts: number[] = []
-            const imagParts: number[] = []
-
-            for (const line of lines) {
-                const trimmed = line.trim()
-                // Skip header lines (non-numeric start)
-                if (!trimmed || isNaN(parseFloat(trimmed.charAt(0)))) {
-                    continue
-                }
-                const parts = trimmed.split(/\s+/)
-                if (parts.length >= 3) {
-                    freqs.push(parseFloat(parts[0]))
-                    realParts.push(parseFloat(parts[1]))
-                    imagParts.push(parseFloat(parts[2]))
-                }
-            }
-
-            sParams = {
-                frequency: freqs,
-                s11_real: realParts,
-                s11_imag: imagParts,
-            }
-        } catch {
+        const sParams = await readSParamSummary(outputDir)
+        if (!sParams) {
             console.log("  Warning: Could not parse S-parameters")
         }
 
@@ -139,6 +238,74 @@ async function runNijikaSimulation(jsonPath: string, outputDir: string): Promise
             error: error instanceof Error ? error.message : String(error),
         }
     }
+}
+
+async function readSParamSummary(outputDir: string): Promise<Record<string, number[]> | undefined> {
+    const sParamPath = path.join(outputDir, "S1,1.cst.txt")
+    try {
+        const sParamContent = await fs.readFile(sParamPath, "utf-8")
+        const lines = sParamContent.split("\n")
+        const freqs: number[] = []
+        const realParts: number[] = []
+        const imagParts: number[] = []
+
+        for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed || isNaN(parseFloat(trimmed.charAt(0)))) {
+                continue
+            }
+            const parts = trimmed.split(/\s+/)
+            if (parts.length >= 3) {
+                freqs.push(parseFloat(parts[0]))
+                realParts.push(parseFloat(parts[1]))
+                imagParts.push(parseFloat(parts[2]))
+            }
+        }
+
+        return {
+            frequency: freqs,
+            s11_real: realParts,
+            s11_imag: imagParts,
+        }
+    } catch {
+        return undefined
+    }
+}
+
+async function readSampleMetadata(root: string, index: number): Promise<DatasetEntry> {
+    const sampleName = `antenna_${String(index).padStart(3, "0")}`
+    const jsonFile = `${sampleName}.json`
+    const config = JSON.parse(await fs.readFile(path.join(root, jsonFile), "utf-8"))
+    const portCount = Array.isArray(config.ports) ? config.ports.length : 0
+    const sampleDir = path.join(root, sampleName)
+    const needed = Array.from({ length: portCount }, (_, row) =>
+        Array.from({ length: portCount }, (_, col) => path.join(sampleDir, `S${row + 1},${col + 1}.cst.txt`))
+    ).flat()
+    const success = needed.length > 0 && await Promise.all(needed.map(file => fs.access(file).then(() => true).catch(() => false)))
+        .then(results => results.every(Boolean))
+    const metadata: DatasetEntry = {
+        config: config.antennaConfig,
+        index,
+        jsonFile,
+        success,
+    }
+    if (success) {
+        metadata.sParams = await readSParamSummary(sampleDir)
+    }
+    return metadata
+}
+
+async function rebuildDatasetMetadata(root: string): Promise<DatasetEntry[]> {
+    const entries = await fs.readdir(root, { withFileTypes: true })
+    const indices = entries
+        .filter(entry => entry.isFile() && /^antenna_\d+\.json$/.test(entry.name))
+        .map(entry => Number.parseInt(entry.name.slice("antenna_".length, -".json".length), 10))
+        .sort((left, right) => left - right)
+    const dataset: DatasetEntry[] = []
+    for (const index of indices) {
+        dataset.push(await readSampleMetadata(root, index))
+    }
+    return dataset
 }
 
 function generatePorts(
@@ -196,13 +363,9 @@ function generatePorts(
 
 async function generateAntennaSample(
     module: ManifoldToplevel,
-    index: number
+    numNibs: number
 ): Promise<{
     config: Record<string, unknown>
-    geometry: {
-        verts: number[][]
-        faces: number[][]
-    }
 }> {
     // Create base phone shape
     const phoneBase = createPhoneBase(
@@ -217,7 +380,7 @@ async function generateAntennaSample(
         scaleToUnits(PHONE_DIMS.width),
         scaleToUnits(PHONE_DIMS.height),
         scaleToUnits(PHONE_DIMS.depth),
-        NUM_NIBS
+        numNibs
     )
 
     // Build antenna geometry - combine frame and inner (nibs) into single manifold
@@ -267,10 +430,11 @@ async function generateAntennaSample(
     inner.delete()
     combinedGeometry.delete()
 
-    return { config, geometry: meshData }
+    return { config }
 }
 
 async function main() {
+    const options = parseCliOptions(process.argv.slice(2))
     console.log("=" .repeat(60))
     console.log("Batch Antenna Generator and S-Parameter Extractor")
     console.log("=" .repeat(60))
@@ -285,9 +449,17 @@ async function main() {
     }
 
     // Initialize output directory
-    await ensureDir(OUTPUT_DIR)
-    console.log(`Output directory: ${OUTPUT_DIR}`)
-    console.log(`Generating ${NUM_SAMPLES} random antenna samples...`)
+    await ensureDir(options.outputDir)
+    if (!options.append) {
+        await clearDatasetOutputs(options.outputDir)
+    }
+    const startIndex = options.append ? await inferNextSampleIndex(options.outputDir) : 0
+    console.log(`Output directory: ${options.outputDir}`)
+    console.log(`Generating ${options.samples} random antenna samples...`)
+    console.log(`Starting index: ${startIndex}`)
+    console.log(`Nib count per antenna: ${options.numNibs}`)
+    console.log(`Keep intermediates: ${options.keepIntermediates ? "yes" : "no"}`)
+    console.log(`Append mode: ${options.append ? "yes" : "no"}`)
     console.log()
 
     // Load manifold module
@@ -297,41 +469,40 @@ async function main() {
     console.log()
 
     // Generate samples
-    const results: {
-        index: number
-        config: Record<string, unknown>
-        geometry: { verts: number[][]; faces: number[][] }
-        simulation?: {
-            success: boolean
-            sParams?: Record<string, number[]>
-            error?: string
-        }
-    }[] = []
+    let successful = 0
+    const startedAt = Date.now()
 
-    for (let i = 0; i < NUM_SAMPLES; i++) {
-        console.log(`[${i + 1}/${NUM_SAMPLES}] Generating antenna...`)
+    for (let i = 0; i < options.samples; i++) {
+        const sampleIndex = startIndex + i
+        console.log(`[${i + 1}/${options.samples}] Generating antenna ${sampleIndex}...`)
 
         // Generate antenna
-        const { config, geometry } = await generateAntennaSample(module, i)
+        const { config } = await generateAntennaSample(module, options.numNibs)
 
         // Save JSON
-        const jsonName = `antenna_${String(i).padStart(3, "0")}.json`
-        const jsonPath = path.join(OUTPUT_DIR, jsonName)
+        const jsonName = `antenna_${String(sampleIndex).padStart(3, "0")}.json`
+        const jsonPath = path.join(options.outputDir, jsonName)
         await fs.writeFile(jsonPath, JSON.stringify(config, null, 2))
         console.log(`  Saved: ${jsonName}`)
 
         // Run simulation
-        const outputDir = path.join(OUTPUT_DIR, `antenna_${String(i).padStart(3, "0")}`)
+        const outputDir = path.join(options.outputDir, `antenna_${String(sampleIndex).padStart(3, "0")}`)
         console.log(`  Running simulation...`)
         const simulation = await runNijikaSimulation(jsonPath, outputDir)
 
         if (simulation.success) {
+            successful += 1
+            if (!options.keepIntermediates) {
+                await pruneSimulationOutputs(outputDir)
+            }
             console.log(`  Simulation completed successfully`)
         } else {
             console.log(`  Simulation failed: ${simulation.error}`)
         }
-
-        results.push({ index: i, config, geometry, simulation })
+        const elapsedMs = Date.now() - startedAt
+        const averageMs = elapsedMs / (i + 1)
+        const etaMs = averageMs * (options.samples - i - 1)
+        console.log(`  Elapsed: ${formatDuration(elapsedMs)} | ETA: ${formatDuration(etaMs)}`)
         console.log()
     }
 
@@ -341,22 +512,14 @@ async function main() {
     console.log("=" .repeat(60))
     console.log()
 
-    const successful = results.filter(r => r.simulation?.success).length
-    console.log(`Total samples: ${NUM_SAMPLES}`)
+    console.log(`New samples requested: ${options.samples}`)
     console.log(`Successful simulations: ${successful}`)
-    console.log(`Failed simulations: ${NUM_SAMPLES - successful}`)
+    console.log(`Failed simulations: ${options.samples - successful}`)
     console.log()
 
     // Save dataset metadata
-    const dataset = results.map(r => ({
-        index: r.index,
-        config: r.config.antennaConfig,
-        sParams: r.simulation?.sParams,
-        success: r.simulation?.success,
-        jsonFile: `antenna_${String(r.index).padStart(3, "0")}.json`,
-    }))
-
-    const datasetPath = path.join(OUTPUT_DIR, "dataset.json")
+    const dataset = await rebuildDatasetMetadata(options.outputDir)
+    const datasetPath = path.join(options.outputDir, "dataset.json")
     await fs.writeFile(datasetPath, JSON.stringify(dataset, null, 2))
     console.log(`Dataset metadata saved to: ${datasetPath}`)
 

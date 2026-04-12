@@ -12,21 +12,27 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from baseline.data import load_dataset, split_records, stack_records
-from baseline.metrics import summarize_prediction_metrics
 from baseline.model import create_model
 from baseline.plotting import save_matrix_plot
+from baseline.training_utils import composite_loss, evaluate
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the Nijika S-parameter baseline.")
     parser.add_argument("--dataset-root", type=Path, default=Path("tmp/antenna-dataset"))
     parser.add_argument("--output-dir", type=Path, default=Path("tmp/nijika-baseline"))
+    parser.add_argument(
+        "--model-kind",
+        choices=["structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "legacy_global_head"],
+        default="structured_pair_spectral_head",
+    )
     parser.add_argument("--epochs", type=int, default=400)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--freq-bins", type=int, default=201)
     parser.add_argument("--points", type=int, default=128)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--hidden-dim", type=int, default=160)
+    parser.add_argument("--num-poles", type=int, default=12)
     parser.add_argument("--lr", type=float, default=8e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--mag-weight", type=float, default=0.2)
@@ -38,42 +44,6 @@ def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-
-def composite_loss(pred: torch.Tensor, target: torch.Tensor, mag_weight: float, smooth_weight: float) -> torch.Tensor:
-    ri_loss = nn.functional.mse_loss(pred, target)
-    pred_pair = pred.view(pred.size(0), pred.size(1), -1, 2)
-    target_pair = target.view(target.size(0), target.size(1), -1, 2)
-    mag_loss = nn.functional.l1_loss(torch.linalg.vector_norm(pred_pair, dim=-1), torch.linalg.vector_norm(target_pair, dim=-1))
-    slope_loss = nn.functional.mse_loss(pred[:, 1:] - pred[:, :-1], target[:, 1:] - target[:, :-1])
-    return ri_loss + mag_weight * mag_loss + smooth_weight * slope_loss
-
-
-def evaluate(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    target_mean: torch.Tensor,
-    target_std: torch.Tensor,
-    port_count: int,
-    mag_weight: float,
-    smooth_weight: float,
-) -> tuple[dict[str, float | list[float]], torch.Tensor, torch.Tensor]:
-    model.eval()
-    losses = []
-    preds = []
-    truths = []
-    with torch.no_grad():
-        for points, ports, geom, target in loader:
-            pred = model(points.to(device), ports.to(device), geom.to(device))
-            losses.append(composite_loss(pred, target.to(device), mag_weight, smooth_weight).item())
-            preds.append((pred.cpu() * target_std) + target_mean)
-            truths.append((target.cpu() * target_std) + target_mean)
-    pred_all = torch.cat(preds, dim=0)
-    truth_all = torch.cat(truths, dim=0)
-    metrics = summarize_prediction_metrics(pred_all, truth_all, port_count=port_count)
-    metrics["loss"] = float(np.mean(losses))
-    return metrics, pred_all, truth_all
 
 
 def main() -> None:
@@ -89,26 +59,54 @@ def main() -> None:
     train_target = (train_tensors["target"] - target_mean) / target_std
     val_target = (val_tensors["target"] - target_mean) / target_std
     train_loader = DataLoader(
-        TensorDataset(train_tensors["points"], train_tensors["ports"], train_tensors["geom"], train_target),
+        TensorDataset(
+            train_tensors["points"],
+            train_tensors["ports"],
+            train_tensors["geom"],
+            train_tensors["frame"],
+            train_tensors["cuts"],
+            train_tensors["nibs"],
+            train_target,
+        ),
         batch_size=min(args.batch_size, len(train_records)),
         shuffle=True,
     )
     val_loader = DataLoader(
-        TensorDataset(val_tensors["points"], val_tensors["ports"], val_tensors["geom"], val_target),
+        TensorDataset(
+            val_tensors["points"],
+            val_tensors["ports"],
+            val_tensors["geom"],
+            val_tensors["frame"],
+            val_tensors["cuts"],
+            val_tensors["nibs"],
+            val_target,
+        ),
         batch_size=min(args.batch_size, len(val_records)),
         shuffle=False,
     )
-    model_config = {"hidden_dim": args.hidden_dim, "dropout": 0.1, "freq_bands": 8}
-    model = create_model(freq_grid=bundle.freq_grid, port_count=bundle.port_count, model_config=model_config).to(device)
+    model_config = {"hidden_dim": args.hidden_dim, "dropout": 0.1, "freq_bands": 8, "num_poles": args.num_poles}
+    model = create_model(
+        freq_grid=bundle.freq_grid,
+        port_count=bundle.port_count,
+        model_kind=args.model_kind,
+        model_config=model_config,
+    ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     best = {"epoch": 0, "score": float("inf"), "state": None, "metrics": None}
     for epoch in range(1, args.epochs + 1):
         model.train()
         batch_losses = []
-        for points, ports, geom, target in train_loader:
+        for points, ports, geom, frame, cuts, nibs, target in train_loader:
             optimizer.zero_grad(set_to_none=True)
-            pred = model(points.to(device), ports.to(device), geom.to(device))
+            pred = model(
+                points.to(device),
+                ports.to(device),
+                geom.to(device),
+                frame.to(device),
+                cuts.to(device),
+                nibs.to(device),
+            )
             loss = composite_loss(pred, target.to(device), args.mag_weight, args.smooth_weight)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -165,7 +163,7 @@ def main() -> None:
             "target_mean": target_mean.squeeze(0).squeeze(0).tolist(),
             "target_std": target_std.squeeze(0).squeeze(0).tolist(),
             "sample_points": args.points,
-            "model_kind": "symmetric_freq_decoder",
+            "model_kind": args.model_kind,
             "model_config": model_config,
         },
         model_path,
@@ -184,7 +182,7 @@ def main() -> None:
         "example_db_mae": final_metrics["sample_db_mae"][0],
         "plot_path": str(plot_path),
         "model_path": str(model_path),
-        "model_kind": "symmetric_freq_decoder",
+        "model_kind": args.model_kind,
         "model_config": model_config,
     }
     metrics_path = args.output_dir / "metrics.json"

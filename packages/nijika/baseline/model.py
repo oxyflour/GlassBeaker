@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import math
 from typing import Any, Sequence
-
 import torch
 from torch import nn
-
+from baseline.structured_pole_model import StructuredPoleResiduePredictor
+from baseline.structured_spectral_model import StructuredSpectralPredictor
+from baseline.structured_model import StructuredAntennaPredictor
 
 def _pair_indices(port_count: int) -> list[tuple[int, int]]:
     return [(row, col) for row in range(port_count) for col in range(row, port_count)]
-
 
 class PointNetLite(nn.Module):
     def __init__(self, point_dim: int = 3, hidden_dim: int = 128):
@@ -25,7 +25,6 @@ class PointNetLite(nn.Module):
 
     def forward(self, points: torch.Tensor) -> torch.Tensor:
         return self.mlp(points).max(dim=1).values
-
 
 class LegacySpectrumPredictor(nn.Module):
     def __init__(self, freq_bins: int, port_count: int, hidden_dim: int = 128):
@@ -47,25 +46,16 @@ class LegacySpectrumPredictor(nn.Module):
             nn.Linear(hidden_dim * 2, freq_bins * port_count * port_count * 2),
         )
 
-    def forward(self, points: torch.Tensor, ports: torch.Tensor, geom: torch.Tensor) -> torch.Tensor:
+    def forward(self, points: torch.Tensor, ports: torch.Tensor, geom: torch.Tensor, frame: torch.Tensor | None = None, cuts: torch.Tensor | None = None, nibs: torch.Tensor | None = None) -> torch.Tensor:
         point_latent = self.point_encoder(points)
         features = torch.cat([point_latent, ports.flatten(start_dim=1), geom], dim=1)
         output = self.head(self.trunk(features))
         return output.view(-1, self.freq_bins, self.port_count * self.port_count * 2)
 
-
 class SpectrumPredictor(nn.Module):
-    def __init__(
-        self,
-        freq_grid: Sequence[float] | torch.Tensor,
-        port_count: int,
-        hidden_dim: int = 128,
-        dropout: float = 0.1,
-        freq_bands: int = 8,
-    ):
+    def __init__(self, freq_grid: Sequence[float] | torch.Tensor, port_count: int, hidden_dim: int = 128, dropout: float = 0.1, freq_bands: int = 8):
         super().__init__()
         self.port_count = port_count
-        self.hidden_dim = hidden_dim
         self.pairs = _pair_indices(port_count)
         self.point_encoder = PointNetLite(hidden_dim=hidden_dim)
         self.port_encoder = nn.Sequential(
@@ -109,7 +99,6 @@ class SpectrumPredictor(nn.Module):
             nn.Linear(hidden_dim, 2),
         )
         self.register_buffer("freq_grid", torch.as_tensor(freq_grid, dtype=torch.float32), persistent=False)
-        self.register_buffer("pair_index", torch.tensor(self.pairs, dtype=torch.long), persistent=False)
         self.freq_bands = freq_bands
 
     def _port_features(self, ports: torch.Tensor, geom: torch.Tensor) -> torch.Tensor:
@@ -135,7 +124,7 @@ class SpectrumPredictor(nn.Module):
         angles = freq.unsqueeze(-1) * bands
         return torch.cat([freq.unsqueeze(-1), torch.sin(angles), torch.cos(angles)], dim=-1)
 
-    def forward(self, points: torch.Tensor, ports: torch.Tensor, geom: torch.Tensor) -> torch.Tensor:
+    def forward(self, points: torch.Tensor, ports: torch.Tensor, geom: torch.Tensor, frame: torch.Tensor | None = None, cuts: torch.Tensor | None = None, nibs: torch.Tensor | None = None) -> torch.Tensor:
         scale = geom[:, None, 3:].clamp_min(1e-4)
         centered_points = (points - geom[:, None, :3]) / scale
         point_latent = self.point_encoder(centered_points)
@@ -165,26 +154,41 @@ class SpectrumPredictor(nn.Module):
             full[:, :, row, col] = pair_output[:, :, idx]
             full[:, :, col, row] = pair_output[:, :, idx]
         return full.view(points.size(0), self.freq_grid.numel(), self.port_count * self.port_count * 2)
-
-
-def create_model(
-    *,
-    freq_grid: Sequence[float] | torch.Tensor,
-    port_count: int,
-    model_kind: str = "symmetric_freq_decoder",
-    model_config: dict[str, Any] | None = None,
-) -> nn.Module:
+def create_model(*, freq_grid: Sequence[float] | torch.Tensor, port_count: int, model_kind: str = "structured_pair_spectral_head", model_config: dict[str, Any] | None = None) -> nn.Module:
     config = model_config or {}
     hidden_dim = int(config.get("hidden_dim", 128))
     dropout = float(config.get("dropout", 0.1))
     if model_kind == "legacy_global_head":
         return LegacySpectrumPredictor(freq_bins=len(freq_grid), port_count=port_count, hidden_dim=hidden_dim)
-    if model_kind != "symmetric_freq_decoder":
-        raise ValueError(f"Unsupported model kind: {model_kind}")
-    return SpectrumPredictor(
-        freq_grid=freq_grid,
-        port_count=port_count,
-        hidden_dim=hidden_dim,
-        dropout=dropout,
-        freq_bands=int(config.get("freq_bands", 8)),
-    )
+    if model_kind == "symmetric_freq_decoder":
+        return SpectrumPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            freq_bands=int(config.get("freq_bands", 8)),
+        )
+    if model_kind == "structured_token_decoder":
+        return StructuredAntennaPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            freq_bands=int(config.get("freq_bands", 8)),
+        )
+    if model_kind == "structured_pair_spectral_head":
+        return StructuredSpectralPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+        )
+    if model_kind == "structured_pair_pole_residue_head":
+        return StructuredPoleResiduePredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            num_poles=int(config.get("num_poles", 12)),
+        )
+    raise ValueError(f"Unsupported model kind: {model_kind}")

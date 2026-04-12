@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from baseline.antenna_features import extract_antenna_features
+
 
 @dataclass
 class SampleRecord:
@@ -14,6 +16,9 @@ class SampleRecord:
     points: np.ndarray
     ports: np.ndarray
     geom: np.ndarray
+    frame: np.ndarray
+    cuts: np.ndarray
+    nibs: np.ndarray
     target: np.ndarray
 
 
@@ -85,7 +90,10 @@ def _load_ports(config_ports: list[dict[str, object]]) -> np.ndarray:
     return np.asarray(rows, dtype=np.float32)
 
 
-def _build_input_sample(config_path: Path, n_points: int) -> tuple[str, np.ndarray, np.ndarray, np.ndarray]:
+def _build_input_sample(
+    config_path: Path,
+    n_points: int,
+) -> tuple[str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     config = json.loads(config_path.read_text())
     vertices = np.asarray(config["mesh"]["verts"], dtype=np.float32)
     if len(vertices) == 0:
@@ -95,7 +103,8 @@ def _build_input_sample(config_path: Path, n_points: int) -> tuple[str, np.ndarr
     center = vertices.mean(axis=0)
     size = vertices.max(axis=0) - vertices.min(axis=0)
     geom = np.concatenate([center, size]).astype(np.float32)
-    return config_path.stem, points, ports, geom
+    frame, cuts, nibs = extract_antenna_features(config, geom)
+    return config_path.stem, points, ports, geom, frame, cuts, nibs
 
 
 def _build_frequency_grid(sample_dirs: list[Path], freq_bins: int) -> np.ndarray:
@@ -133,7 +142,7 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201) -> Datas
     port_count = 0
     for sample_dir in valid_sample_dirs:
         config_path = root / f"{sample_dir.name}.json"
-        _, points, ports, geom = _build_input_sample(config_path, n_points=n_points)
+        _, points, ports, geom, frame, cuts, nibs = _build_input_sample(config_path, n_points=n_points)
         port_count = max(port_count, len(ports))
         curves = []
         for row in range(1, len(ports) + 1):
@@ -147,6 +156,9 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201) -> Datas
                 points=points,
                 ports=ports,
                 geom=geom,
+                frame=frame,
+                cuts=cuts,
+                nibs=nibs,
                 target=target,
             )
         )
@@ -156,8 +168,8 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201) -> Datas
 
 
 def load_inference_input(config_path: Path, n_points: int) -> dict[str, np.ndarray | str]:
-    name, points, ports, geom = _build_input_sample(config_path, n_points=n_points)
-    return {"name": name, "points": points, "ports": ports, "geom": geom}
+    name, points, ports, geom, frame, cuts, nibs = _build_input_sample(config_path, n_points=n_points)
+    return {"name": name, "points": points, "ports": ports, "geom": geom, "frame": frame, "cuts": cuts, "nibs": nibs}
 
 
 def load_truth_target(sample_dir: Path, port_count: int, freq_grid: np.ndarray) -> np.ndarray | None:
@@ -192,5 +204,8 @@ def stack_records(records: list[SampleRecord]) -> dict[str, torch.Tensor]:
         "points": torch.tensor(np.stack([record.points for record in records]), dtype=torch.float32),
         "ports": torch.tensor(np.stack([record.ports for record in records]), dtype=torch.float32),
         "geom": torch.tensor(np.stack([record.geom for record in records]), dtype=torch.float32),
+        "frame": torch.tensor(np.stack([record.frame for record in records]), dtype=torch.float32),
+        "cuts": torch.tensor(np.stack([record.cuts for record in records]), dtype=torch.float32),
+        "nibs": torch.tensor(np.stack([record.nibs for record in records]), dtype=torch.float32),
         "target": torch.tensor(np.stack([record.target for record in records]), dtype=torch.float32),
     }
