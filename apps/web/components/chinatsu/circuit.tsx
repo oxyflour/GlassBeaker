@@ -111,6 +111,13 @@ function zoomStep(scale: number, direction: "in" | "out") {
 export default function Circuit({ data: controlledData, onChange }: { data?: CircuitData; onChange?: (data: CircuitData) => void }) {
   const [localData, setLocalData] = useState(() => normalizeCircuitData(controlledData ?? DEFAULT_CIRCUIT))
   const data = useMemo(() => normalizeCircuitData(controlledData ?? localData), [controlledData, localData])
+
+  // Emit initial data on mount so parent can run simulation
+  useEffect(() => {
+    if (!controlledData) {
+      onChange?.(localData)
+    }
+  }, [])
   const [positions, setPositions] = useState(() => syncPositions(data.blocks, {}))
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>(() => data.blocks[0]?.id ? [data.blocks[0].id] : [])
   const [selectedRouteIndices, setSelectedRouteIndices] = useState<number[]>([])

@@ -63,6 +63,80 @@ function createEdgeSegment(
     return Manifold.cube([length, thickness, depth], true).translate([x, y, 0])
 }
 
+export type AntennaFeedPlacement = {
+    axis: "x" | "y"
+    direction: -1 | 1
+    crossAxis: number
+    bodyEdge: number
+    nibEdge: number
+    frameEdge: number
+    spanCenter: number
+    spanLength: number
+}
+
+export function getAntennaFeedPlacement(
+    innerSize: { x: number, y: number, z: number },
+    gap: number,
+    frameWidth: number,
+    nib: Pick<AntennaNib, "position" | "distance" | "width">
+): AntennaFeedPlacement {
+    const axis = nib.position === "left" || nib.position === "right" ? "x" : "y"
+    const direction = nib.position === "left" || nib.position === "bottom" ? -1 : 1
+    const axisSize = axis === "x" ? innerSize.x : innerSize.y
+    const crossSize = axis === "x" ? innerSize.y : innerSize.x
+    const crossLimit = Math.max((crossSize - nib.width) / 2, 0)
+    const bodyEdge = direction * Math.max((axisSize - gap) / 2, 0)
+    const frameEdge = direction * (axisSize / 2)
+    const availableGap = Math.abs(frameEdge - bodyEdge)
+    const portGap = clamp(frameWidth / 2, availableGap * 0.2, availableGap * 0.8)
+    const nibEdge = frameEdge - direction * portGap
+    const spanCenter = (bodyEdge + nibEdge) / 2
+    const spanLength = Math.max(Math.abs(nibEdge - bodyEdge), 0.0001)
+
+    return {
+        axis,
+        direction,
+        crossAxis: clamp(nib.distance, -crossLimit, crossLimit),
+        bodyEdge,
+        nibEdge,
+        frameEdge,
+        spanCenter,
+        spanLength,
+    }
+}
+
+/**
+ * Create a nib that extends from inner to antennaFrame edge
+ * The feed gap stays open so the port can bridge the nib to the frame.
+ */
+function createNibForFrame(
+    module: ManifoldToplevel,
+    innerSize: { x: number, y: number, z: number },
+    gap: number,
+    position: EdgePosition,
+    distance: number,
+    frameWidth: number,
+    nibWidth: number,
+    depth: number,
+    translate: [number, number, number]
+): Manifold {
+    const { Manifold } = module
+    const placement = getAntennaFeedPlacement(
+        innerSize,
+        gap,
+        frameWidth,
+        { position, distance, width: nibWidth }
+    )
+
+    if (placement.axis === "x") {
+        return Manifold.cube([placement.spanLength, nibWidth, depth], true)
+            .translate([placement.spanCenter + translate[0], placement.crossAxis + translate[1], translate[2]])
+    }
+
+    return Manifold.cube([nibWidth, placement.spanLength, depth], true)
+        .translate([placement.crossAxis + translate[0], placement.spanCenter + translate[1], translate[2]])
+}
+
 export function buildAntenna(
     phone: Manifold,
     module: ManifoldToplevel,
@@ -111,17 +185,19 @@ export function buildAntenna(
     ], true).translate([0, 0, -size.z * 0.08])
 
     for (const nib of opts.frame.nibs) {
-        inner = inner.add(
-            createEdgeSegment(
-                module,
-                innerSize,
-                nib.position,
-                nib.distance,
-                opts.frame.width,
-                nib.width,
-                innerSize.z
-            ).translate(nib.translate)
+        // Keep the nib attached to the inner body while leaving an open feed gap to the frame.
+        const nibManifold = createNibForFrame(
+            module,
+            innerSize,
+            opts.frame.gap,
+            nib.position,
+            nib.distance,
+            opts.frame.width,
+            nib.width,
+            innerSize.z,
+            nib.translate
         )
+        inner = inner.add(nibManifold)
     }
 
     return { antennaFrame, inner }
@@ -165,46 +241,19 @@ export function generateRandomAntennaOptions(
     const frameWidth = baseWidth * (0.04 + Math.random() * 0.03) // 4-7% of width
     const gap = baseWidth * (0.08 + Math.random() * 0.06) // 8-14% of width
 
-    // Generate random cuts (2-6 cuts)
-    const numCuts = 2 + Math.floor(Math.random() * 5)
-    const cuts: AntennaCut[] = []
-    const positions: EdgePosition[] = ["top", "bottom", "left", "right"]
+    // Generate nibs at fixed positions with smaller width for better mesh alignment
+    const nibs: AntennaNib[] = [
+        { position: "top", distance: 0, thickness: baseDepth, translate: [0, 0, 0], width: 0.05 },
+        { position: "bottom", distance: 0, thickness: baseDepth, translate: [0, 0, 0], width: 0.05 },
+        { position: "left", distance: 0, thickness: baseDepth, translate: [0, 0, 0], width: 0.05 },
+    ]
 
-    for (let i = 0; i < numCuts; i++) {
-        const position = positions[Math.floor(Math.random() * positions.length)]
-        const distanceRange = position === "left" || position === "right"
-            ? baseHeight * 0.4
-            : baseWidth * 0.4
-
-        cuts.push({
-            position,
-            distance: (Math.random() * 2 - 1) * distanceRange,
-            width: 0.1 + Math.random() * 0.25,
-        })
-    }
-
-    // Generate nibs at configurable positions (distribute across different edges)
-    const nibs: AntennaNib[] = []
-
-    for (let i = 0; i < numNibs; i++) {
-        // Distribute nibs across edges, allowing multiple per edge if numNibs > 4
-        const position = positions[i % positions.length]
-        const distanceRange = position === "left" || position === "right"
-            ? baseHeight * 0.35
-            : baseWidth * 0.35
-
-        nibs.push({
-            position,
-            distance: (Math.random() * 2 - 1) * distanceRange,
-            thickness: baseDepth * (0.8 + Math.random() * 0.4),
-            translate: [
-                (Math.random() - 0.5) * 0.1,
-                (Math.random() - 0.5) * 0.1,
-                (Math.random() - 0.5) * 0.1,
-            ],
-            width: 0.2 + Math.random() * 0.25,
-        })
-    }
+    // Generate cuts at fixed positions that don't intersect nibs
+    // Left/right cuts affect left/right nibs, so place them away from nib positions
+    const cuts: AntennaCut[] = [
+        { position: "left", distance: -baseHeight * 0.35, width: 0.02 },
+        { position: "right", distance: baseHeight * 0.35, width: 0.02 },
+    ]
 
     return {
         frame: {

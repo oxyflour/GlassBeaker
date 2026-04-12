@@ -12,15 +12,17 @@ import { execSync } from "child_process"
 import { getManifoldModule } from "manifold-3d/lib/wasm.js"
 import type { ManifoldToplevel } from "manifold-3d"
 import {
+    type AntennaNib,
     buildAntenna,
     createPhoneBase,
     generateRandomAntennaOptions,
+    getAntennaFeedPlacement,
     manifoldToMeshData,
 } from "../components/nijika/antenna-builder.js"
 
 const NIJIKA_EXE = path.resolve("../../build/Debug/nijika.exe")
 const OUTPUT_DIR = path.resolve("../../tmp/antenna-dataset")
-const NUM_SAMPLES = 10
+const NUM_SAMPLES = 100
 const NUM_NIBS = 3  // Configurable: number of nibs per antenna
 
 // Simulation parameters for nijika.exe
@@ -36,7 +38,7 @@ const SIMULATION_CONFIG = {
     },
     fitd: {
         data_type: "fp32" as const,
-        loop_steps: 3000,
+        loop_steps: 10000,
         timestep: 0.0,
     },
     pml: {
@@ -140,37 +142,47 @@ async function runNijikaSimulation(jsonPath: string, outputDir: string): Promise
 }
 
 function generatePorts(
-    nibs: { position: "left" | "right" | "top" | "bottom"; distance: number; thickness: number }[],
+    nibs: AntennaNib[],
     phoneDims: { width: number; height: number; depth: number },
-    frameWidth: number
+    frameWidth: number,
+    gap: number
 ): { num: number; label: string; impedance: number; positions: { from: { x: number; y: number; z: number }; to: { x: number; y: number; z: number } }[] }[] {
-    return nibs.map((nib, index) => {
-        const halfW = scaleToUnits(phoneDims.width / 2)
-        const halfH = scaleToUnits(phoneDims.height / 2)
-        const halfD = scaleToUnits(phoneDims.depth / 2)
-        const gap = frameWidth * 0.5  // Port sits between nib and frame
-        const nibZ = halfD * 0.1  // Slightly inside from surface
+    const innerSize = {
+        x: scaleToUnits(phoneDims.width) - frameWidth * 2,
+        y: scaleToUnits(phoneDims.height) - frameWidth * 2,
+        z: Math.max(scaleToUnits(phoneDims.depth) * 0.24, 0.12),
+    }
+    const meshZ = scaleToUnits(phoneDims.depth) / 2
 
+    return nibs.map((nib, index) => {
+        const placement = getAntennaFeedPlacement(innerSize, gap, frameWidth, nib)
+        const portGap = Math.abs(placement.frameEdge - placement.nibEdge)
+        const conductorInset = Math.min(frameWidth * 0.15, portGap * 0.25)
         let from: { x: number; y: number; z: number }
         let to: { x: number; y: number; z: number }
 
-        switch (nib.position) {
-            case "left":
-                from = { x: -halfW, y: nib.distance, z: nibZ }
-                to = { x: -halfW + gap, y: nib.distance, z: nibZ }
-                break
-            case "right":
-                from = { x: halfW, y: nib.distance, z: nibZ }
-                to = { x: halfW - gap, y: nib.distance, z: nibZ }
-                break
-            case "top":
-                from = { x: nib.distance, y: halfH, z: nibZ }
-                to = { x: nib.distance, y: halfH - gap, z: nibZ }
-                break
-            case "bottom":
-                from = { x: nib.distance, y: -halfH, z: nibZ }
-                to = { x: nib.distance, y: -halfH + gap, z: nibZ }
-                break
+        if (placement.axis === "x") {
+            from = {
+                x: placement.nibEdge - placement.direction * conductorInset,
+                y: placement.crossAxis,
+                z: meshZ,
+            }
+            to = {
+                x: placement.frameEdge + placement.direction * conductorInset,
+                y: placement.crossAxis,
+                z: meshZ,
+            }
+        } else {
+            from = {
+                x: placement.crossAxis,
+                y: placement.nibEdge - placement.direction * conductorInset,
+                z: meshZ,
+            }
+            to = {
+                x: placement.crossAxis,
+                y: placement.frameEdge + placement.direction * conductorInset,
+                z: meshZ,
+            }
         }
 
         return {
@@ -208,20 +220,14 @@ async function generateAntennaSample(
         NUM_NIBS
     )
 
-    // Build antenna geometry
-    const { antennaFrame } = buildAntenna(phoneBase, module, options)
-    const meshData = manifoldToMeshData(antennaFrame)
+    // Build antenna geometry - combine frame and inner (nibs) into single manifold
+    const { antennaFrame, inner } = buildAntenna(phoneBase, module, options)
+    const combinedGeometry = antennaFrame.add(inner)
+    const meshData = manifoldToMeshData(combinedGeometry)
 
     // Create JSON config for nijika.exe
     const config = {
         ...SIMULATION_CONFIG,
-        hex: {
-            grid: {
-                x: [-0.01, 0.0, 0.01],
-                y: [-0.01, 0.0, 0.01],
-                z: [-0.02, 0.0, 0.02],
-            },
-        },
         materials: [
             {
                 name: "Vacuum",
@@ -238,12 +244,12 @@ async function generateAntennaSample(
         ],
         solids: [
             {
-                name: "antenna:frame",
+                name: "antenna:combined",
                 material: "PEC",
             },
         ],
         mesh: meshData,
-        ports: generatePorts(options.frame.nibs, PHONE_DIMS, options.frame.width),
+        ports: generatePorts(options.frame.nibs, PHONE_DIMS, options.frame.width, options.frame.gap),
         // Store antenna configuration for ML training
         antennaConfig: {
             frameWidth: options.frame.width,
@@ -258,6 +264,8 @@ async function generateAntennaSample(
     // Clean up
     phoneBase.delete()
     antennaFrame.delete()
+    inner.delete()
+    combinedGeometry.delete()
 
     return { config, geometry: meshData }
 }
