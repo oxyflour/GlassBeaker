@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "pnpm --filter glassbeaker-desktop dev",
     "build": "pnpm --filter glassbeaker-web build",
+    "build:ant": "pnpm --filter glassbeaker-web exec tsx scripts/batch-antenna.ts",
     "package:dir": "pnpm build && pnpm --filter glassbeaker-desktop package:dir",
     "dist": "pnpm build && pnpm --filter glassbeaker-desktop dist"
   }

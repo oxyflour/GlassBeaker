@@ -10,6 +10,8 @@ apps/python/build
 apps/python/dist
 __pycache__/
 
+tmp/
+build/
 dist
 out
 

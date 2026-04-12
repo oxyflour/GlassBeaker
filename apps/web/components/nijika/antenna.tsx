@@ -2,112 +2,10 @@
 
 import { useEffect, useRef, useState } from "react"
 import type { Manifold, ManifoldToplevel } from "manifold-3d"
+import { buildAntenna, type AntennaOptions } from "./antenna-builder"
 
-type EdgePosition = "left" | "right" | "top" | "bottom"
-
-type AntennaOptions = {
-    frame: {
-        width: number
-        gap: number
-        cuts: {
-            position: EdgePosition
-            distance: number
-            width: number
-        }[]
-        nibs: {
-            position: EdgePosition
-            distance: number
-            thickness: number
-            translate: [number, number, number]
-            width: number
-        }[]
-    }
-}
-
-function clamp(value: number, min: number, max: number) {
-    return Math.max(min, Math.min(max, value))
-}
-
-function createEdgeSegment(
-    module: ManifoldToplevel,
-    size: { x: number, y: number, z: number },
-    position: EdgePosition,
-    distance: number,
-    thickness: number,
-    length: number,
-    depth: number
-) {
-    const { Manifold } = module
-
-    if (position === "left" || position === "right") {
-        const x = (position === "left" ? -1 : 1) * (size.x / 2 - thickness / 2)
-        const y = clamp(distance, -(size.y - length) / 2, (size.y - length) / 2)
-        return Manifold.cube([thickness, length, depth], true).translate([x, y, 0])
-    }
-
-    const x = clamp(distance, -(size.x - length) / 2, (size.x - length) / 2)
-    const y = (position === "bottom" ? -1 : 1) * (size.y / 2 - thickness / 2)
-    return Manifold.cube([length, thickness, depth], true).translate([x, y, 0])
-}
-
-function buildAntenna(phone: Manifold, module: ManifoldToplevel, opts: AntennaOptions) {
-    const { Manifold } = module
-    const bound = phone.boundingBox()
-    const size = {
-        x: bound.max[0] - bound.min[0],
-        y: bound.max[1] - bound.min[1],
-        z: bound.max[2] - bound.min[2],
-    }
-
-    const cavity = Manifold.cube([
-        Math.max(size.x - opts.frame.width * 2, opts.frame.width),
-        Math.max(size.y - opts.frame.width * 2, opts.frame.width),
-        size.z + 0.12,
-    ], true)
-
-    let antennaFrame = phone.subtract(cavity)
-
-    for (const cut of opts.frame.cuts) {
-        antennaFrame = antennaFrame.subtract(
-            createEdgeSegment(
-                module,
-                size,
-                cut.position,
-                cut.distance,
-                opts.frame.width * 1.8,
-                cut.width,
-                size.z + 0.2
-            )
-        )
-    }
-
-    const innerSize = {
-        x: Math.max(size.x - opts.frame.width * 2, opts.frame.width),
-        y: Math.max(size.y - opts.frame.width * 2, opts.frame.width),
-        z: Math.max(size.z * 0.24, 0.12),
-    }
-
-    let inner = Manifold.cube([
-        innerSize.x - opts.frame.gap,
-        innerSize.y - opts.frame.gap,
-        innerSize.z
-    ], true).translate([0, 0, -size.z * 0.08])
-
-    for (const nib of opts.frame.nibs) {
-        inner = inner.add(
-            createEdgeSegment(
-                module,
-                innerSize,
-                nib.position,
-                nib.distance,
-                opts.frame.width,
-                nib.width,
-                innerSize.z
-            ).translate(nib.translate)
-        )
-    }
-
-    return { antennaFrame, inner }
+interface AntennaProps {
+    options?: AntennaOptions
 }
 
 function manifoldToGeometry(THREE: typeof import("three"), manifold: Manifold) {
@@ -175,9 +73,17 @@ function meshToManifold(module: ManifoldToplevel, sourceMesh: import("three").Me
     return new module.Manifold(mesh)
 }
 
-export default function Antenna() {
+export default function Antenna({ options }: AntennaProps = {}) {
     const hostRef = useRef<HTMLDivElement | null>(null)
     const [status, setStatus] = useState<"loading" | "ready" | "error">("loading")
+    const sceneRef = useRef<{
+        antennaFrame: import("three").Mesh | null
+        innerBody: import("three").Mesh | null
+        phoneShell: import("three").Group | null
+        antennaEnvelope: Manifold | null
+        module: ManifoldToplevel | null
+        THREE: typeof import("three") | null
+    }>({ antennaFrame: null, innerBody: null, phoneShell: null, antennaEnvelope: null, module: null, THREE: null })
 
     useEffect(() => {
         const host = hostRef.current
@@ -328,7 +234,17 @@ export default function Antenna() {
             const frameWidth = scaledSize.x * 0.055,
                 cutWidth = 0.2,
                 nibWidth = 0.3
-            const antenna = buildAntenna(antennaEnvelope, module, {
+
+            scene.add(phoneShell)
+
+            // Store references for dynamic updates
+            sceneRef.current.antennaEnvelope = antennaEnvelope
+            sceneRef.current.module = module
+            sceneRef.current.THREE = THREE
+            sceneRef.current.phoneShell = phoneShell
+
+            // Generate initial antenna
+            const defaultOptions: AntennaOptions = {
                 frame: {
                     width: frameWidth,
                     gap: scaledSize.x * 0.1,
@@ -341,39 +257,17 @@ export default function Antenna() {
                         { position: "right", distance: -scaledSize.y * 0.12, width: cutWidth },
                     ],
                     nibs: [
-                        {
-                            position: "top",
-                            distance: 0,
-                            thickness: scaledSize.z,
-                            translate: [0, 0, 0],
-                            width: nibWidth,
-                        },
-                        {
-                            position: "bottom",
-                            distance: 0,
-                            thickness: scaledSize.z,
-                            translate: [0, 0, 0],
-                            width: nibWidth,
-                        },
-                        {
-                            position: "left",
-                            distance: scaledSize.y * 0.18,
-                            thickness: scaledSize.z,
-                            translate: [0, 0, 0],
-                            width: nibWidth,
-                        },
-                        {
-                            position: "right",
-                            distance: -scaledSize.y * 0.18,
-                            thickness: scaledSize.z,
-                            translate: [0, 0, 0],
-                            width: nibWidth,
-                        },
+                        { position: "top", distance: 0, thickness: scaledSize.z, translate: [0, 0, 0], width: nibWidth },
+                        { position: "bottom", distance: 0, thickness: scaledSize.z, translate: [0, 0, 0], width: nibWidth },
+                        { position: "left", distance: scaledSize.y * 0.18, thickness: scaledSize.z, translate: [0, 0, 0], width: nibWidth },
+                        { position: "right", distance: -scaledSize.y * 0.18, thickness: scaledSize.z, translate: [0, 0, 0], width: nibWidth },
                     ],
                 },
-            })
+            }
+            const initialOptions = options || defaultOptions
+            const antenna = buildAntenna(antennaEnvelope, module, initialOptions)
 
-            const antennaFrame = new THREE.Mesh(
+            const antennaFrameMesh = new THREE.Mesh(
                 manifoldToGeometry(THREE, antenna.antennaFrame),
                 new THREE.MeshStandardMaterial({
                     color: "#ff9b45",
@@ -383,10 +277,10 @@ export default function Antenna() {
                     emissiveIntensity: 0.35,
                 })
             )
-            antennaFrame.castShadow = true
-            antennaFrame.receiveShadow = true
+            antennaFrameMesh.castShadow = true
+            antennaFrameMesh.receiveShadow = true
 
-            const innerBody = new THREE.Mesh(
+            const innerBodyMesh = new THREE.Mesh(
                 manifoldToGeometry(THREE, antenna.inner),
                 new THREE.MeshStandardMaterial({
                     color: "#49d3d6",
@@ -396,10 +290,16 @@ export default function Antenna() {
                     emissiveIntensity: 0.35,
                 })
             )
-            innerBody.castShadow = true
-            innerBody.receiveShadow = true
+            innerBodyMesh.castShadow = true
+            innerBodyMesh.receiveShadow = true
 
-            scene.add(innerBody, antennaFrame, phoneShell)
+            scene.add(innerBodyMesh, antennaFrameMesh)
+
+            sceneRef.current.antennaFrame = antennaFrameMesh
+            sceneRef.current.innerBody = innerBodyMesh
+
+            antenna.antennaFrame.delete()
+            antenna.inner.delete()
 
             const resize = () => {
                 if (!renderer) {
@@ -449,6 +349,72 @@ export default function Antenna() {
             }
         }
     }, [])
+
+    // Update geometry when options change
+    useEffect(() => {
+        const { antennaEnvelope, module, THREE } = sceneRef.current
+        if (!antennaEnvelope || !module || !THREE || !options) return
+
+        // Remove old meshes
+        if (sceneRef.current.antennaFrame) {
+            sceneRef.current.antennaFrame.removeFromParent()
+            sceneRef.current.antennaFrame.geometry.dispose()
+            if (Array.isArray(sceneRef.current.antennaFrame.material)) {
+                sceneRef.current.antennaFrame.material.forEach(m => m.dispose())
+            } else {
+                sceneRef.current.antennaFrame.material.dispose()
+            }
+        }
+        if (sceneRef.current.innerBody) {
+            sceneRef.current.innerBody.removeFromParent()
+            sceneRef.current.innerBody.geometry.dispose()
+            if (Array.isArray(sceneRef.current.innerBody.material)) {
+                sceneRef.current.innerBody.material.forEach(m => m.dispose())
+            } else {
+                sceneRef.current.innerBody.material.dispose()
+            }
+        }
+
+        // Build new antenna
+        const antenna = buildAntenna(antennaEnvelope, module, options)
+
+        const antennaFrame = new THREE.Mesh(
+            manifoldToGeometry(THREE, antenna.antennaFrame),
+            new THREE.MeshStandardMaterial({
+                color: "#ff9b45",
+                metalness: 0.35,
+                roughness: 0.26,
+                emissive: "#7a2e00",
+                emissiveIntensity: 0.35,
+            })
+        )
+        antennaFrame.castShadow = true
+        antennaFrame.receiveShadow = true
+
+        const innerBody = new THREE.Mesh(
+            manifoldToGeometry(THREE, antenna.inner),
+            new THREE.MeshStandardMaterial({
+                color: "#49d3d6",
+                metalness: 0.08,
+                roughness: 0.32,
+                emissive: "#113c40",
+                emissiveIntensity: 0.35,
+            })
+        )
+        innerBody.castShadow = true
+        innerBody.receiveShadow = true
+
+        // Add to scene
+        sceneRef.current.phoneShell?.parent?.add(antennaFrame)
+        sceneRef.current.phoneShell?.parent?.add(innerBody)
+
+        sceneRef.current.antennaFrame = antennaFrame
+        sceneRef.current.innerBody = innerBody
+
+        // Cleanup manifolds
+        antenna.antennaFrame.delete()
+        antenna.inner.delete()
+    }, [options])
 
     return (
         <div
