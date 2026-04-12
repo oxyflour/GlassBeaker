@@ -17,7 +17,7 @@ interface WorkerMessage {
  * 使用 Web Worker 进行异步路由计算，避免阻塞主线程。
  * 适合处理复杂电路（50+ 链接）的 A* 路径查找。
  */
-export function useRoutingWorker(data: CircuitData, positions: Record<string, Point>): WorkerState {
+export function useRoutingWorker(data: CircuitData, positions: Record<string, Point>, skip = false): WorkerState {
   const workerRef = useRef<Worker | null>(null)
   const requestIdRef = useRef(0)
   const pendingRef = useRef<Set<number>>(new Set())
@@ -54,6 +54,10 @@ export function useRoutingWorker(data: CircuitData, positions: Record<string, Po
   }, [])
 
   useEffect(() => {
+    if (skip) {
+      return
+    }
+
     const worker = workerRef.current
     if (!worker) {
       // Worker 初始化失败时，回退到同步计算
@@ -82,7 +86,7 @@ export function useRoutingWorker(data: CircuitData, positions: Record<string, Po
       clearTimeout(timer)
       pendingRef.current.delete(id)
     }
-  }, [data, positions])
+  }, [data, positions, skip])
 
   return state
 }

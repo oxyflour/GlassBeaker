@@ -281,3 +281,68 @@ export function buildPreviewRoute(source: LinkPin, cursorPoint: Point, blocks: B
   }
   return getRoutePoints(start, cursorPoint, blocks, positions, occupied)
 }
+
+function shiftPoint(point: Point, delta: Point): Point {
+  return { x: point.x + delta.x, y: point.y + delta.y }
+}
+
+function isLinkConnectedToBlocks(link: Link, blockIds: Set<string>): boolean {
+  return (!isPointLinkPin(link.from) && blockIds.has(link.from.node)) ||
+         (!isPointLinkPin(link.to) && blockIds.has(link.to.node))
+}
+
+/**
+ * 简化的路由计算，用于拖拽时快速更新。
+ * 只更新与被拖拽器件相连的走线，其他走线直接使用缓存。
+ */
+export function buildRoutesSimplified(
+  data: CircuitData,
+  positions: Record<string, Point>,
+  dragBlockIds: string[],
+  dragDelta: Point,
+  cachedRoutes: RoutedLink[]
+): RoutedLink[] {
+  if (cachedRoutes.length === 0) {
+    return []
+  }
+
+  const blocks = Object.fromEntries(data.blocks.map((block) => [block.id, block]))
+  const dragBlockIdSet = new Set(dragBlockIds)
+
+  return data.links.map((link, routeIndex) => {
+    const cached = cachedRoutes[routeIndex]
+    // 如果走线不连接被拖拽的器件，直接使用缓存
+    if (!isLinkConnectedToBlocks(link, dragBlockIdSet)) {
+      return cached
+    }
+
+    const start = resolveLinkPinPoint(blocks, positions, link.from)
+    const end = resolveLinkPinPoint(blocks, positions, link.to)
+    if (!start || !end) {
+      return cached
+    }
+
+    const isStartOnDragBlock = !isPointLinkPin(link.from) && dragBlockIdSet.has(link.from.node)
+    const isEndOnDragBlock = !isPointLinkPin(link.to) && dragBlockIdSet.has(link.to.node)
+
+    let points: Point[]
+    const basePoints = cached?.points ?? [start, end]
+
+    if (isStartOnDragBlock && isEndOnDragBlock) {
+      // 两端都在拖拽块上，整体平移
+      points = basePoints.map((p) => shiftPoint(p, dragDelta))
+    } else if (isStartOnDragBlock || isEndOnDragBlock) {
+      // 只有一端在拖拽块上：平移中间点
+      points = [start, ...basePoints.slice(1, -1).map((p) => shiftPoint(p, dragDelta)), end]
+    } else {
+      points = basePoints
+    }
+
+    return {
+      key: `${pointKey(start)}->${pointKey(end)}:${routeIndex}`,
+      link,
+      points,
+      routeIndex,
+    }
+  })
+}

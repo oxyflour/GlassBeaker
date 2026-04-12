@@ -6,7 +6,7 @@ import { CircuitBlockView } from "./block-view"
 import { DEFAULT_CIRCUIT, createBlock, normalizeCircuitData, syncPositions } from "./defaults"
 import { clamp, comparePins, isPointLinkPin, isPointOnSegment, samePin } from "./geometry"
 import { findNearestLegalPosition } from "./placement"
-import { buildPreviewRoute } from "./routing"
+import { buildPreviewRoute, buildRoutesSimplified } from "./routing"
 import { useRoutingWorker } from "./use-routing-worker"
 import { findBlocksInRect, findRoutesInRect, toSelectionRect } from "./selection"
 import { getBlockLayout } from "./symbols"
@@ -17,7 +17,7 @@ import { getRouteSegments, moveRouteSegment, projectPointToSegment, type RouteSe
 
 export type { Block, BlockPin, CircuitBlockType, CircuitData, Link, LinkPin } from "./types"
 
-type DragState = { ids: string[]; startMouse: Point; startPositions: Record<string, Point> }
+type DragState = { ids: string[]; startMouse: Point; startPositions: Record<string, Point>; initialBlockPositions: Record<string, Point> }
 type SegmentDragState = {
   axis: number
   moved: boolean
@@ -167,7 +167,19 @@ export default function Circuit({ data: controlledData, onChange }: { data?: Cir
   }, [data.links.length])
 
   const visualData = useMemo(() => withLinkOverrides(data, linkOverrides), [data, linkOverrides])
-  const { routes } = useRoutingWorker(visualData, positions)
+  const { routes: workerRoutes } = useRoutingWorker(visualData, positions, dragging !== null)
+
+  // 拖拽时使用简化路由计算，只更新与被拖拽器件相连的走线
+  const simplifiedRoutes = useMemo(() => {
+    if (!dragging) return null
+    const delta = {
+      x: (positions[dragging.ids[0]]?.x ?? 0) - (dragging.initialBlockPositions[dragging.ids[0]]?.x ?? 0),
+      y: (positions[dragging.ids[0]]?.y ?? 0) - (dragging.initialBlockPositions[dragging.ids[0]]?.y ?? 0),
+    }
+    return buildRoutesSimplified(data, positions, dragging.ids, delta, workerRoutes)
+  }, [dragging, data, positions, workerRoutes])
+
+  const routes = simplifiedRoutes ?? workerRoutes
   const segments = useMemo(() => getRouteSegments(routes), [routes])
   const blockMap = useMemo(() => Object.fromEntries(data.blocks.map((block) => [block.id, block])), [data.blocks])
   const selectedSegmentKey = selectedSegment ? `${selectedSegment.routeIndex}:${selectedSegment.segmentIndex}` : null
@@ -516,13 +528,15 @@ export default function Circuit({ data: controlledData, onChange }: { data?: Cir
 
     const idsToDrag = selectedBlockIds.includes(id) ? selectedBlockIds : [id]
     const startPositions: Record<string, Point> = {}
+    const initialBlockPositions: Record<string, Point> = {}
     for (const blockId of idsToDrag) {
       const blockPos = positions[blockId]
       if (blockPos) {
         startPositions[blockId] = { ...blockPos }
+        initialBlockPositions[blockId] = { ...blockPos }
       }
     }
-    setDragging({ ids: idsToDrag, startMouse: point, startPositions })
+    setDragging({ ids: idsToDrag, startMouse: point, startPositions, initialBlockPositions })
   }
 
   function deleteSelection() {
