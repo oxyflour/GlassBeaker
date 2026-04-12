@@ -5,10 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-
-def magnitude_db(matrix: np.ndarray) -> np.ndarray:
-    mag = np.sqrt(np.square(matrix[..., 0]) + np.square(matrix[..., 1]))
-    return 20.0 * np.log10(np.clip(mag, 1e-6, None))
+from baseline.metrics import magnitude_db
 
 
 def save_matrix_plot(

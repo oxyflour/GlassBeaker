@@ -8,7 +8,8 @@ import numpy as np
 import torch
 
 from baseline.data import load_inference_input, load_truth_target
-from baseline.model import SpectrumPredictor
+from baseline.metrics import summarize_prediction_metrics
+from baseline.model import create_model
 from baseline.plotting import save_matrix_plot
 
 
@@ -27,11 +28,15 @@ def main() -> None:
     if not args.sample_name and not args.config_path:
         raise ValueError("Provide either --sample-name or --config-path")
     checkpoint = torch.load(args.model_path, map_location="cpu")
-    freq_bins = len(checkpoint["freq_grid"])
     freq_grid = np.asarray(checkpoint["freq_grid"], dtype=np.float32)
     config_path = args.config_path or (args.dataset_root / f"{args.sample_name}.json")
     sample = load_inference_input(config_path, n_points=int(checkpoint["sample_points"]))
-    model = SpectrumPredictor(freq_bins=freq_bins, port_count=int(checkpoint["port_count"]))
+    model = create_model(
+        freq_grid=freq_grid,
+        port_count=int(checkpoint["port_count"]),
+        model_kind=checkpoint.get("model_kind", "legacy_global_head"),
+        model_config=checkpoint.get("model_config"),
+    )
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
     with torch.no_grad():
@@ -60,12 +65,7 @@ def main() -> None:
         port_count=int(checkpoint["port_count"]),
     )
     npz_path = args.output_dir / f"{sample_name}_prediction.npz"
-    np.savez(
-        npz_path,
-        frequency=freq_grid,
-        truth=truth,
-        pred=pred,
-    )
+    np.savez(npz_path, frequency=freq_grid, truth=truth, pred=pred)
     result = {
         "sample_name": sample_name,
         "config_path": str(config_path),
@@ -73,6 +73,14 @@ def main() -> None:
         "plot_path": str(plot_path),
         "npz_path": str(npz_path),
     }
+    if truth is not None:
+        metrics = summarize_prediction_metrics(
+            pred[np.newaxis, ...],
+            truth[np.newaxis, ...],
+            port_count=int(checkpoint["port_count"]),
+        )
+        result["rmse"] = metrics["rmse"]
+        result["db_mae"] = metrics["db_mae"]
     result_path = args.output_dir / f"{sample_name}_prediction.json"
     result_path.write_text(json.dumps(result, indent=2))
     print(json.dumps(result, indent=2))

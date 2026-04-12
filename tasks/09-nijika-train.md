@@ -16,3 +16,33 @@ Progress update 2026-04-12
   - model: `tmp/nijika-baseline/baseline_model.pt`
   - metrics: `tmp/nijika-baseline/metrics.json`
   - validation plot: `tmp/nijika-baseline/antenna_001_matrix_db.png`
+
+Progress update 2026-04-12 (optimization round 2)
+
+- Upgraded the baseline to a stronger structured model in `packages/nijika/baseline/model.py`:
+  - normalize point cloud and port coordinates by geometry center/size
+  - encode per-port tokens and run a lightweight Transformer over ports
+  - decode only the symmetric upper triangle of the S-matrix and mirror it back, matching the reciprocal dataset
+  - use frequency-conditioned decoding with Fourier features instead of one global full-spectrum head
+- Upgraded training/evaluation in `packages/nijika/baseline/train.py`:
+  - loss = real/imag MSE + magnitude L1 + first-difference spectral loss
+  - metrics now report full validation-set RMSE / dB MAE / dB RMSE, not just one example sample
+- Best current run:
+  - command: `uv run --project apps/python python packages/nijika/run_baseline.py --epochs 180 --batch-size 16 --hidden-dim 128 --lr 1e-3`
+  - dataset: 100 complete samples from `tmp/antenna-dataset`, 80/20 split, seed `7`
+- Current best metrics:
+  - validation RMSE: `0.05622` (previous `0.06473`, improved `13.14%`)
+  - validation magnitude dB MAE: `2.92 dB` (previous `3.71 dB`, improved `21.24%`)
+  - validation magnitude dB RMSE: `5.92 dB`
+  - example sample `antenna_001` RMSE: `0.03942` (previous `0.06196`, improved `36.38%`)
+  - example sample `antenna_001` magnitude dB MAE: `3.23 dB` (previous `4.90 dB`, improved `33.97%`)
+- Extra experiments that did not beat the best run:
+  - `hidden_dim=160`, stronger magnitude/smooth loss: validation dB MAE `3.15 dB`
+  - `batch_size=8` with the same best-run architecture: validation dB MAE `2.94 dB`
+- Latest artifacts:
+  - model: `tmp/nijika-baseline/baseline_model.pt`
+  - metrics: `tmp/nijika-baseline/metrics.json`
+  - train log: `tmp/nijika-baseline/latest_train.log`
+  - validation plot: `tmp/nijika-baseline/antenna_001_matrix_db.png`
+- Prediction entry is unchanged, and now also reports RMSE / dB MAE when ground truth exists:
+  - `uv run --project apps/python python packages/nijika/predict_baseline.py --model-path tmp/nijika-baseline/baseline_model.pt --sample-name antenna_001`
