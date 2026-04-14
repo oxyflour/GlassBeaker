@@ -24,11 +24,9 @@ const NIJIKA_EXE = path.resolve("../../build/Debug/nijika.exe")
 const DEFAULT_OUTPUT_DIR = path.resolve("../../tmp/antenna-dataset")
 const DEFAULT_NUM_SAMPLES = 100
 const DEFAULT_NUM_NIBS = 3
-const ESSENTIAL_OUTPUT_RE = /^S\d+,\d+\.cst\.txt$/
 
 type CliOptions = {
     append: boolean
-    keepIntermediates: boolean
     numNibs: number
     outputDir: string
     samples: number
@@ -82,7 +80,6 @@ const PHONE_DIMS = {
 function parseCliOptions(argv: string[]): CliOptions {
     const options: CliOptions = {
         append: false,
-        keepIntermediates: false,
         numNibs: DEFAULT_NUM_NIBS,
         outputDir: DEFAULT_OUTPUT_DIR,
         samples: DEFAULT_NUM_SAMPLES,
@@ -101,10 +98,6 @@ function parseCliOptions(argv: string[]): CliOptions {
 
         if (arg === "--append") {
             options.append = true
-            continue
-        }
-        if (arg === "--keep-intermediates") {
-            options.keepIntermediates = true
             continue
         }
         if (arg === "--samples") {
@@ -132,7 +125,7 @@ function parseCliOptions(argv: string[]): CliOptions {
             continue
         }
         if (arg === "--help") {
-            console.log("Usage: tsx scripts/batch-antenna.ts [--samples N] [--nibs N] [--append] [--keep-intermediates] [--output-dir DIR]")
+            console.log("Usage: tsx scripts/batch-antenna.ts [--samples N] [--nibs N] [--append] [--output-dir DIR]")
             process.exit(0)
         }
         throw new Error(`Unknown argument: ${arg}`)
@@ -170,17 +163,6 @@ async function clearDatasetOutputs(root: string) {
         }
         await fs.rm(path.join(root, entry.name), { recursive: true, force: true })
     }))
-}
-
-async function pruneSimulationOutputs(outputDir: string) {
-    const entries = await fs.readdir(outputDir, { withFileTypes: true })
-    await Promise.all(entries.map(async entry => {
-        if (!entry.isFile() || ESSENTIAL_OUTPUT_RE.test(entry.name)) {
-            return
-        }
-        await fs.rm(path.join(outputDir, entry.name), { force: true })
-    }))
-    await fs.rm(path.join(outputDir, "plrc"), { recursive: true, force: true })
 }
 
 async function inferNextSampleIndex(root: string) {
@@ -458,7 +440,7 @@ async function main() {
     console.log(`Generating ${options.samples} random antenna samples...`)
     console.log(`Starting index: ${startIndex}`)
     console.log(`Nib count per antenna: ${options.numNibs}`)
-    console.log(`Keep intermediates: ${options.keepIntermediates ? "yes" : "no"}`)
+    console.log("Intermediate files: keep")
     console.log(`Append mode: ${options.append ? "yes" : "no"}`)
     console.log()
 
@@ -492,9 +474,6 @@ async function main() {
 
         if (simulation.success) {
             successful += 1
-            if (!options.keepIntermediates) {
-                await pruneSimulationOutputs(outputDir)
-            }
             console.log(`  Simulation completed successfully`)
         } else {
             console.log(`  Simulation failed: ${simulation.error}`)
