@@ -56,6 +56,17 @@ function shuffledEdges(): EdgePosition[] {
     return edges
 }
 
+function pickNibPositions(numNibs: number): EdgePosition[] {
+    if (numNibs <= EDGE_ORDER.length) {
+        return shuffledEdges().slice(0, numNibs)
+    }
+    const positions = shuffledEdges()
+    while (positions.length < numNibs) {
+        positions.push(EDGE_ORDER[Math.floor(Math.random() * EDGE_ORDER.length)])
+    }
+    return positions
+}
+
 function crossSizeForEdge(position: EdgePosition, baseWidth: number, baseHeight: number): number {
     return position === "left" || position === "right" ? baseHeight : baseWidth
 }
@@ -292,8 +303,8 @@ export function generateRandomAntennaOptions(
         left: [] as { center: number; halfWidth: number }[],
         right: [] as { center: number; halfWidth: number }[],
     }
-    const nibs: AntennaNib[] = Array.from({ length: numNibs }, (_, index) => {
-        const position = EDGE_ORDER[index % EDGE_ORDER.length]
+    const nibPositions = pickNibPositions(numNibs)
+    const nibs: AntennaNib[] = nibPositions.map(position => {
         const crossSize = crossSizeForEdge(position, baseWidth, baseHeight)
         const width = randomBetween(crossSize * 0.18, crossSize * 0.42)
         const distance = pickOffset(crossSize, width, nibOccupied[position], crossSize * 0.06)

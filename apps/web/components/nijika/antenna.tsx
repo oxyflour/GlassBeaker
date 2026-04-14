@@ -119,7 +119,7 @@ export default function Antenna({ options }: AntennaProps = {}) {
             camera.position.set(7.8, 5.4, 12.6)
 
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+            //renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
             renderer.shadowMap.enabled = true
             renderer.shadowMap.type = THREE.PCFSoftShadowMap
             host?.appendChild(renderer.domElement)
@@ -152,7 +152,7 @@ export default function Antenna({ options }: AntennaProps = {}) {
             controls.autoRotate = true
             controls.autoRotateSpeed = 0.8
             controls.minDistance = 9
-            controls.maxDistance = 18
+            controls.maxDistance = 45
             controls.target.set(0, 0, 0)
 
             const shellMaterial = new THREE.MeshPhysicalMaterial({

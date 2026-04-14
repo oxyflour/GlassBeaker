@@ -50,7 +50,7 @@ let mainWindow = null;
  * 
  * @param { string } url 
  */
-async function assertUrl(url, retry = 10){
+async function assertUrl(url, retry = 30){
     while (retry -- > 0) {
         await new Promise(resolve => setTimeout(resolve, 1000))
         try {
@@ -73,7 +73,7 @@ function resolvePythonRuntime() {
     if (!app.isPackaged) {
         return {
             command: 'uv',
-            args: ['run', '--project', '.', '--python', '3.12', 'python', 'app.py'],
+            args: ['run', '--no-sync', '--project', '.', '--python', '3.12', 'python', 'app.py'],
             cwd: path.join(root, 'python')
         }
     }

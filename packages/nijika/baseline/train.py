@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import random
 from pathlib import Path
 
@@ -16,14 +17,13 @@ from baseline.model import create_model
 from baseline.plotting import save_matrix_plot
 from baseline.training_utils import composite_loss, evaluate
 
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the Nijika S-parameter baseline.")
     parser.add_argument("--dataset-root", type=Path, default=Path("tmp/antenna-dataset"))
     parser.add_argument("--output-dir", type=Path, default=Path("tmp/nijika-baseline"))
     parser.add_argument(
         "--model-kind",
-        choices=["structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "legacy_global_head"],
+        choices=["structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_token_decoder", "symmetric_freq_decoder", "legacy_global_head"],
         default="structured_pair_spectral_head",
     )
     parser.add_argument("--epochs", type=int, default=400)
@@ -37,25 +37,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--mag-weight", type=float, default=0.2)
     parser.add_argument("--smooth-weight", type=float, default=0.05)
+    parser.add_argument("--db-weight", type=float, default=0.0)
+    parser.add_argument("--coupling-weight", type=float, default=1.0)
+    parser.add_argument("--notch-weight", type=float, default=0.0)
+    parser.add_argument("--notch-threshold-db", type=float, default=-20.0)
+    parser.add_argument("--warmup-epochs", type=int, default=10)
     return parser.parse_args()
-
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+def build_loss_config(args: argparse.Namespace) -> dict[str, float]:
+    return {
+        "mag_weight": args.mag_weight,
+        "smooth_weight": args.smooth_weight,
+        "db_weight": args.db_weight,
+        "coupling_weight": args.coupling_weight,
+        "notch_weight": args.notch_weight,
+        "notch_threshold_db": args.notch_threshold_db,
+    }
 
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    loss_config = build_loss_config(args)
     bundle = load_dataset(args.dataset_root, n_points=args.points, freq_bins=args.freq_bins)
     train_records, val_records = split_records(bundle.records, seed=args.seed)
     train_tensors = stack_records(train_records)
     val_tensors = stack_records(val_records)
     target_mean = train_tensors["target"].mean(dim=(0, 1), keepdim=True)
     target_std = train_tensors["target"].std(dim=(0, 1), keepdim=True).clamp_min(1e-4)
+    target_mean_device = target_mean.to(device)
+    target_std_device = target_std.to(device)
     train_target = (train_tensors["target"] - target_mean) / target_std
     val_target = (val_tensors["target"] - target_mean) / target_std
     train_loader = DataLoader(
@@ -92,9 +108,16 @@ def main() -> None:
         model_config=model_config,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    warmup_epochs = min(args.warmup_epochs, args.epochs)
     best = {"epoch": 0, "score": float("inf"), "state": None, "metrics": None}
     for epoch in range(1, args.epochs + 1):
+        if warmup_epochs > 0 and epoch <= warmup_epochs:
+            lr_scale = epoch / warmup_epochs
+        else:
+            progress = (epoch - warmup_epochs) / max(1, args.epochs - warmup_epochs)
+            lr_scale = 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
+        for pg in optimizer.param_groups:
+            pg["lr"] = args.lr * lr_scale
         model.train()
         batch_losses = []
         for points, ports, geom, frame, cuts, nibs, target in train_loader:
@@ -107,12 +130,18 @@ def main() -> None:
                 cuts.to(device),
                 nibs.to(device),
             )
-            loss = composite_loss(pred, target.to(device), args.mag_weight, args.smooth_weight)
+            loss = composite_loss(
+                pred,
+                target.to(device),
+                port_count=bundle.port_count,
+                target_mean=target_mean_device,
+                target_std=target_std_device,
+                loss_config=loss_config,
+            )
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             batch_losses.append(loss.item())
-        scheduler.step()
         val_metrics, _, _ = evaluate(
             model=model,
             loader=val_loader,
@@ -120,8 +149,7 @@ def main() -> None:
             target_mean=target_mean,
             target_std=target_std,
             port_count=bundle.port_count,
-            mag_weight=args.mag_weight,
-            smooth_weight=args.smooth_weight,
+            loss_config=loss_config,
         )
         score = float(val_metrics["db_mae"])
         if score < best["score"]:
@@ -130,7 +158,7 @@ def main() -> None:
             print(
                 f"epoch={epoch:03d} train_loss={np.mean(batch_losses):.4f} "
                 f"val_rmse={val_metrics['rmse']:.4f} val_db_mae={val_metrics['db_mae']:.4f} "
-                f"lr={scheduler.get_last_lr()[0]:.2e} device={device.type}"
+                f"lr={optimizer.param_groups[0]['lr']:.2e} device={device.type}"
             )
     model.load_state_dict(best["state"])
     final_metrics, val_pred, val_truth = evaluate(
@@ -140,8 +168,7 @@ def main() -> None:
         target_mean=target_mean,
         target_std=target_std,
         port_count=bundle.port_count,
-        mag_weight=args.mag_weight,
-        smooth_weight=args.smooth_weight,
+        loss_config=loss_config,
     )
     example = val_records[0]
     plot_path = args.output_dir / f"{example.name}_matrix_db.png"
@@ -165,6 +192,7 @@ def main() -> None:
             "sample_points": args.points,
             "model_kind": args.model_kind,
             "model_config": model_config,
+            "loss_config": loss_config,
         },
         model_path,
     )
@@ -184,11 +212,12 @@ def main() -> None:
         "model_path": str(model_path),
         "model_kind": args.model_kind,
         "model_config": model_config,
+        "loss_config": loss_config,
+        "warmup_epochs": warmup_epochs,
     }
     metrics_path = args.output_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2))
     print(json.dumps(metrics, indent=2))
-
 
 if __name__ == "__main__":
     main()

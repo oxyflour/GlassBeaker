@@ -178,3 +178,208 @@ Progress update 2026-04-12 (dataset scaling tooling)
   - both runs succeeded, and successful sample folders were reduced to the `9` `S*.cst.txt` files only
 - Recommended large-run command for the next dataset expansion:
   - `pnpm --filter glassbeaker-web exec tsx scripts/batch-antenna.ts --samples 2400 --output-dir ../../tmp/antenna-dataset-2400`
+
+Progress update 2026-04-13 (2400-sample training started)
+
+- Started a new baseline training run on the expanded dataset:
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400 --output-dir tmp/nijika-baseline-2400 --model-kind structured_pair_spectral_head --epochs 180 --batch-size 32 --hidden-dim 160 --lr 1e-3`
+  - log: `tmp/nijika-baseline-2400.log`
+  - error log: `tmp/nijika-baseline-2400.err.log`
+- Current status:
+  - training is running on `cuda`
+  - epoch `1` metrics: train loss `1.0224`, validation RMSE `0.1785`, validation magnitude dB MAE `10.9906 dB`
+
+Progress update 2026-04-13 (2400-sample result + validation analysis)
+
+- The 2400-sample training run completed successfully:
+  - metrics: `tmp/nijika-baseline-2400/metrics.json`
+  - model: `tmp/nijika-baseline-2400/baseline_model.pt`
+  - summary metrics:
+    - train / val samples: `1920 / 480`
+    - best epoch: `140`
+    - validation RMSE: `0.12526`
+    - validation magnitude dB MAE: `6.49544 dB`
+    - validation magnitude dB RMSE: `10.37770 dB`
+- Compared with the previous best `100`-sample structured spectral run:
+  - old validation RMSE: `0.16548` -> new `0.12526` (`24.3%` better)
+  - old validation dB MAE: `8.91 dB` -> new `6.50 dB` (`27.1%` better)
+  - old validation dB RMSE: `13.76 dB` -> new `10.38 dB` (`24.6%` better)
+- Ran full validation-set prediction analysis for the 2400-sample model:
+  - command: `uv run --project apps/python python packages/nijika/predict_baseline.py --dataset-root tmp/antenna-dataset-2400 --model-path tmp/nijika-baseline-2400/baseline_model.pt --split val --output-dir tmp/nijika-baseline-2400-val-predict`
+  - prediction summary: `tmp/nijika-baseline-2400-val-predict/val_summary.json`
+  - analysis summary: `tmp/nijika-baseline-2400-val-predict/analysis.json`
+- Main findings from the validation analysis:
+  - sample-level `dB MAE` mean / median / p90 / max = `6.50 / 6.26 / 9.10 / 13.90 dB`
+  - reflection terms are already much easier than coupling terms:
+    - average reflection `dB MAE` (`S11/S22/S33`): `1.12 dB`
+    - average coupling `dB MAE` (`S12/S13/S21/S23/S31/S32`): `9.18 dB`
+  - the model is accurate in high-magnitude regions but struggles badly in deep-notch regions:
+    - truth `>= -10 dB`: `1.53 dB` MAE
+    - truth `< -10 dB`: `9.51 dB` MAE
+    - truth `< -20 dB`: `9.75 dB` MAE
+  - validation error rises with structural complexity:
+    - `1` cut: mean `5.09 dB`
+    - `2` cuts: mean `6.69 dB`
+    - `3` cuts: mean `6.85 dB`
+    - `4` cuts: mean `7.38 dB`
+  - a dataset limitation is still present even after scaling:
+    - validation set has only `1` nib-side pattern: `['top', 'bottom', 'left']`
+    - so current data diversity increase is mostly in continuous geometry parameters and cut patterns, not in feed-side topology
+- Interpretation:
+  - increasing dataset size was clearly the right move and produced a large real gain
+  - current bottleneck is no longer just sample count; it is concentrated in off-diagonal coupling prediction and deep resonant / low-magnitude regions
+  - the next most valuable work is likely notch-aware / coupling-aware loss design, followed by more topology-diverse data generation
+
+Progress update 2026-04-13 (nib-side randomization + time-domain probe)
+
+- Updated `apps/web/components/nijika/antenna-builder.ts` so `nib` side patterns are no longer fixed:
+  - previous behavior for `numNibs=3` always produced `['top', 'bottom', 'left']`
+  - new behavior randomizes nib sides by sampling a shuffled subset of edges when `numNibs <= 4`
+  - same-edge spacing constraints are still enforced through the existing occupied-offset logic
+- Quick topology probe after the change:
+  - generated `4` probe samples in `tmp/antenna-dataset-sideprobe`
+  - observed nib side patterns:
+    - `antenna_000`: `['bottom', 'top', 'left']`
+    - `antenna_001`: `['top', 'bottom', 'right']`
+    - `antenna_002`: `['top', 'left', 'right']`
+    - `antenna_003`: `['top', 'bottom', 'right']`
+- Time-domain probe:
+  - generated `1` sample with preserved intermediates in `tmp/antenna-dataset-timeprobe`
+  - confirmed that `i*.txt`, `o*,*.txt`, and `Port *[*].txt` are plain 2-column time-series files
+  - example files:
+    - `tmp/antenna-dataset-timeprobe/antenna_000/i1.txt`
+    - `tmp/antenna-dataset-timeprobe/antenna_000/o1,1.txt`
+    - `tmp/antenna-dataset-timeprobe/antenna_000/Port 1 [1].txt`
+  - this makes a compact “first 100 time steps” auxiliary feature path feasible without keeping all raw intermediate files forever
+
+Progress update 2026-04-13 (loss reweighting ablation)
+
+- Added configurable loss-shaping controls in `packages/nijika/baseline/train.py` and `packages/nijika/baseline/training_utils.py`:
+  - `--db-weight`: add a denormalized magnitude-dB L1 term
+  - `--coupling-weight`: upweight off-diagonal S-parameters in the real/imag, magnitude, and smoothness losses
+  - `--notch-weight` + `--notch-threshold-db`: ramp extra dB loss on deep-notch regions
+  - checkpoints and `metrics.json` now store `loss_config`, so future sweeps do not need more code changes
+- Regression check for the default loss path:
+  - command: `uv run --project apps/python python packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400 --epochs 1 --batch-size 32 --hidden-dim 160 --lr 1e-3 --output-dir tmp/nijika-loss-default-smoke2400`
+  - epoch `1` validation dB MAE: `10.9998 dB`
+  - this matches the previous baseline epoch-1 result `10.9906 dB`, so the default training behavior is unchanged
+- Smoke test for the new loss path:
+  - command: `uv run --project apps/python python packages/nijika/run_baseline.py --epochs 1 --batch-size 8 --hidden-dim 128 --db-weight 0.05 --coupling-weight 1.5 --notch-weight 1.0 --notch-threshold-db -20 --output-dir tmp/nijika-loss-smoke`
+  - completed successfully on `cuda`
+- 2400-sample ablation A (coupling + notch-aware dB loss):
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400 --output-dir tmp/nijika-baseline-2400-cpl-notch --model-kind structured_pair_spectral_head --epochs 180 --batch-size 32 --hidden-dim 160 --lr 1e-3 --db-weight 0.05 --coupling-weight 1.5 --notch-weight 1.0 --notch-threshold-db -20`
+  - best epoch: `1`
+  - validation RMSE: `0.18724`
+  - validation magnitude dB MAE: `8.76461 dB`
+  - validation magnitude dB RMSE: `13.27436 dB`
+- 2400-sample ablation B (coupling-only weighting):
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400 --output-dir tmp/nijika-baseline-2400-coupling15 --model-kind structured_pair_spectral_head --epochs 180 --batch-size 32 --hidden-dim 160 --lr 1e-3 --coupling-weight 1.5`
+  - best epoch: `7`
+  - validation RMSE: `0.16664`
+  - validation magnitude dB MAE: `10.00057 dB`
+  - validation magnitude dB RMSE: `15.61193 dB`
+- Comparison against the current best 2400-sample baseline:
+  - baseline validation RMSE: `0.12526`
+  - baseline validation magnitude dB MAE: `6.49544 dB`
+  - baseline validation magnitude dB RMSE: `10.37770 dB`
+  - both new loss-weighting runs are clearly worse than the unchanged baseline
+- Interpretation:
+  - naive global reweighting toward coupling terms and deep-notch regions does not improve the current `structured_pair_spectral_head`
+  - the explicit dB/notch term destabilized training most strongly and pushed the best checkpoint back to the first epoch
+  - even simple off-diagonal upweighting hurts overall calibration, despite the baseline analysis showing coupling is the dominant error source
+  - keep the original loss as the default for now; future loss work should use gentler schedules or more localized weighting instead of fixed global multipliers
+- Artifacts:
+  - default regression smoke: `tmp/nijika-loss-default-smoke2400`
+  - new-loss smoke: `tmp/nijika-loss-smoke`
+  - ablation A: `tmp/nijika-baseline-2400-cpl-notch`
+  - ablation B: `tmp/nijika-baseline-2400-coupling15`
+
+Progress update 2026-04-14 (deeper architecture + warmup)
+
+- Architecture improvements to `structured_pair_spectral_head` in `packages/nijika/baseline/structured_spectral_model.py`:
+  - pair MLP: added one hidden layer (2 → 3 layers), now `hidden_dim*5 → hidden_dim*2 → hidden_dim*2 → hidden_dim`
+  - spectral decoder: added one hidden layer (2 → 3 layers), now `hidden_dim → hidden_dim*2 → hidden_dim*2 → freq_bins*2`
+  - rationale: more capacity for coupling prediction and complex spectral shapes
+- Training improvements in `packages/nijika/baseline/train.py`:
+  - added `--warmup-epochs` (default `10`) for linear LR warmup
+  - replaced `CosineAnnealingLR` with manual warmup + cosine decay schedule
+  - deeper model should benefit from warmup for stable early training
+- Regenerating dataset with nib-side randomization:
+  - previous 2400-sample dataset had fixed nib-side pattern `['top', 'bottom', 'left']`
+  - new dataset generating into `tmp/antenna-dataset-2400-v2` with randomized nib sides
+- Ablation: training deeper model on existing 2400 dataset to isolate architecture effect:
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400 --output-dir tmp/nijika-deeper-2400 --epochs 300 --batch-size 32 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10`
+  - status: in progress
+- Ablation result (deeper model on old dataset):
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400 --output-dir tmp/nijika-deeper-2400 --epochs 300 --batch-size 32 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10`
+  - best epoch: `241`
+  - validation RMSE: `0.13008`
+  - validation magnitude dB MAE: `6.54320 dB`
+  - validation magnitude dB RMSE: `10.44783 dB`
+  - interpretation: deeper model is slightly worse than old 2-layer model (`6.50` dB) on the same low-diversity dataset
+  - the deeper model converges slower (best at epoch 241 vs 140) but does not reach a better minimum
+  - confirms that dataset diversity (nib-side patterns) is the current bottleneck, not model capacity
+- Artifacts:
+  - deeper model on old dataset: `tmp/nijika-deeper-2400`
+  - new dataset regenerating: `tmp/antenna-dataset-2400-v2` (in progress)
+- Split decoder ablation (`structured_pair_split_decoder`):
+  - separate diagonal decoder (2 layers) and coupling decoder (4 layers)
+  - command: same budget, 300 epochs with warmup
+  - best epoch: `8`, validation dB MAE: `9.68 dB`
+  - interpretation: separate decoders overfit severely; the coupling decoder is too deep for this dataset size
+  - the shared decoder is better because gradients from all pairs help regularize the encoder
+  - keep `structured_pair_split_decoder` as an experimental option but not the default
+- Architecture revert:
+  - reverted `pair_mlp` and `spectral_decoder` back to 2-layer MLPs (matching old best model)
+  - kept LR warmup improvement (linear warmup + cosine decay)
+  - conclusion: on the current 2400-sample dataset, model capacity is NOT the bottleneck
+  - the most impactful improvement is the dataset regeneration with nib-side randomization
+- Artifacts:
+  - deeper model on old dataset: `tmp/nijika-deeper-2400`
+  - split decoder model: `tmp/nijika-split-2400`
+  - new dataset regenerating: `tmp/antenna-dataset-2400-v2` (in progress)
+
+Progress update 2026-04-14 (nib-randomized 2400-sample result)
+
+- New dataset `tmp/antenna-dataset-2400-v2` completed: `2400/2400` samples, `0` failures, `24` unique nib-side patterns
+- Trained `structured_pair_spectral_head` (2-layer MLP, reverted from deeper experiment) + LR warmup:
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-v2-2400 --epochs 300 --batch-size 32 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10`
+  - best epoch: `223`
+  - validation RMSE: `0.13878`
+  - validation magnitude dB MAE: `7.09 dB`
+  - validation magnitude dB RMSE: `11.06 dB`
+- Compared with previous best (old non-randomized 2400 dataset):
+  - old dB MAE: `6.50 dB` → new `7.09 dB` (`9.1%` worse)
+  - old RMSE: `0.12526` → new `0.13878` (`10.8%` worse)
+  - old dB RMSE: `10.38 dB` → new `11.06 dB` (`6.5%` worse)
+- Interpretation:
+  - nib-side randomization increases task difficulty: `24` unique patterns vs `1`
+  - the old model's `6.50 dB` was inflated by the low-diversity validation set (all same nib pattern)
+  - the new `7.09 dB` is a more honest measure of true generalization performance
+  - with `2400` samples / `24` patterns ≈ `100` samples per pattern, the model has insufficient per-pattern coverage
+  - the model was still improving at epoch `300`, suggesting longer training or more data would help
+- Next most valuable improvement: scale the dataset to `5000+` samples to increase per-pattern coverage
+- Artifacts:
+  - model: `tmp/nijika-v2-2400/baseline_model.pt`
+  - metrics: `tmp/nijika-v2-2400/metrics.json`
+  - validation plots: `tmp/nijika-v2-2400-val-predict`
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-v2-222 --epochs 180 --batch-size 16 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10`
+  - best epoch: `165`, validation dB MAE: `9.93 dB`
+  - compared with old non-randomized 100-sample: `8.91 dB`
+  - interpretation: nib-side randomization makes the task harder; 222 samples is not enough data for the increased diversity
+  - the model needs the full 2400 samples to benefit from the additional diversity
+- Summary of architecture experiments (all on old 2400-sample dataset, no nib randomization):
+  - 2-layer MLP (old best): dB MAE `6.50 dB` ← best so far
+  - 3-layer MLP (deeper): dB MAE `6.54 dB` ← slightly worse, overfits marginally
+  - Split decoder (diag 2-layer + coupling 4-layer): dB MAE `9.68 dB` ← severely overfits
+  - conclusion: model capacity is NOT the bottleneck on the current dataset; data diversity is
+- Next steps:
+  - wait for `tmp/antenna-dataset-2400-v2` to complete (2400 samples with nib-side randomization)
+  - retrain with `structured_pair_spectral_head` (2-layer) + LR warmup on the new dataset
+  - if results improve, try deeper model on new dataset to see if capacity helps with more diverse data
+  - consider generating 5000+ samples if the improvement trend continues
+- Artifacts:
+  - deeper model on old dataset: `tmp/nijika-deeper-2400`
+  - split decoder model: `tmp/nijika-split-2400`
+  - 222-sample nib-randomized: `tmp/nijika-v2-222`
+  - new dataset regenerating: `tmp/antenna-dataset-2400-v2` (in progress)

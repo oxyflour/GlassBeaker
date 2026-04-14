@@ -183,6 +183,14 @@ def create_model(*, freq_grid: Sequence[float] | torch.Tensor, port_count: int, 
             hidden_dim=hidden_dim,
             dropout=dropout,
         )
+    if model_kind == "structured_pair_split_decoder":
+        return StructuredSpectralPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            split_decoder=True,
+        )
     if model_kind == "structured_pair_pole_residue_head":
         return StructuredPoleResiduePredictor(
             freq_grid=freq_grid,
