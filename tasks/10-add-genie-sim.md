@@ -1,0 +1,2 @@
+- 集成这个项目 https://github.com/AgibotTech/genie_sim 通过自然语言生成场景的能力，写一个 demo 放到 apps\web\app\demo\genie-sim\page.tsx
+- 复用现有的 copilotkit 多轮对话能力

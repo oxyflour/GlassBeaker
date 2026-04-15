@@ -383,3 +383,54 @@ Progress update 2026-04-14 (nib-randomized 2400-sample result)
   - split decoder model: `tmp/nijika-split-2400`
   - 222-sample nib-randomized: `tmp/nijika-v2-222`
   - new dataset regenerating: `tmp/antenna-dataset-2400-v2` (in progress)
+
+Progress update 2026-04-15 (12-hour data-generation run)
+
+- New constraint: there is now a dedicated `12`-hour budget for dataset generation, so the highest-value move is to spend that budget on more topology-diverse data instead of more model ablations first.
+- Throughput estimate from the completed long run in `tmp/antenna-dataset-2400.log`:
+  - `2400` samples finished in `06:27:57`
+  - average speed ≈ `371 samples/hour` ≈ `9.70 s/sample`
+  - a full fresh `7200`-sample rebuild would exceed the current `12`-hour budget, so reusing the existing `2400`-sample v2 dataset is the only practical way to get to `5000+` total samples within this window
+- Long-run generator safety fix:
+  - restored default pruning in `apps/web/scripts/batch-antenna.ts` so successful samples keep only `S*.cst.txt`
+  - added explicit `--keep-intermediates` for debugging / time-domain probes
+  - rationale: without pruning, a `12`-hour run would waste significant disk on `i*.txt`, `o*.txt`, `Port *[*].txt`, `grid.json`, and `run.log`, none of which are required by `packages/nijika/baseline/data.py`
+- Smoke test status after the fix:
+  - fresh run: `pnpm --filter glassbeaker-web exec tsx scripts/batch-antenna.ts --samples 1 --output-dir ../../tmp/antenna-dataset-12h-smoke`
+  - append run: `pnpm --filter glassbeaker-web exec tsx scripts/batch-antenna.ts --samples 1 --append --output-dir ../../tmp/antenna-dataset-12h-smoke`
+  - both runs succeeded, and each sample directory was reduced back to exactly the `9` required `S*.cst.txt` files
+- Started the 12-hour append run:
+  - command: `pnpm --filter glassbeaker-web exec tsx scripts/batch-antenna.ts --samples 4200 --append --output-dir ../../tmp/antenna-dataset-2400-v2`
+  - log: `tmp/antenna-dataset-2400-v2-append4200.log`
+  - error log: `tmp/antenna-dataset-2400-v2-append4200.err.log`
+  - start index: `2400`
+  - target if the run completes: existing `2400` + new `4200` = `6600` total samples in `tmp/antenna-dataset-2400-v2`
+  - note: the directory name keeps the historical `2400-v2` label, but the actual dataset size will grow beyond `2400`; reusing the existing directory is the only budget-feasible choice for this run
+- Why `4200` instead of `5000` new samples:
+  - historical estimate for `4200` new samples is about `11.32` hours, which leaves some buffer inside the `12`-hour window
+  - `5000` new samples would project to about `13.47` hours at the measured historical speed, so it is too risky for the current budget
+- Next step after generation completes:
+  - train `structured_pair_spectral_head` on the expanded nib-randomized dataset and compare against the current `2400`-sample v2 result (`7.09 dB` validation magnitude dB MAE)
+
+Progress update 2026-04-15 (6600-sample training started)
+
+- The `12`-hour append generation run completed successfully:
+  - added samples: `4200/4200`
+  - failed simulations: `0`
+  - final dataset: `tmp/antenna-dataset-2400-v2`
+  - final sample count: `6600`
+  - generation log: `tmp/antenna-dataset-2400-v2-append4200.log`
+  - error log: `tmp/antenna-dataset-2400-v2-append4200.err.log` (`0` bytes)
+- Started training on the expanded dataset:
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-v2-6600 --model-kind structured_pair_spectral_head --epochs 300 --batch-size 64 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10`
+  - log: `tmp/nijika-v2-6600.log`
+  - error log: `tmp/nijika-v2-6600.err.log`
+  - output directory: `tmp/nijika-v2-6600`
+- Training configuration notes:
+  - kept the current strongest model family: `structured_pair_spectral_head`
+  - kept `hidden_dim=160`, `lr=1e-3`, and `warmup_epochs=10` for continuity with the 2400-sample v2 run
+  - increased batch size from `32` to `64` because the dataset is now `6600` samples and the model is small enough for the available GPU memory
+- Initial training status:
+  - device: `cuda`
+  - epoch `1`: train loss `1.1121`, validation RMSE `0.1814`, validation magnitude dB MAE `10.7427 dB`
+  - this is only a warmup epoch and is not yet comparable with the previous best 2400-sample v2 checkpoint
