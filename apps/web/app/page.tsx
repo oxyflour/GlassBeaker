@@ -17,7 +17,7 @@ export default function HomePage() {
                 <a href="/demo/nijika">Antenna design</a>
             </li>
             <li>
-                <a href="/demo/nanami">Robotic rendering</a>
+                <a href="/demo/zapdos">Robotic rendering</a>
             </li>
         </ul>
     </div>

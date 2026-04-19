@@ -29,6 +29,8 @@ def mount_module(app: FastAPI, root: Path, sub_path: str, abs_path: Path) -> Non
         return
 
     for name, member in inspect.getmembers(module):
+        if name.startswith('_') and name.endswith('_'):
+            name = '{' + name[1:-1] + '}'
         if inspect.iscoroutinefunction(member) and not name.startswith('_'):
             route = f"{prefix}/{name}"
             print(f"INFO: adding api {route}")
