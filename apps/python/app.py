@@ -38,6 +38,7 @@ def wait_for_stdin():
 threading.Thread(target=wait_for_stdin, daemon=True).start()
 
 app = FastAPI(title="GlassBeaker Python Service")
+api_root = Path(os.path.normpath(f'{__file__}/../api'))
 mount_routes(app, 'api')
 
 agents = []
@@ -79,7 +80,7 @@ async def runtime() -> dict[str, Any]:
 def main() -> None:
     port = int(os.getenv("LISTEN_PORT", "13001"))
     log_level = os.getenv("LOG_LEVEL", "info")
-    uvicorn.run(app, port=port, log_level=log_level)
+    uvicorn.run(app, reload_dirs=[str(api_root), str(agent_root)], port=port, log_level=log_level)
 
 if __name__ == "__main__":
     main()
