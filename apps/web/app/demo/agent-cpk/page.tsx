@@ -50,7 +50,7 @@ export default function HomePage() {
 
   return <Group>
     <Panel>
-      <CopilotChat className="copilotkit-fix" style={{ width: preview.hasApp ? 400 : "100%" }} />
+      <CopilotChat className="copilotkit-fix" />
     </Panel>
     {
         preview.hasApp && <>

@@ -48,10 +48,31 @@ function buildMesh(
 export default function SceneViewer({ scene }: SceneViewerProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [renderImage, setRenderImage] = useState<string | null>(null);
+  const [rendering, setRendering] = useState(false);
   const ctxRef = useRef<{
     THREE: typeof import("three") | null;
     sceneGroup: import("three").Group | null;
   }>({ THREE: null, sceneGroup: null });
+
+  const handleRender = async () => {
+    if (!scene) return;
+    setRendering(true);
+    try {
+      const res = await fetch("/python/genie_sim/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ objects: scene.objects }),
+      });
+      const data = await res.json();
+      if (res.ok && data.image) {
+        setRenderImage(data.image);
+      }
+    } catch (e) {
+      console.error("Render failed:", e);
+    }
+    setRendering(false);
+  };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -159,6 +180,8 @@ export default function SceneViewer({ scene }: SceneViewerProps) {
     }
   }, [scene]);
 
+  const handleCloseRender = () => setRenderImage(null);
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden" }}>
       <div ref={hostRef} style={{ width: "100%", height: "100%" }} />
@@ -170,6 +193,59 @@ export default function SceneViewer({ scene }: SceneViewerProps) {
       {scene && (
         <div style={{ position: "absolute", right: 12, top: 12, color: "#aaa", fontSize: 11, maxWidth: 200, textAlign: "right" }}>
           {scene.description}
+        </div>
+      )}
+      {scene && (
+        <button
+          onClick={handleRender}
+          disabled={rendering}
+          style={{
+            position: "absolute",
+            left: 12,
+            top: 12,
+            padding: "6px 12px",
+            fontSize: 12,
+            background: "#3a3a5c",
+            color: "#fff",
+            border: "none",
+            borderRadius: 4,
+            cursor: rendering ? "wait" : "pointer",
+            opacity: rendering ? 0.7 : 1,
+          }}
+        >
+          {rendering ? "Rendering..." : "Mitsuba Render"}
+        </button>
+      )}
+      {renderImage && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(0,0,0,0.9)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <button
+            onClick={handleCloseRender}
+            style={{
+              position: "absolute",
+              right: 12,
+              top: 12,
+              padding: "6px 12px",
+              fontSize: 12,
+              background: "#5c3a3a",
+              color: "#fff",
+              border: "none",
+              borderRadius: 4,
+              cursor: "pointer",
+            }}
+          >
+            Close
+          </button>
+          <img src={renderImage} alt="Mitsuba render" style={{ maxWidth: "90%", maxHeight: "90%", objectFit: "contain" }} />
         </div>
       )}
     </div>

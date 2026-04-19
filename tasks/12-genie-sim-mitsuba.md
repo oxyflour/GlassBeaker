@@ -1,0 +1,2 @@
+- apps\python\api\genie_sim.py 是否支持场景生成后使用 mitsuba 渲染？
+- 如果支持就给 apps\web\app\demo\genie-sim\page.tsx 右边预览窗口加一个按钮，点击后后台调用 mitsuba 返回渲染效果

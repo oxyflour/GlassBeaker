@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--notch-weight", type=float, default=0.0)
     parser.add_argument("--notch-threshold-db", type=float, default=-20.0)
     parser.add_argument("--warmup-epochs", type=int, default=10)
+    parser.add_argument("--reciprocity-weight", type=float, default=0.0, help="Weight for reciprocity constraint loss (S_ij = S_ji)")
+    parser.add_argument("--passivity-weight", type=float, default=0.0, help="Weight for passivity constraint loss (|S| <= 1)")
     return parser.parse_args()
 
 def set_seed(seed: int) -> None:
@@ -57,6 +59,8 @@ def build_loss_config(args: argparse.Namespace) -> dict[str, float]:
         "coupling_weight": args.coupling_weight,
         "notch_weight": args.notch_weight,
         "notch_threshold_db": args.notch_threshold_db,
+        "reciprocity_weight": getattr(args, "reciprocity_weight", 0.0),
+        "passivity_weight": getattr(args, "passivity_weight", 0.0),
     }
 
 def main() -> None:
@@ -196,6 +200,14 @@ def main() -> None:
         },
         model_path,
     )
+    # Compute physics constraint violation metrics on validation set
+    from baseline.training_utils import reciprocity_loss, passivity_loss
+    model.eval()
+    with torch.no_grad():
+        val_pred_denorm = val_pred  # Already denormalized in evaluate()
+        recip_violation = reciprocity_loss(val_pred_denorm, bundle.port_count).item()
+        pass_violation = passivity_loss(val_pred_denorm, bundle.port_count).item()
+
     metrics = {
         "device": device.type,
         "train_samples": len(train_records),
@@ -205,6 +217,8 @@ def main() -> None:
         "val_rmse": final_metrics["rmse"],
         "val_db_mae": final_metrics["db_mae"],
         "val_db_rmse": final_metrics["db_rmse"],
+        "val_reciprocity_mse": recip_violation,
+        "val_passivity_mse": pass_violation,
         "example_sample": example.name,
         "example_rmse": final_metrics["sample_rmse"][0],
         "example_db_mae": final_metrics["sample_db_mae"][0],

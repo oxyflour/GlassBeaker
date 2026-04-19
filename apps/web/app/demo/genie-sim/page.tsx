@@ -54,7 +54,6 @@ export default function GenieSimPage() {
       <Panel>
         <CopilotChat
           className="copilotkit-fix"
-          style={{ width: hasScene ? 400 : "100%" }}
         />
       </Panel>
       {hasScene && (

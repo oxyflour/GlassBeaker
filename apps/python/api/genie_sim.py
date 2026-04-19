@@ -133,6 +133,49 @@ def execute_dsl(code: str) -> list:
     return root_fn()
 
 
+class RenderRequest(BaseModel):
+    objects: list[dict]
+
+
+def objects_to_scene_dict(objects: list[dict]) -> dict:
+    """Convert scene objects back to Mitsuba scene dict format."""
+    import mitsuba as mi
+    scene_dict: dict = {"type": "scene"}
+    T = mi.scalar_rgb.Transform4f
+    for i, obj in enumerate(objects):
+        obj_type = obj.get("type", "box")
+        if obj_type == "box":
+            obj_type = "cube"
+        pos = obj.get("position", [0, 0, 0])
+        rot = obj.get("rotation", [0, 0, 0])
+        scale = obj.get("scale", [1, 1, 1])
+        color_hex = obj.get("color", "#888888")
+        # Parse hex color
+        color = [int(color_hex.lstrip("#")[j:j+2], 16) / 255.0 for j in (0, 2, 4)] if color_hex.startswith("#") else [0.5, 0.5, 0.5]
+
+        # Build transformation using Mitsuba Transform4f
+        transform = T.translate(pos)
+        # Apply rotations (XYZ order)
+        if rot[0] != 0:
+            transform = transform.rotate([1, 0, 0], rot[0])
+        if rot[1] != 0:
+            transform = transform.rotate([0, 1, 0], rot[1])
+        if rot[2] != 0:
+            transform = transform.rotate([0, 0, 1], rot[2])
+        # Apply scale
+        transform = transform.scale(scale)
+
+        shape = {
+            "type": obj_type,
+            "to_world": transform,
+            "bsdf": {"type": "diffuse", "reflectance": {"type": "rgb", "value": color}},
+        }
+        if obj_type == "sphere":
+            shape["radius"] = scale[0] / 2
+        scene_dict[f"obj_{i:03d}"] = shape
+    return scene_dict
+
+
 async def execute(body: SceneRequest) -> dict:
     try:
         shapes = execute_dsl(body.code)
@@ -143,3 +186,26 @@ async def execute(body: SceneRequest) -> dict:
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"Execution error: {str(e)}")
+
+
+async def render(body: RenderRequest) -> dict:
+    """Render scene objects using Mitsuba and return the image as base64."""
+    try:
+        from geniesim.generator.scene_language.engine.utils.mitsuba_utils import render_scene_dict
+        import io
+        import base64
+
+        scene_dict = objects_to_scene_dict(body.objects)
+        image = render_scene_dict(scene_dict, verbose=False)
+
+        # Convert PIL image to base64
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        img_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        return {"image": f"data:image/png;base64,{img_base64}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Render error: {str(e)}")
