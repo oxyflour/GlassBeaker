@@ -16,6 +16,8 @@ dependencies = [
   "deepagents>=0.5.1",
   "langchain-openai>=1.1.12",
   "pydantic-ai-slim[ag-ui]>=1.78.0",
+  "mujoco>=3.7.0",
+  "python-multipart>=0.0.26",
 ]
 
 [tool.uv.sources]
