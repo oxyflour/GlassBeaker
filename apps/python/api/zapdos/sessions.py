@@ -6,6 +6,14 @@ from utils.session import Session
 
 
 ROBOT_URDF = Path(r'tmp\URDF-galaxea-main\R1\urdf\r1_v2_1_0.urdf')
+PRIMITIVE_TYPES = {
+    int(mujoco.mjtGeom.mjGEOM_PLANE)    : 'plane',     # type: ignore
+    int(mujoco.mjtGeom.mjGEOM_SPHERE)   : 'sphere',    # type: ignore
+    int(mujoco.mjtGeom.mjGEOM_CAPSULE)  : 'capsule',   # type: ignore
+    int(mujoco.mjtGeom.mjGEOM_ELLIPSOID): 'ellipsoid', # type: ignore
+    int(mujoco.mjtGeom.mjGEOM_CYLINDER) : 'cylinder',  # type: ignore
+    int(mujoco.mjtGeom.mjGEOM_BOX)      : 'box',       # type: ignore
+}
 
 
 def create_abs_urdf(urdf: Path) -> Path:
@@ -33,11 +41,12 @@ def create_xml():
     return xml_str, asset_root
 
 class ZapdosGeometry:
-    def __init__(self, name: str, geom_id: int, body: str, color: list[float], abs_path: Path):
+    def __init__(self, name: str, geom_id: int, body: str, color: list[float], size: list[float] | None = None, abs_path: Path | None = None):
         self.name = name
         self.geom_id = geom_id
         self.body = body
         self.color = color
+        self.size = size
         self.abs_path = abs_path
 
 class ZapdosSession(Session):
@@ -49,20 +58,32 @@ class ZapdosSession(Session):
         self.data = mujoco.MjData(self.model)                # type: ignore
         mujoco.mj_step(self.model, self.data)                # type: ignore
 
-        self.geoms: dict[str, ZapdosGeometry] = { }
+        self.visuals: dict[str, ZapdosGeometry] = { }
         for geom_id in range(self.model.ngeom):
-            if int(self.model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_MESH): # type: ignore
+            geom_type = int(self.model.geom_type[geom_id])
+            kind = PRIMITIVE_TYPES.get(geom_type)
+            abs_path: Path | None = None
+            size: list[float] | None = None
+            if geom_type == int(mujoco.mjtGeom.mjGEOM_MESH): # type: ignore
                 mesh_id = int(self.model.geom_dataid[geom_id])
                 rel_path = self.decode_path(int(self.model.mesh_pathadr[mesh_id]))
-                body_id = int(self.model.geom_bodyid[geom_id])
-                name = f'geom-{geom_id}' + Path(rel_path).suffix.lower()
-                self.geoms[name] = ZapdosGeometry(
-                    name=name,
-                    geom_id=geom_id,
-                    body=mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id) or 'world', # type: ignore
-                    color=[float(value) for value in self.model.geom_rgba[geom_id]],
-                    abs_path=(asset_root / rel_path).resolve(),
-                )
+                kind = Path(rel_path).suffix.lower().lstrip('.')
+                abs_path = (asset_root / rel_path).resolve()
+            elif kind:
+                size = self.geom_size(geom_id, kind)
+            else:
+                continue
+            body_id = int(self.model.geom_bodyid[geom_id])
+            body = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id) or 'world' # type: ignore
+            name = f'geom-{geom_id}.{kind}'
+            self.visuals[name] = ZapdosGeometry(
+                name=name,
+                geom_id=geom_id,
+                body=body,
+                color=[float(value) for value in self.model.geom_rgba[geom_id]],
+                size=size,
+                abs_path=abs_path,
+            )
 
         super().__init__()
 
@@ -90,18 +111,40 @@ class ZapdosSession(Session):
         matrix[:3, 3] = [float(v) for v in pos]
         return matrix
 
+    def flatten_matrix(self, matrix: np.ndarray) -> list[float]:
+        return [float(v) for v in matrix.T.reshape(-1)]
+
+    def geom_world_pose(self, geom_id: int) -> np.ndarray:
+        matrix = np.eye(4)
+        matrix[:3, :3] = np.array(self.data.geom_xmat[geom_id], dtype=float).reshape(3, 3)
+        matrix[:3, 3] = np.array(self.data.geom_xpos[geom_id], dtype=float)
+        return matrix
+
     def geom_source_matrix(self, geom_id: int) -> list[float]:
         mesh_id = int(self.model.geom_dataid[geom_id])
-        geom_world = np.eye(4)
-        geom_world[:3, :3] = np.array(self.data.geom_xmat[geom_id], dtype=float).reshape(3, 3)
-        geom_world[:3, 3] = np.array(self.data.geom_xpos[geom_id], dtype=float)
+        geom_world = self.geom_world_pose(geom_id)
         mesh_local = self.pose_matrix(
             self.model.mesh_pos[mesh_id],
             self.model.mesh_quat[mesh_id],
             self.model.mesh_scale[mesh_id],
         )
         source_world = geom_world @ np.linalg.inv(mesh_local)
-        return [float(v) for v in source_world.T.reshape(-1)]
+        return self.flatten_matrix(source_world)
+
+    def geom_size(self, geom_id: int, kind: str) -> list[float]:
+        size = np.array(self.model.geom_size[geom_id], dtype=float)
+        if kind == 'plane':
+            return [float(max(size[0] * 2, 1e-3)), float(max(size[1] * 2, 1e-3))]
+        if kind in {'box', 'ellipsoid'}:
+            return [float(max(size[0] * 2, 1e-3)), float(max(size[1] * 2, 1e-3)), float(max(size[2] * 2, 1e-3))]
+        if kind == 'sphere':
+            return [float(max(size[0], 1e-3))]
+        if kind in {'capsule', 'cylinder'}:
+            return [float(max(size[0], 1e-3)), float(max(size[1] * 2, 1e-3))]
+        raise ValueError(f'Unsupported primitive kind: {kind}')
+
+    def geom_primitive_matrix(self, geom_id: int) -> list[float]:
+        return self.flatten_matrix(self.geom_world_pose(geom_id))
 
     def get_visual(self) -> list[dict]:
         poses = self.get_pose()
@@ -110,12 +153,16 @@ class ZapdosSession(Session):
             'body': geom.body,
             'color': geom.color,
             'matrix': poses[name],
-            'url': f'/python/zapdos/{self.sess}/asset/{name}',
-        } for name, geom in self.geoms.items()]
+            **({ 'size': geom.size } if geom.size is not None else { }),
+            **({ 'url': f'/python/zapdos/{self.sess}/asset/{name}' } if geom.abs_path is not None else { }),
+        } for name, geom in self.visuals.items()]
 
     def get_pose(self) -> dict[str, list[float]]:
         # We serve source STL files, so remove MuJoCo's internal mesh normalization transform.
-        return { name: self.geom_source_matrix(geom.geom_id) for name, geom in self.geoms.items() }
+        return {
+            name: self.geom_source_matrix(geom.geom_id) if geom.abs_path is not None else self.geom_primitive_matrix(geom.geom_id)
+            for name, geom in self.visuals.items()
+        }
 
     def on_call(self, args: list):
         cmd, *args = args
@@ -134,8 +181,6 @@ class ZapdosSession(Session):
         return super().step_once()
 
 sessions: dict[str, ZapdosSession] = { }
-
-
 def get_session(sess: str) -> ZapdosSession:
     if sess not in sessions:
         sessions[sess] = ZapdosSession(sess)

@@ -6,15 +6,16 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
 import { OrbitPointTrackballControls, TrackballOrbitControls } from "../../../utils/three/control"
-import { BufferGeometry, Color, Mesh, MeshStandardMaterial, Object3D } from "three"
+import { BoxGeometry, BufferGeometry, CapsuleGeometry, Color, CylinderGeometry, DoubleSide, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry, SphereGeometry } from "three"
 
 type RobotPose = Record<string, number[]>
-
+type PrimitiveKind = "box" | "capsule" | "cylinder" | "ellipsoid" | "plane" | "sphere"
 interface RobotVisual {
     color: [number, number, number, number]
     matrix: number[]
     name: string
-    url: string
+    size?: number[]
+    url?: string
 }
 
 async function call<T>(sess: string, ...args: unknown[]) {
@@ -29,26 +30,70 @@ async function call<T>(sess: string, ...args: unknown[]) {
     return await res.json() as T
 }
 
-const loaders = {
+const meshLoaders = {
     stl: new STLLoader()
 } as Record<string, { loadAsync: (url: string) => Promise<BufferGeometry> }>
-function getGeometry(url: string) {
-    const ext = url.split('.').pop()?.toLowerCase()
-    if (!ext || !loaders[ext]) {
-        throw new Error(`Unsupported geometry format: ${ext}`)
+const primitiveLoaders: Record<PrimitiveKind, (size: number[]) => BufferGeometry> = {
+    box: size => new BoxGeometry(size[0], size[1], size[2]),
+    capsule: size => {
+        const geometry = new CapsuleGeometry(size[0], size[1], 12, 24)
+        geometry.rotateX(Math.PI / 2)
+        return geometry
+    },
+    cylinder: size => {
+        const geometry = new CylinderGeometry(size[0], size[0], size[1], 24)
+        geometry.rotateX(Math.PI / 2)
+        return geometry
+    },
+    ellipsoid: size => {
+        const geometry = new SphereGeometry(1, 24, 16)
+        geometry.scale(size[0] / 2, size[1] / 2, size[2] / 2)
+        return geometry
+    },
+    plane: size => new PlaneGeometry(size[0], size[1]),
+    sphere: size => new SphereGeometry(size[0], 24, 16),
+}
+function getGeometryKind(name: string) {
+    const kind = name.split('.').pop()?.toLowerCase()
+    if (!kind) {
+        throw new Error(`Missing geometry kind in name: ${name}`)
     }
-    return loaders[ext].loadAsync(url)
+    return kind
+}
+function getMeshGeometry(kind: string, url: string) {
+    if (!meshLoaders[kind]) {
+        throw new Error(`Unsupported geometry format: ${kind}`)
+    }
+    return meshLoaders[kind].loadAsync(url)
+}
+function isPrimitiveKind(kind: string): kind is PrimitiveKind {
+    return kind in primitiveLoaders
+}
+const primitiveGeometries = { } as Record<string, BufferGeometry>
+function getPrimitiveGeometry(kind: PrimitiveKind, size: number[]) {
+    const key = `${kind}:${size.join(',')}`
+    return primitiveGeometries[key] || (primitiveGeometries[key] = primitiveLoaders[kind](size))
+}
+async function getGeometry(item: RobotVisual, kind: string) {
+    if (item.url) {
+        return await getMeshGeometry(kind, item.url)
+    }
+    if (!isPrimitiveKind(kind) || !item.size) {
+        throw new Error(`Unsupported primitive visual: ${item.name}`)
+    }
+    return getPrimitiveGeometry(kind, item.size)
 }
 
 const materials = { } as Record<string, MeshStandardMaterial>
-function getMaterial(color: [number, number, number, number]) {
+function getMaterial(color: [number, number, number, number], doubleSided = false) {
     const [r, g, b, a] = color,
-        key = color.join(',')
-    return materials[key] || (materials[key] = new MeshStandardMaterial({
+        key = `${color.join(',')}:${doubleSided ? 'double' : 'front'}`
+    const options = {
         color: new Color(r, g, b),
         opacity: a,
         transparent: a < 1,
-    }))
+    }
+    return materials[key] || (materials[key] = new MeshStandardMaterial(doubleSided ? { ...options, side: DoubleSide } : options))
 }
 
 function ZapdosLoader() {
@@ -74,16 +119,19 @@ function ZapdosLoader() {
 
         async function loadVisuals() {
             const list = await call<RobotVisual[]>(sess, "get_visual"),
-                visuals = await Promise.all(list.map(async item => ({ ...item, geometry: await getGeometry(item.url) })))
-            if (!state.disposed) for (const { geometry, name, matrix, color } of visuals) {
-                const mesh = new Mesh(geometry, getMaterial(color))
-                mesh.castShadow = true
+                visuals = await Promise.all(list.map(async item => {
+                    const kind = getGeometryKind(item.name)
+                    return { ...item, kind, geometry: await getGeometry(item, kind) }
+                }))
+            if (!state.disposed) for (const item of visuals) {
+                const mesh = new Mesh(item.geometry, getMaterial(item.color, item.kind === "plane"))
+                mesh.castShadow = item.kind !== "plane"
                 mesh.receiveShadow = true
                 mesh.matrixAutoUpdate = false
-                mesh.name = name
-                mesh.matrix.fromArray(matrix)
+                mesh.name = item.name
+                mesh.matrix.fromArray(item.matrix)
                 mesh.matrixWorldNeedsUpdate = true
-                added[name] = mesh
+                added[item.name] = mesh
                 scene.add(mesh)
             }
         }
