@@ -1,0 +1,3 @@
+[submodule "deps/galaxea"]
+	path = deps/galaxea
+	url = https://cnb.cool/open_source/galaxea_isaac_tutorial

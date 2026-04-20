@@ -2,13 +2,14 @@
 import { useEffect, useRef } from "react"
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js"
 import { EffectComposer, N8AO } from '@react-three/postprocessing'
 
 import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
 import { OrbitPointTrackballControls, TrackballOrbitControls } from "../../../utils/three/control"
 import { BoxGeometry, BufferGeometry, CapsuleGeometry, Color, CylinderGeometry, DoubleSide, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry, SphereGeometry } from "three"
-import { Environment, Lightformer } from "@react-three/drei"
+import { Box, Environment, Lightformer } from "@react-three/drei"
 
 type RobotPose = Record<string, number[]>
 
@@ -20,8 +21,8 @@ interface RobotVisual {
     url?: string
 }
 
-async function call<T>(sess: string, ...args: unknown[]) {
-    const res = await fetch(`/python/zapdos/${sess}/call`, {
+async function call<T>(sess: string, method: string, ...args: unknown[]) {
+    const res = await fetch(`/python/zapdos/${sess}/call/${method}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(args)
@@ -32,34 +33,46 @@ async function call<T>(sess: string, ...args: unknown[]) {
     return await res.json() as T
 }
 
-const meshLoaders = {
-    stl: new STLLoader(),
-} as Record<string, { loadAsync: (url: string) => Promise<BufferGeometry> }>
-const primitiveLoaders = {
-    box: size => new BoxGeometry(size[0], size[1], size[2]),
-    capsule: size => {
+const stlLoader = new STLLoader(),
+    objLoader = new OBJLoader()
+async function getGeometry(item: RobotVisual) {
+    const ext = item.name.split('.').pop()?.toLowerCase() || '',
+        { size = [1, 1, 1] } = item
+    if (ext === 'stl') {
+        return await stlLoader.loadAsync(item.url || '')
+    } else if (ext === 'obj') {
+        const obj = await objLoader.loadAsync(item.url || '')
+        let geometry: BufferGeometry | null = null
+        obj.traverse(child => {
+            if (child instanceof Mesh && child.geometry) {
+                geometry = child.geometry as BufferGeometry
+            }
+        })
+        if (!geometry) {
+            throw new Error(`No mesh found in OBJ ${item.url}`)
+        }
+        return geometry
+    } else if (ext === 'box') {
+        return new BoxGeometry(size[0], size[1], size[2])
+    } else if (ext === 'capsule') {
         const geometry = new CapsuleGeometry(size[0], size[1], 12, 24)
         geometry.rotateX(Math.PI / 2)
         return geometry
-    },
-    cylinder: size => {
+    } else if (ext === 'cylinder') {
         const geometry = new CylinderGeometry(size[0], size[0], size[1], 24)
         geometry.rotateX(Math.PI / 2)
         return geometry
-    },
-    ellipsoid: size => {
+    } else if (ext === 'ellipsoid') {
         const geometry = new SphereGeometry(1, 24, 16)
         geometry.scale(size[0] / 2, size[1] / 2, size[2] / 2)
         return geometry
-    },
-    plane: size => new PlaneGeometry(size[0], size[1]),
-    sphere: size => new SphereGeometry(size[0], 24, 16),
-} as Record<string, (size: number[]) => BufferGeometry>
-async function getGeometry(item: RobotVisual) {
-    const ext = item.name.split('.').pop()?.toLowerCase() || ''
-    return item.url ?
-        await meshLoaders[ext]?.loadAsync(item.url || '') :
-        primitiveLoaders[ext]?.(item.size || [1, 1, 1])
+    } else if (ext === 'plane') {
+        return new PlaneGeometry(size[0], size[1])
+    } else if (ext === 'sphere') {
+        return new SphereGeometry(size[0], 24, 16)
+    } else {
+        throw new Error(`Unsupported geometry type for ${item.name}`)
+    }
 }
 
 const materials = { } as Record<string, MeshStandardMaterial>
@@ -82,7 +95,7 @@ function ZapdosLoader() {
         { scene } = useThree()
 
     useEffect(() => {
-        const sse = new EventSource(`/python/zapdos/${sess}/start`),
+        const sse = new EventSource(`/python/zapdos/${sess}/call/start`),
             ping = setInterval(() => void call(sess, "ping").catch(() => null), 30000),
             added: Record<string, Object3D> = { },
             state = { disposed: false }

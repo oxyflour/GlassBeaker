@@ -8,7 +8,7 @@ from typing import Any
 class Session:
     def __init__(self, timeout=120) -> None:
         self.msgs: asyncio.Queue[dict] = asyncio.Queue()
-        self.calls: queue.Queue[tuple[list, asyncio.Future]] = queue.Queue()
+        self.calls: queue.Queue[tuple[str, tuple, asyncio.Future]] = queue.Queue()
 
         self.active = time.time()
         # If the session is idle for more than `timeout` seconds, it will be automatically closed
@@ -17,18 +17,18 @@ class Session:
         self.proc = threading.Thread(target=self.run, daemon=True)
         self.proc.start()
     
-    async def call(self, *args: list):
+    async def call(self, method: str, *args):
         res = asyncio.Future()
-        self.calls.put_nowait((list(args), res))
+        self.calls.put_nowait((method, args, res))
         return await res
 
     def proc_call(self):
         try:
             while not self.calls.empty():
-                args, res = self.calls.get_nowait()
+                method, args, res = self.calls.get_nowait()
                 self.active = time.time()
                 try:
-                    ret = self.on_call(args)
+                    ret = self.on_call(method, args)
                     res.set_result(ret)
                 except Exception as err:
                     res.set_exception(err)
@@ -48,7 +48,7 @@ class Session:
             msg = await self.msgs.get()
             yield f"data: {json.dumps(msg)}\n\n"
     
-    def on_call(self, args: list) -> Any:
+    def on_call(self, method: str, args: tuple) -> Any:
         return None
 
     def step_once(self):

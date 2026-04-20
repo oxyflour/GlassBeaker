@@ -164,15 +164,14 @@ class ZapdosSession(Session):
             for name, geom in self.visuals.items()
         }
 
-    def on_call(self, args: list):
-        cmd, *args = args
-        if cmd == 'ping':
+    def on_call(self, method: str, args: tuple):
+        if method == 'ping':
             return 'pong'
-        elif cmd == 'get_visual':
+        elif method == 'get_visual':
             return self.get_visual()
-        elif cmd == 'get_pose':
+        elif method == 'get_pose':
             return self.get_pose()
-        return super().on_call(args)
+        return super().on_call(method, args)
     
     def step_once(self):
         if not self.msgs.full():
