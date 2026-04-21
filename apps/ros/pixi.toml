@@ -1,0 +1,12 @@
+[workspace]
+authors = ["oxyflour <oxyflour@hotmail.com>"]
+channels = ["robostack-humble", "conda-forge"]
+name = "ros"
+platforms = ["win-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+ros-humble-desktop = ">=0.10.0,<0.11"
+websockets = ">=16.0,<17"

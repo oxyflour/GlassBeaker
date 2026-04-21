@@ -6,7 +6,7 @@ from typing import Any
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 
 from copilotkit import LangGraphAGUIAgent
 from ag_ui_langgraph import add_langgraph_fastapi_endpoint
@@ -20,6 +20,7 @@ from skrf import Frequency
 
 from utils.mount import mount_routes
 from utils.module import load_module
+from utils.ros import hub
 
 # FIXME: https://github.com/CopilotKit/CopilotKit/issues/3279
 import json
@@ -61,6 +62,27 @@ for item in os.listdir(agent_root):
             add_langgraph_fastapi_endpoint(app=app, agent=agent, path=path)
         elif isinstance(agent, Agent):
             app.add_api_route(path, endpoint=create_endpoint(agent), methods=["POST"])
+
+
+@app.websocket("/api/ros/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    peer = await hub.register(websocket)
+    try:
+        while True:
+            message = await websocket.receive()
+            if "text" in message and message["text"] is not None:
+                msg = json.loads(message["text"])
+                if peer.role == "bridge":
+                    await hub.handle_bridge_text(peer, msg)
+                else:
+                    await hub.handle_client_text(peer, msg)
+            elif "bytes" in message and message["bytes"] is not None:
+                if peer.role == "bridge":
+                    await hub.handle_bridge_binary(peer, message["bytes"])
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await hub.unregister(peer)
 
 
 @app.get("/healthz")

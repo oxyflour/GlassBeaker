@@ -69,12 +69,18 @@ async function assertUrl(url, retry = 30){
 }
 
 const root = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "..", "..")
-function resolvePythonRuntime() {
+function resolvePythonRuntime(label = '') {
     if (!app.isPackaged) {
-        return {
+        return label === 'ros' ? {
+            label,
+            command: 'pixi',
+            args: ['run', '--no-install', 'python', '-u', 'app.py'],
+            cwd: path.join(root, label)
+        } : {
+            label,
             command: 'uv',
-            args: ['run', '--no-sync', '--project', '.', '--python', '3.12', 'python', 'app.py'],
-            cwd: path.join(root, 'python')
+            args: ['run', '--no-sync', '--project', '.', '--python', '3.12', 'python', '-u', 'app.py'],
+            cwd: path.join(root, label)
         }
     }
 
@@ -88,17 +94,23 @@ function resolvePythonRuntime() {
         throw Error(`missing packaged python executable: ${command}`)
     }
 
-    return { command, args: [], cwd }
+    return { label, command, args: [], cwd }
 }
 
 async function startServer(nextJsPort = 13000, pythonPort = 13001) {
-    const runtime = resolvePythonRuntime(),
-        python = spawn(runtime.command, runtime.args, {
+    const pyRuntime = resolvePythonRuntime('python')
+    watchProc(pyRuntime.label, spawn(pyRuntime.command, pyRuntime.args, {
         env: { ...process.env, LISTEN_PORT: `${pythonPort}`, NO_PROXY: '*' },
-        cwd: runtime.cwd,
+        cwd: pyRuntime.cwd,
         stdio: 'pipe'
-    })
-    watchProc('python', python)
+    }))
+
+    const rosRuntime = resolvePythonRuntime('ros')
+    watchProc(rosRuntime.label, spawn(rosRuntime.command, rosRuntime.args, {
+        env: { ...process.env, WS_ADDR: `ws://127.0.0.1:${pythonPort}/api/ros/ws`, NO_PROXY: '*' },
+        cwd: rosRuntime.cwd,
+        stdio: 'pipe'
+    }))
 
     const apiRuntime = await assertUrl(`http://127.0.0.1:${pythonPort}/runtime`)
     console.log(`[main] RUNTIME: ${apiRuntime}`)

@@ -9,7 +9,7 @@ import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
 import { OrbitPointTrackballControls, TrackballOrbitControls } from "../../../utils/three/control"
 import { BoxGeometry, BufferGeometry, CapsuleGeometry, Color, CylinderGeometry, DoubleSide, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry, SphereGeometry } from "three"
-import { Box, Environment, Lightformer } from "@react-three/drei"
+import { Environment, Lightformer } from "@react-three/drei"
 
 type RobotPose = Record<string, number[]>
 
