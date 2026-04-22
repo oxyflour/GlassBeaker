@@ -101,13 +101,16 @@ function ZapdosLoader() {
             state = { disposed: false }
 
         sse.onmessage = event => {
-            const { pose = { } } = JSON.parse(event.data) as { pose?: RobotPose }
+            const { pose = { }, topic, msg } = JSON.parse(event.data) as { pose?: RobotPose, topic?: string, msg?: any }
             for (const [name, matrix] of Object.entries(pose)) {
                 const object = added[name]
                 if (object) {
                     object.matrix.fromArray(matrix)
                     object.matrixWorldNeedsUpdate = true
                 }
+            }
+            if (topic) {
+                console.log('got topic', topic, msg)
             }
         }
 

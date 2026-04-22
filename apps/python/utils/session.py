@@ -3,11 +3,14 @@ import json
 import queue
 import threading
 import time
+import traceback
 from typing import Any
 
 class Session:
     def __init__(self, timeout=120) -> None:
-        self.msgs: asyncio.Queue[dict] = asyncio.Queue()
+        self.loop = asyncio.get_event_loop()
+
+        self.msgs: queue.Queue[dict] = queue.Queue()
         self.calls: queue.Queue[tuple[str, tuple, asyncio.Future]] = queue.Queue()
 
         self.active = time.time()
@@ -23,30 +26,34 @@ class Session:
         return await res
 
     def proc_call(self):
+        method, args, res = self.calls.get(False)
+        self.active = time.time()
         try:
-            while not self.calls.empty():
-                method, args, res = self.calls.get_nowait()
-                self.active = time.time()
-                try:
-                    ret = self.on_call(method, args)
-                    res.set_result(ret)
-                except Exception as err:
-                    res.set_exception(err)
-        except queue.Empty:
-            pass
+            ret = self.on_call(method, args)
+            self.loop.call_soon_threadsafe(res.set_result, ret)
+        except Exception as err:
+            self.loop.call_soon_threadsafe(res.set_exception, err)
     
     def run(self):
-        while time.time() - self.active < self.timeout:
-            self.proc_call()
+        while self.timeout <= 0 or time.time() - self.active < self.timeout:
+            try:
+                self.proc_call()
+            except queue.Empty:
+                pass
+            except:
+                traceback.print_exc()
             try:
                 self.step_once()
-            except Exception as err:
-                print('session error', err)
+            except:
+                traceback.print_exc()
     
     async def stream(self):
-        while time.time() - self.active < self.timeout:
-            msg = await self.msgs.get()
-            yield f"data: {json.dumps(msg)}\n\n"
+        while self.timeout <= 0 or time.time() - self.active < self.timeout:
+            try:
+                msg = self.msgs.get(False)
+                yield f"data: {json.dumps(msg)}\n\n"
+            except queue.Empty:
+                await asyncio.sleep(0.1)
     
     def on_call(self, method: str, args: tuple) -> Any:
         return None

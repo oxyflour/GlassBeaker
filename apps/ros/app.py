@@ -1,18 +1,22 @@
 import asyncio
 import os
+import queue
 import time
 import pickle
+import traceback
 from typing import Any
 
 import websockets
 
-import rclpy
-from rclpy.node import Node
-from rclpy.subscription import Subscription
-from rclpy.publisher import Publisher
+import rclpy                                             # type: ignore
+from rclpy.node import Node                              # type: ignore
+from rclpy.subscription import Subscription              # type: ignore
+from rclpy.publisher import Publisher                    # type: ignore
 
-from sensor_msgs.msg import JointState, CompressedImage
-from rosidl_runtime_py.utilities import get_message
+from sensor_msgs.msg import JointState, CompressedImage  # type: ignore
+
+from rosidl_runtime_py.utilities import get_message      # type: ignore
+from rosidl_runtime_py import message_to_ordereddict     # type: ignore
 
 import sys
 sys.path.append(os.path.normpath(f'{__file__}/../../'))
@@ -22,10 +26,10 @@ subs: dict[str, Subscription] = { }
 pubs: dict[str, Publisher] = { }
 
 class RosSession(Session):
-    def __init__(self, timeout=1200) -> None:
+    def __init__(self) -> None:
         self.node = Node('ros_bridge')
         self.sock: None | websockets.ClientConnection = None
-        super().__init__(timeout)
+        super().__init__(0)
     
     def on_call(self, method: str, args: tuple) -> Any:
         if method == 'list_topics':
@@ -49,33 +53,44 @@ class RosSession(Session):
                 pubs[topic].publish(msg)
         return super().on_call(method, args)
     
-    def on_message(self, topic, msg: JointState | CompressedImage):
-        self.msgs.put_nowait({ 'ret': { 'topic': topic, 'msg': msg } })
+    def on_message(self, topic, msg):
+        msg = message_to_ordereddict(msg)
+        self.msgs.put_nowait({ 'topic': topic, 'msg': msg })
     
     def step_once(self):
-        rclpy.spin_once(self.node)
+        rclpy.spin_once(self.node, timeout_sec=0.01)
         return super().step_once()
 
-    async def connect(self):
+    async def connect_once(self):
         server_url = os.environ.get('WS_ADDR', 'ws://localhost:13001/api/ros/ws')
         async for sock in websockets.connect(server_url, max_size=None, ping_interval=20, ping_timeout=20):
             self.sock = sock
             async for data in sock:
                 method, args, call = pickle.loads(data) # type: ignore
-                res: dict = { 'call': call }
+                err, ret = None, None
                 try:
-                    # TODO: 定位为什么走到这里就挂了
-                    res['ret'] = await self.call(method, *args)
-                except Exception as err:
-                    res['err'] = err
-                self.msgs.put_nowait(res)
+                    ret = self.on_call(method, args)
+                except Exception as e:
+                    err = e
+                if self.sock:
+                    await self.sock.send(pickle.dumps([call, err, ret]), False)
+
+    async def connect(self):
+        while True:
+            try:
+                await self.connect_once()
+            except:
+                traceback.print_exc()
+                await asyncio.sleep(0.1)
     
     async def emit(self):
         while True:
-            msg = await self.msgs.get()
-            if self.sock:
-                res = [msg.get('call'), msg.get('err'), msg.get('ret')]
-                await self.sock.send(pickle.dumps(res), False)
+            try:
+                msg = self.msgs.get(False)
+                if self.sock:
+                    await self.sock.send(pickle.dumps(['', None, msg]), False)
+            except queue.Empty:
+                await asyncio.sleep(0.1)
     
     async def start(self):
         await asyncio.gather(self.connect(), self.emit())
@@ -83,4 +98,4 @@ class RosSession(Session):
 if __name__ == '__main__':
     rclpy.init()
     sess = RosSession()
-    asyncio.run(sess.start())
+    asyncio.run(sess.start(), debug=True)

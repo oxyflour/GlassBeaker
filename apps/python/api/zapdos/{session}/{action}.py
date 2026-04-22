@@ -109,7 +109,7 @@ class ZapdosSession(Session):
         return super().step_once()
     
     def on_message(self, topic: str, msg):
-        print(topic)
+        self.msgs.put_nowait({ 'topic': topic, 'msg': msg })
 
 sessions: dict[str, ZapdosSession] = { }
 async def _name_(req: Request):

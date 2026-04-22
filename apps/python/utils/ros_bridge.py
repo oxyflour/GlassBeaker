@@ -1,11 +1,11 @@
 import pickle
 import asyncio
 import uuid
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 
 conns: set[WebSocket] = set()
 calls: dict[str, asyncio.Future] = { }
-subs: dict[str, list] = { }
+subs: dict[str, set] = { }
 
 class Bridge:
     async def call(self, method, args):
@@ -20,8 +20,8 @@ class Bridge:
     
     async def subscribe(self, topic: str, type: str, callback):
         if not topic in subs:
-            subs[topic] = []
-        subs[topic].append(callback)
+            subs[topic] = set()
+        subs[topic].add(callback)
         await self.call('subscribe', [topic, type])
 
 bridge = Bridge()
