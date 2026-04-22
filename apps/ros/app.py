@@ -1,347 +1,86 @@
 import asyncio
-import threading
 import os
-from dataclasses import dataclass
-from functools import partial
-from typing import Any, Dict, Optional
-from uuid import uuid4
+import time
+import pickle
+from typing import Any
 
 import websockets
 
-import rclpy                                        # type: ignore
-from rclpy.executors import MultiThreadedExecutor   # type: ignore
-from rclpy.node import Node                         # type: ignore
-from rclpy.qos import QoSProfile                    # type: ignore
-from rclpy.serialization import deserialize_message, serialize_message    # type: ignore
-from rosidl_runtime_py import message_to_ordereddict, set_message_fields  # type: ignore
-from rosidl_runtime_py.utilities import get_message # type: ignore
+import rclpy
+from rclpy.node import Node
+from rclpy.subscription import Subscription
+from rclpy.publisher import Publisher
 
-from protocol import (
-    decode_binary_envelope,
-    dumps_json,
-    encode_binary_envelope,
-    loads_json,
-    make_msg,
-)
+from sensor_msgs.msg import JointState, CompressedImage
+from rosidl_runtime_py.utilities import get_message
 
+import sys
+sys.path.append(os.path.normpath(f'{__file__}/../../'))
+from python.utils.session import Session
 
-@dataclass
-class RosSubscriptionHandle:
-    topic: str
-    ros_type: str
-    subscription: Any
-    mode: str
+subs: dict[str, Subscription] = { }
+pubs: dict[str, Publisher] = { }
 
-
-@dataclass
-class RosPublisherHandle:
-    topic: str
-    ros_type: str
-    publisher: Any
-    mode: str
-
-
-class RosWsBridge(Node):
-    def __init__(self, server_url: str, peer_id: Optional[str] = None) -> None:
-        super().__init__("ros_ws_bridge")
-        self.server_url = server_url
-        self.peer_id = peer_id or f"bridge-{uuid4().hex[:8]}"
-
-        self._ros_subs: Dict[str, RosSubscriptionHandle] = {}
-        self._ros_pubs: Dict[str, RosPublisherHandle] = {}
-
-        self._loop = asyncio.new_event_loop()
-        self._ws = None
-        self._loop_thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._loop_thread.start()
-        self._send_lock = asyncio.Lock()
-
-    def _run_loop(self) -> None:
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._main())
-
-    async def _main(self) -> None:
-        while rclpy.ok():
-            try:
-                async with websockets.connect(
-                    self.server_url,
-                    max_size=None,
-                    ping_interval=20,
-                    ping_timeout=20,
-                ) as ws:
-                    self._ws = ws
-                    await ws.send(
-                        dumps_json(
-                            {
-                                "op": "hello",
-                                "role": "bridge",
-                                "peer_id": self.peer_id,
-                            }
-                        )
-                    )
-                    ack = loads_json(str(await ws.recv()))
-                    self.get_logger().info(f"connected to server: {ack}")
-                    await self._recv_loop(ws)
-            except Exception as exc:
-                self.get_logger().error(f"websocket disconnected: {exc}")
-                await asyncio.sleep(1.0)
-            finally:
-                self._ws = None
-
-    async def _recv_loop(self, ws) -> None:
-        async for raw in ws:
-            if isinstance(raw, str):
-                msg = loads_json(raw)
-                await self._handle_text(msg)
+class RosSession(Session):
+    def __init__(self, timeout=1200) -> None:
+        self.node = Node('ros_bridge')
+        self.sock: None | websockets.ClientConnection = None
+        super().__init__(timeout)
+    
+    def on_call(self, method: str, args: tuple) -> Any:
+        if method == 'list_topics':
+            return self.node.get_topic_names_and_types()
+        elif method == 'subscribe' or method == 'publish':
+            topic, type = args
+            msg_type = get_message(type)
+            if method == 'subscribe':
+                if not topic in subs:
+                    callback = lambda msg, topic=topic: self.on_message(topic, msg)
+                    subs[topic] = self.node.create_subscription(msg_type, topic, callback, 10)
             else:
-                await self._handle_binary(raw)
+                if not topic in pubs:
+                    pubs[topic] = self.node.create_publisher(msg_type, topic, 10)
+                if type == 'JointState':
+                    msg = JointState()
+                elif type == 'CompressedImage':
+                    msg = CompressedImage()
+                else:
+                    raise Exception(f'unknown message type {type}')
+                pubs[topic].publish(msg)
+        return super().on_call(method, args)
+    
+    def on_message(self, topic, msg: JointState | CompressedImage):
+        self.msgs.put_nowait({ 'ret': { 'topic': topic, 'msg': msg } })
+    
+    def step_once(self):
+        rclpy.spin_once(self.node)
+        return super().step_once()
 
-    async def _handle_text(self, msg: Dict[str, Any]) -> None:
-        op = msg.get("op")
-        request_id = msg.get("request_id")
-        try:
-            if op == "list_topics":
-                topics = self.get_topic_names_and_types()
-                await self._send_json(
-                    make_msg(
-                        "list_topics_result",
-                        request_id=request_id,
-                        ok=True,
-                        data={
-                            "topics": [
-                                {"name": name, "types": types}
-                                for name, types in topics
-                            ]
-                        },
-                    )
-                )
-                return
-
-            if op == "create_subscriber":
-                topic = msg["topic"]
-                ros_type = msg["ros_type"]
-                mode = msg.get("mode", "json")
-                qos_depth = int(msg.get("qos_depth", 10))
-                self._create_subscriber(topic, ros_type, mode, qos_depth)
-                await self._send_json(
-                    make_msg(
-                        "create_subscriber_result",
-                        request_id=request_id,
-                        ok=True,
-                        data={"topic": topic, "ros_type": ros_type, "mode": mode},
-                    )
-                )
-                return
-
-            if op == "remove_subscriber":
-                topic = msg["topic"]
-                self._remove_subscriber(topic)
-                await self._send_json(
-                    make_msg(
-                        "remove_subscriber_result",
-                        request_id=request_id,
-                        ok=True,
-                        data={"topic": topic},
-                    )
-                )
-                return
-
-            if op == "create_publisher":
-                topic = msg["topic"]
-                ros_type = msg["ros_type"]
-                mode = msg.get("mode", "json")
-                qos_depth = int(msg.get("qos_depth", 10))
-                self._create_publisher(topic, ros_type, mode, qos_depth)
-                await self._send_json(
-                    make_msg(
-                        "create_publisher_result",
-                        request_id=request_id,
-                        ok=True,
-                        data={"topic": topic, "ros_type": ros_type, "mode": mode},
-                    )
-                )
-                return
-
-            if op == "remove_publisher":
-                topic = msg["topic"]
-                self._remove_publisher(topic)
-                await self._send_json(
-                    make_msg(
-                        "remove_publisher_result",
-                        request_id=request_id,
-                        ok=True,
-                        data={"topic": topic},
-                    )
-                )
-                return
-
-            if op == "publish":
-                topic = msg["topic"]
-                data = msg.get("data", { })
-                encoding = msg.get("encoding", "json")
-                self._publish_json(topic, data, encoding)
-                await self._send_json(
-                    make_msg(
-                        "publish_result",
-                        request_id=request_id,
-                        ok=True,
-                        data={"topic": topic},
-                    )
-                )
-                return
-
-            await self._send_json(
-                make_msg(
-                    f"{op}_result",
-                    request_id=request_id,
-                    ok=False,
-                    error=f"unsupported op: {op}",
-                )
-            )
-        except Exception as exc:
-            self.get_logger().exception("request failed")
-            await self._send_json(
-                make_msg(
-                    f"{op}_result",
-                    request_id=request_id,
-                    ok=False,
-                    error=str(exc),
-                )
-            )
-
-    async def _handle_binary(self, raw: bytes) -> None:
-        env = decode_binary_envelope(raw)
-        header = env.header
-        op = header.get("op")
-        request_id = header.get("request_id")
-        try:
-            if op != "publish":
-                return
-            topic = header["topic"]
-            encoding = header.get("encoding", "cdr")
-            self._publish_binary(topic, env.payload, encoding)
-            await self._send_json(
-                make_msg(
-                    "publish_result",
-                    request_id=request_id,
-                    ok=True,
-                    data={"topic": topic},
-                )
-            )
-        except Exception as exc:
-            await self._send_json(
-                make_msg(
-                    "publish_result",
-                    request_id=request_id,
-                    ok=False,
-                    error=str(exc),
-                )
-            )
-
-    def _create_subscriber(self, topic: str, ros_type: str, mode: str, qos_depth: int) -> None:
-        self._remove_subscriber(topic)
-        msg_cls = get_message(ros_type)
-        qos = QoSProfile(depth=qos_depth)
-        callback = partial(self._on_ros_message, topic, ros_type, mode)
-        sub = self.create_subscription(msg_cls, topic, callback, qos)
-        self._ros_subs[topic] = RosSubscriptionHandle(topic, ros_type, sub, mode)
-        self.get_logger().info(f"subscriber created: {topic} [{ros_type}] mode={mode}")
-
-    def _remove_subscriber(self, topic: str) -> None:
-        handle = self._ros_subs.pop(topic, None)
-        if handle is not None:
-            self.destroy_subscription(handle.subscription)
-            self.get_logger().info(f"subscriber removed: {topic}")
-
-    def _create_publisher(self, topic: str, ros_type: str, mode: str, qos_depth: int) -> None:
-        self._remove_publisher(topic)
-        msg_cls = get_message(ros_type)
-        qos = QoSProfile(depth=qos_depth)
-        pub = self.create_publisher(msg_cls, topic, qos)
-        self._ros_pubs[topic] = RosPublisherHandle(topic, ros_type, pub, mode)
-        self.get_logger().info(f"publisher created: {topic} [{ros_type}] mode={mode}")
-
-    def _remove_publisher(self, topic: str) -> None:
-        handle = self._ros_pubs.pop(topic, None)
-        if handle is not None:
-            self.destroy_publisher(handle.publisher)
-            self.get_logger().info(f"publisher removed: {topic}")
-
-    def _on_ros_message(self, topic: str, ros_type: str, mode: str, msg: Any) -> None:
-        if mode == "json":
-            payload = {
-                "op": "topic_data",
-                "topic": topic,
-                "ros_type": ros_type,
-                "encoding": "json",
-                "data": message_to_ordereddict(msg),
-            }
-            asyncio.run_coroutine_threadsafe(self._send_json(payload), self._loop)
-            return
-
-        if mode == "cdr":
-            data = serialize_message(msg)
-            header = {
-                "op": "topic_data",
-                "topic": topic,
-                "ros_type": ros_type,
-                "encoding": "cdr",
-                "content_type": "application/x-ros2-cdr",
-            }
-            asyncio.run_coroutine_threadsafe(self._send_binary(header, data), self._loop)
-            return
-
-        raise ValueError(f"unsupported subscriber mode: {mode}")
-
-    def _publish_json(self, topic: str, data: Dict[str, Any], encoding: str) -> None:
-        if topic not in self._ros_pubs:
-            raise KeyError(f"publisher not found for topic: {topic}")
-        handle = self._ros_pubs[topic]
-        if encoding != "json":
-            raise ValueError(f"json publish only supports encoding=json, got {encoding}")
-        msg_cls = get_message(handle.ros_type)
-        msg = msg_cls()
-        set_message_fields(msg, data)
-        handle.publisher.publish(msg)
-
-    def _publish_binary(self, topic: str, payload: bytes, encoding: str) -> None:
-        if topic not in self._ros_pubs:
-            raise KeyError(f"publisher not found for topic: {topic}")
-        handle = self._ros_pubs[topic]
-        if encoding != "cdr":
-            raise ValueError(f"binary publish only supports encoding=cdr, got {encoding}")
-        msg_cls = get_message(handle.ros_type)
-        msg = deserialize_message(payload, msg_cls)
-        handle.publisher.publish(msg)
-
-    async def _send_json(self, msg: Dict[str, Any]) -> None:
-        ws = self._ws
-        if ws is None:
-            return
-        async with self._send_lock:
-            await ws.send(dumps_json(msg))
-
-    async def _send_binary(self, header: Dict[str, Any], payload: bytes) -> None:
-        ws = self._ws
-        if ws is None:
-            return
-        async with self._send_lock:
-            await ws.send(encode_binary_envelope(header, payload))
-
-
-def main() -> None:
+    async def connect(self):
+        server_url = os.environ.get('WS_ADDR', 'ws://localhost:13001/api/ros/ws')
+        async for sock in websockets.connect(server_url, max_size=None, ping_interval=20, ping_timeout=20):
+            self.sock = sock
+            async for data in sock:
+                method, args, call = pickle.loads(data) # type: ignore
+                res: dict = { 'call': call }
+                try:
+                    # TODO: 定位为什么走到这里就挂了
+                    res['ret'] = await self.call(method, *args)
+                except Exception as err:
+                    res['err'] = err
+                self.msgs.put_nowait(res)
+    
+    async def emit(self):
+        while True:
+            msg = await self.msgs.get()
+            if self.sock:
+                res = [msg.get('call'), msg.get('err'), msg.get('ret')]
+                await self.sock.send(pickle.dumps(res), False)
+    
+    async def start(self):
+        await asyncio.gather(self.connect(), self.emit())
+    
+if __name__ == '__main__':
     rclpy.init()
-    server_url = os.environ.get('WS_ADDR', "ws://127.0.0.1:13001/api/ros/ws")
-    bridge = RosWsBridge(server_url=server_url)
-    executor = MultiThreadedExecutor()
-    executor.add_node(bridge)
-    try:
-        executor.spin()
-    finally:
-        executor.shutdown()
-        bridge.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()
+    sess = RosSession()
+    asyncio.run(sess.start())

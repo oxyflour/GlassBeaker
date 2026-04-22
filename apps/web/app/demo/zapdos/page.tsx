@@ -125,6 +125,7 @@ function ZapdosLoader() {
                 added[item.name] = mesh
                 scene.add(mesh)
             }
+            await call(sess, 'subscribe', '/chatter', 'std_msgs/msg/String')
         }
 
         loadVisuals().catch(console.error)

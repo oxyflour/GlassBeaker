@@ -33,8 +33,14 @@ def mount_module(app: FastAPI, root: Path, sub_path: str, abs_path: Path) -> Non
             name = '{' + name[1:-1] + '}'
         if inspect.iscoroutinefunction(member) and not name.startswith('_'):
             route = f"{prefix}/{name}"
+            if name == '{ws}':
+                route = f"{prefix}/ws"
+                app.add_api_websocket_route(route, endpoint=member)
+            else:
+                if name == '{all}':
+                    route = f"{prefix}/{{all:path}}"
+                app.add_api_route(route, endpoint=member, methods=["GET", "POST"])
             print(f"INFO: adding api {route}")
-            app.add_api_route(route, endpoint=member, methods=["GET", "POST"])
 
 
 def mount_routes(app: FastAPI, sub_path: str) -> None:
