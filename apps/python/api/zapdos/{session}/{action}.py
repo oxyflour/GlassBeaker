@@ -32,9 +32,8 @@ class ZapdosSession(Session):
     def __init__(self, sess: str, xml: Path) -> None:
         self.sess = sess
 
-        xml_str = xml.read_text()
         asset_root = xml.parent
-        self.model = mujoco.MjModel.from_xml_string(xml_str) # type: ignore
+        self.model = mujoco.MjModel.from_xml_path(str(xml))  # type: ignore
         self.data = mujoco.MjData(self.model)                # type: ignore
         mujoco.mj_step(self.model, self.data)                # type: ignore
 

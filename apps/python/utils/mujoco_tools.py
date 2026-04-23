@@ -70,12 +70,16 @@ async def fix_urdf_path(urdf: Path) -> Path:
     return converted
 
 async def create_xml():
-    urdf = Path(rf'..\..\deps\galaxea\object\r1pro\r1_pro_with_gripper.urdf').resolve()
-    abs_urdf = await fix_urdf_path(urdf)
+    if False:
+        urdf = Path(rf'..\..\deps\galaxea\object\r1pro\r1_pro_with_gripper.urdf').resolve()
+        abs_urdf = await fix_urdf_path(urdf)
 
-    urdf_model = mujoco.MjModel.from_xml_path(str(abs_urdf))           # type: ignore
-    abs_xml = str(abs_urdf.with_suffix('.xml'))
-    mujoco.mj_saveLastXML(abs_xml, urdf_model) # type: ignore
+        urdf_model = mujoco.MjModel.from_xml_path(str(abs_urdf))           # type: ignore
+        abs_xml = str(abs_urdf.with_suffix('.xml'))
+        mujoco.mj_saveLastXML(abs_xml, urdf_model) # type: ignore
+    else:
+        abs_xml = Path(rf'..\..\deps\galaxea\object\r1pro\r1pro_conv.xml').resolve()
+
     xml_str = f'''
     <mujoco>
         <option timestep="0.001" />
@@ -85,6 +89,6 @@ async def create_xml():
         </worldbody>
     </mujoco>
     '''
-    out_xml = abs_urdf.parent / 'out.xml'
+    out_xml = abs_xml.parent / 'out.xml'
     out_xml.write_text(xml_str)
     return out_xml
