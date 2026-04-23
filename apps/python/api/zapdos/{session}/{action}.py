@@ -29,10 +29,11 @@ class ZapdosGeometry:
         self.abs_path = abs_path
 
 class ZapdosSession(Session):
-    def __init__(self, sess: str) -> None:
+    def __init__(self, sess: str, xml: Path) -> None:
         self.sess = sess
 
-        xml_str, asset_root = create_xml()
+        xml_str = xml.read_text()
+        asset_root = xml.parent
         self.model = mujoco.MjModel.from_xml_string(xml_str) # type: ignore
         self.data = mujoco.MjData(self.model)                # type: ignore
         mujoco.mj_step(self.model, self.data)                # type: ignore
@@ -93,14 +94,14 @@ class ZapdosSession(Session):
             for name, geom in self.visuals.items()
         }
 
-    def on_call(self, method: str, args: tuple):
+    def call_once(self, method: str, args: tuple):
         if method == 'ping':
             return 'pong'
         elif method == 'get_visual':
             return self.get_visual()
         elif method == 'get_pose':
             return self.get_pose()
-        return super().on_call(method, args)
+        return super().call_once(method, args)
     
     def step_once(self):
         if not self.msgs.full():
@@ -115,7 +116,8 @@ sessions: dict[str, ZapdosSession] = { }
 async def _name_(req: Request):
     sess = req.path_params['session']
     if sess not in sessions:
-        sessions[sess] = ZapdosSession(sess)
+        xml = await create_xml()
+        sessions[sess] = ZapdosSession(sess, xml)
     session = sessions[sess]
 
     action = req.path_params['action']

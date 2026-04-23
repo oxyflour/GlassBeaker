@@ -31,7 +31,7 @@ class RosSession(Session):
         self.sock: None | websockets.ClientConnection = None
         super().__init__(0)
     
-    def on_call(self, method: str, args: tuple) -> Any:
+    def call_once(self, method: str, args: tuple) -> Any:
         if method == 'list_topics':
             return self.node.get_topic_names_and_types()
         elif method == 'subscribe' or method == 'publish':
@@ -51,7 +51,7 @@ class RosSession(Session):
                 else:
                     raise Exception(f'unknown message type {type}')
                 pubs[topic].publish(msg)
-        return super().on_call(method, args)
+        return super().call_once(method, args)
     
     def on_message(self, topic, msg):
         msg = message_to_ordereddict(msg)
@@ -69,9 +69,9 @@ class RosSession(Session):
                 method, args, call = pickle.loads(data) # type: ignore
                 err, ret = None, None
                 try:
-                    ret = self.on_call(method, args)
-                except Exception as e:
-                    err = e
+                    ret = self.call_once(method, args)
+                except Exception as exception:
+                    err = exception
                 if self.sock:
                     await self.sock.send(pickle.dumps([call, err, ret]), False)
 

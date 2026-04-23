@@ -1,6 +1,7 @@
 import os
 import re
 import mujoco # type: ignore
+import asyncio
 import numpy as np
 from pathlib import Path
 
@@ -50,7 +51,7 @@ def geom_size(model, geom_id: int, kind: str) -> list[float]:
         return [float(max(size[0], 1e-3)), float(max(size[1] * 2, 1e-3))]
     raise ValueError(f'Unsupported primitive kind: {kind}')
 
-def fix_urdf_path(urdf: Path) -> Path:
+async def fix_urdf_path(urdf: Path) -> Path:
     xml = urdf.read_text(encoding='utf-8')
     converted = urdf.with_suffix('.converted.v5.urdf')
     if not os.path.exists(converted):
@@ -58,14 +59,19 @@ def fix_urdf_path(urdf: Path) -> Path:
         blender = os.environ.get('BLENDER_BINARY', rf"C:\Program Files\Blender Foundation\Blender 5.1\blender.exe")
         cmd = [blender, '--background', '--python', script, '--', str(urdf.parent / 'usd')]
         print('RUN: ', ' '.join([f'"{item}"' for item in cmd]))
-        #subprocess.run(cmd, check=True)
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
         xml = re.sub(r'filename="\./usd/(.*)\.usd"', r'filename="./usd/\1.stl"', xml)
         converted.write_text(xml, encoding='utf-8')
     return converted
 
-def create_xml():
+async def create_xml():
     urdf = Path(rf'..\..\deps\galaxea\object\r1pro\r1_pro_with_gripper.urdf').resolve()
-    abs_urdf = fix_urdf_path(urdf)
+    abs_urdf = await fix_urdf_path(urdf)
 
     urdf_model = mujoco.MjModel.from_xml_path(str(abs_urdf))           # type: ignore
     abs_xml = str(abs_urdf.with_suffix('.xml'))
@@ -79,6 +85,6 @@ def create_xml():
         </worldbody>
     </mujoco>
     '''
-    asset_root = abs_urdf.parent
-    return xml_str, asset_root
-
+    out_xml = abs_urdf.parent / 'out.xml'
+    out_xml.write_text(xml_str)
+    return out_xml

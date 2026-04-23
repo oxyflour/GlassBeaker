@@ -101,7 +101,11 @@ function ZapdosLoader() {
             state = { disposed: false }
 
         sse.onmessage = event => {
-            const { pose = { }, topic, msg } = JSON.parse(event.data) as { pose?: RobotPose, topic?: string, msg?: any }
+            const { pose = { }, topic, msg } = JSON.parse(event.data) as {
+                pose?: RobotPose
+                topic?: string
+                msg?: any
+            }
             for (const [name, matrix] of Object.entries(pose)) {
                 const object = added[name]
                 if (object) {
@@ -117,7 +121,11 @@ function ZapdosLoader() {
         async function loadVisuals() {
             const list = await call<RobotVisual[]>(sess, "get_visual"),
                 visuals = await Promise.all(list.map(async item => ({ ...item, geometry: await getGeometry(item) })))
-            if (!state.disposed) for (const item of visuals) {
+            if (state.disposed) {
+                return
+            }
+
+            for (const item of visuals) {
                 const mesh = new Mesh(item.geometry, getMaterial(item))
                 mesh.castShadow = !item.name.endsWith(".plane")
                 mesh.receiveShadow = true
@@ -128,7 +136,11 @@ function ZapdosLoader() {
                 added[item.name] = mesh
                 scene.add(mesh)
             }
-            await call(sess, 'subscribe', '/chatter', 'std_msgs/msg/String')
+
+            await Promise.all([
+                call(sess, 'subscribe', '/left_arm', 'sensor_msgs/msg/JointState'),
+                call(sess, 'subscribe', '/right_arm', 'sensor_msgs/msg/JointState'),
+            ])
         }
 
         loadVisuals().catch(console.error)

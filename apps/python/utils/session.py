@@ -29,7 +29,7 @@ class Session:
         method, args, res = self.calls.get(False)
         self.active = time.time()
         try:
-            ret = self.on_call(method, args)
+            ret = self.call_once(method, args)
             self.loop.call_soon_threadsafe(res.set_result, ret)
         except Exception as err:
             self.loop.call_soon_threadsafe(res.set_exception, err)
@@ -55,7 +55,7 @@ class Session:
             except queue.Empty:
                 await asyncio.sleep(0.1)
     
-    def on_call(self, method: str, args: tuple) -> Any:
+    def call_once(self, method: str, args: tuple) -> Any:
         return None
 
     def step_once(self):
