@@ -1,5 +1,6 @@
 import mujoco # type: ignore
 import numpy as np
+import asyncio
 from pathlib import Path
 
 from fastapi import HTTPException, Request
@@ -29,6 +30,13 @@ class ZapdosGeometry:
         self.abs_path = abs_path
 
 class ZapdosSession(Session):
+    @staticmethod
+    async def create(sess: str):
+        # TODO: load file
+        path = Path('../../deps/galaxea/object/r1pro/r1pro.usda').resolve()
+        xml = await create_xml(str(path))
+        return ZapdosSession(sess, xml)
+
     def __init__(self, sess: str, xml: Path) -> None:
         self.sess = sess
 
@@ -111,13 +119,12 @@ class ZapdosSession(Session):
     def on_message(self, topic: str, msg):
         self.msgs.put_nowait({ 'topic': topic, 'msg': msg })
 
-sessions: dict[str, ZapdosSession] = { }
+sessions: dict[str, asyncio.Future[ZapdosSession]] = { }
 async def _name_(req: Request):
     sess = req.path_params['session']
     if sess not in sessions:
-        xml = await create_xml()
-        sessions[sess] = ZapdosSession(sess, xml)
-    session = sessions[sess]
+        sessions[sess] = asyncio.create_task(ZapdosSession.create(sess))
+    session = await sessions[sess]
 
     action = req.path_params['action']
     name = req.path_params['name']

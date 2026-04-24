@@ -69,16 +69,28 @@ async def fix_urdf_path(urdf: Path) -> Path:
         converted.write_text(xml, encoding='utf-8')
     return converted
 
-async def create_xml():
-    if False:
-        urdf = Path(rf'..\..\deps\galaxea\object\r1pro\r1_pro_with_gripper.urdf').resolve()
-        abs_urdf = await fix_urdf_path(urdf)
-
-        urdf_model = mujoco.MjModel.from_xml_path(str(abs_urdf))           # type: ignore
-        abs_xml = str(abs_urdf.with_suffix('.xml'))
-        mujoco.mj_saveLastXML(abs_xml, urdf_model) # type: ignore
+async def create_xml(input: str):
+    if input.endswith('.xml'):
+        abs_xml = Path(input).resolve()
+    elif input.endswith('.urdf'):
+        abs_xml = Path(input).with_suffix('.xml').resolve()
+        if not abs_xml.exists():
+            abs_urdf = await fix_urdf_path(Path(input))
+            urdf_model = mujoco.MjModel.from_xml_path(str(abs_urdf))           # type: ignore
+            mujoco.mj_saveLastXML(abs_xml, urdf_model) # type: ignore
+    elif input.endswith('.usda'):
+        abs_xml = Path(input).with_suffix('.xml').resolve()
+        if not abs_xml.exists():
+            script = os.path.normpath(f"{__file__}/../../../../utils/usd_to_mjcf.py")
+            cmd = ['python', '-u', script, input, abs_xml, '--model-name', 'r1pro']
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await process.communicate()
     else:
-        abs_xml = Path(rf'..\..\deps\galaxea\object\r1pro\r1pro_conv.xml').resolve()
+        raise Exception(f'unknown input file format: {input}')
 
     xml_str = f'''
     <mujoco>
