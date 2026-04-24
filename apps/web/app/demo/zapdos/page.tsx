@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js"
@@ -8,7 +8,7 @@ import { EffectComposer, N8AO } from '@react-three/postprocessing'
 import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
 import { OrbitPointTrackballControls, TrackballOrbitControls } from "../../../utils/three/control"
-import { BoxGeometry, BufferGeometry, CapsuleGeometry, Color, CylinderGeometry, DoubleSide, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry, SphereGeometry, Texture, TextureLoader } from "three"
+import { BoxGeometry, BufferGeometry, Camera, CapsuleGeometry, Color, CylinderGeometry, DoubleSide, Mesh, MeshStandardMaterial, Object3D, PerspectiveCamera, PlaneGeometry, SphereGeometry, Texture, TextureLoader } from "three"
 import { Environment, Lightformer } from "@react-three/drei"
 
 type RobotPose = Record<string, number[]>
@@ -99,7 +99,7 @@ function getMaterial(item: RobotVisual & { image?: Texture }) {
     }))
 }
 
-function ZapdosLoader() {
+function ZapdosLoader({ updateCamera }: { updateCamera: (c: Record<string, number[]>) => void }) {
     const sess = useLocalUUID("zapdos-session"),
         { scene } = useThree()
 
@@ -110,8 +110,9 @@ function ZapdosLoader() {
             state = { disposed: false }
 
         sse.onmessage = event => {
-            const { pose = { }, topic, msg } = JSON.parse(event.data) as {
+            const { pose = { }, topic, msg, camera } = JSON.parse(event.data) as {
                 pose?: RobotPose
+                camera?: Record<string, number[]>
                 topic?: string
                 msg?: any
             }
@@ -121,6 +122,9 @@ function ZapdosLoader() {
                     object.matrix.fromArray(matrix)
                     object.matrixWorldNeedsUpdate = true
                 }
+            }
+            if (camera) {
+                updateCamera(camera)
             }
             if (topic) {
                 console.log('got topic', topic, msg)
@@ -170,18 +174,84 @@ function ZapdosLoader() {
     return null
 }
 
+interface CameraViewport {
+    viewport: { x: number, y: number, width: number, height: number },
+    camera: Camera
+    matrix: number[]
+}
+
+function MultiViewRenderer({ cameras }: { cameras: Record<string, CameraViewport> }) {
+    const { gl, scene, size, camera } = useThree()
+    useFrame(() => {
+        const w = size.width
+        const h = size.height
+
+        gl.autoClear = false
+        gl.clear()
+        gl.setScissorTest(true)
+
+        // 主视图：全屏
+        gl.setViewport(0, 0, w, h)
+        gl.setScissor(0, 0, w, h)
+        gl.setScissorTest(true)
+        if (camera instanceof PerspectiveCamera) {
+            camera.aspect = w / h
+        }
+        camera.updateProjectionMatrix()
+        gl.render(scene, camera)
+
+        for (const { viewport, camera, matrix } of Object.values(cameras)) {
+            const { x, y, width, height } = viewport
+            gl.clearDepth()
+            gl.setViewport(x, y, width, height)
+            gl.setScissor(x, y, width, height)
+            if (matrix.length) {
+                camera.matrixAutoUpdate = false
+                camera.matrix.fromArray(matrix)
+                camera.matrix.decompose(camera.position, camera.quaternion, camera.scale)
+                camera.updateMatrixWorld(true)
+            }
+            gl.render(scene, camera)
+        }
+    }, 1)
+    return null
+}
+
+const DEFAULT_CAMERAS = {
+    head_camera: {
+        camera: new PerspectiveCamera(45, 1, 0.1, 1000),
+        viewport: { x: 50, y: 50, width: 128, height: 128 },
+        matrix: []
+    }
+} as Record<string, CameraViewport>
+
 export default function Zapdos() {
-    const controlsRef = useRef<OrbitPointTrackballControls | null>(null)
+    const controlsRef = useRef<OrbitPointTrackballControls | null>(null),
+        [cameras, setCameras] = useState(DEFAULT_CAMERAS),
+        updateCameraRef = useRef(updateCamera)
+
     const handlePointDown = (event: ThreeEvent<MouseEvent>) => {
         controlsRef.current?.setOrbitPoint(event.point.x, event.point.y, event.point.z)
     }
+
+    function updateCamera(update: Record<string, number[]>) {
+        for (const [name, matrix] of Object.entries(update)) {
+            const item = cameras[name]
+            if (item) {
+                item.matrix = matrix
+            }
+        }
+    }
+    updateCameraRef.current = updateCamera
 
     return <div className="relative w-full h-full">
         <Canvas
             camera={ { far: 100, near: 0.01, position: [2.5, -2.5, 1.8], up: [0, 0, 1] } }
             className="w-full h-full" >
+
             { /* required to render spark splts */ }
             <SparkRendererBridge />
+            <MultiViewRenderer cameras={ cameras } />
 
             <ambientLight intensity={ 1.2 } />
             <directionalLight intensity={ 1.8 } position={ [6, -4, 8] } />
@@ -202,7 +272,7 @@ export default function Zapdos() {
                 </group>
             </Environment>
 
-            <group position={ [0, 0, 1] }>
+            <group position={ [0, 0, 2] }>
                 <SparkSplat url="/tmp/butterfly.spz" />
             </group>
             {
@@ -213,7 +283,7 @@ export default function Zapdos() {
                     </mesh>
                  */
             }
-            <ZapdosLoader />
+            <ZapdosLoader updateCamera={ updateCameraRef.current } />
         </Canvas>
     </div>
 }

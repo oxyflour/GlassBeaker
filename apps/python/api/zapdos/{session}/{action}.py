@@ -117,6 +117,18 @@ class ZapdosSession(Session):
             for name, geom in self.geoms.items()
         }
 
+    def get_camera(self) -> dict[str, list[float]]:
+        cameras: dict[str, list[float]] = {}
+        for cam_id in range(self.model.ncam):
+            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_CAMERA, cam_id) # type: ignore
+            if name is None:
+                continue
+            mat4 = np.eye(4)
+            mat4[:3, :3] = self.data.cam_xmat[cam_id].reshape(3, 3)
+            mat4[:3, 3] = self.data.cam_xpos[cam_id]
+            cameras[name] = flatten_matrix(mat4)
+        return cameras
+
     def call_once(self, method: str, args: tuple):
         if method == 'ping':
             return 'pong'
@@ -124,11 +136,13 @@ class ZapdosSession(Session):
             return self.get_visual()
         elif method == 'get_pose':
             return self.get_pose()
+        elif method == 'get_camera':
+            return self.get_camera()
         return super().call_once(method, args)
     
     def step_once(self):
         if not self.msgs.full():
-            self.msgs.put_nowait({ 'pose': self.get_pose() })
+            self.msgs.put_nowait({ 'pose': self.get_pose(), 'camera': self.get_camera() })
         mujoco.mj_step(self.model, self.data) # type: ignore
         if self.viewer:
             self.viewer.sync()
