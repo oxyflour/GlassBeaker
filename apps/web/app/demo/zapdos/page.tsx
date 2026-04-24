@@ -1,6 +1,6 @@
 'use client'
-import { useEffect, useRef } from "react"
-import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber"
+import { useEffect, useRef, useState } from "react"
+import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js"
 import { EffectComposer, N8AO } from '@react-three/postprocessing'
@@ -8,17 +8,19 @@ import { EffectComposer, N8AO } from '@react-three/postprocessing'
 import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
 import { OrbitPointTrackballControls, TrackballOrbitControls } from "../../../utils/three/control"
-import { BoxGeometry, BufferGeometry, CapsuleGeometry, Color, CylinderGeometry, DoubleSide, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry, SphereGeometry } from "three"
+import { BoxGeometry, BufferGeometry, CapsuleGeometry, Color, CylinderGeometry, DoubleSide, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry, SphereGeometry, Texture, TextureLoader } from "three"
 import { Environment, Lightformer } from "@react-three/drei"
 
 type RobotPose = Record<string, number[]>
 
 interface RobotVisual {
+    name: string
+    kind: string
     color: [number, number, number, number]
     matrix: number[]
-    name: string
     size?: number[]
-    url?: string
+    mesh?: string
+    texture?: string
 }
 
 async function call<T>(sess: string, method: string, ...args: unknown[]) {
@@ -36,56 +38,63 @@ async function call<T>(sess: string, method: string, ...args: unknown[]) {
 const stlLoader = new STLLoader(),
     objLoader = new OBJLoader()
 async function getGeometry(item: RobotVisual) {
-    const ext = item.name.split('.').pop()?.toLowerCase() || '',
-        { size = [1, 1, 1] } = item
-    if (ext === 'stl') {
-        return await stlLoader.loadAsync(item.url || '')
-    } else if (ext === 'obj') {
-        const obj = await objLoader.loadAsync(item.url || '')
-        let geometry: BufferGeometry | null = null
-        obj.traverse(child => {
-            if (child instanceof Mesh && child.geometry) {
-                geometry = child.geometry as BufferGeometry
+    const { size = [1, 1, 1] } = item
+    if (item.kind === 'mesh') {
+        if (item.mesh?.endsWith('.stl')) {
+            return await stlLoader.loadAsync(item.mesh || '')
+        } else if (item.mesh?.endsWith('.obj')) {
+            const obj = await objLoader.loadAsync(item.mesh || '')
+            let geometry: BufferGeometry | null = null
+            obj.traverse(child => {
+                if (child instanceof Mesh && child.geometry) {
+                    geometry = child.geometry as BufferGeometry
+                }
+            })
+            if (!geometry) {
+                throw new Error(`No mesh found in OBJ ${item.mesh}`)
             }
-        })
-        if (!geometry) {
-            throw new Error(`No mesh found in OBJ ${item.url}`)
+            return geometry
+        } else {
+            throw Error(`unknown mesh type ${item.mesh}`)
         }
-        return geometry
-    } else if (ext === 'box') {
+    } else if (item.kind === 'box') {
         return new BoxGeometry(size[0], size[1], size[2])
-    } else if (ext === 'capsule') {
+    } else if (item.kind === 'capsule') {
         const geometry = new CapsuleGeometry(size[0], size[1], 12, 24)
         geometry.rotateX(Math.PI / 2)
         return geometry
-    } else if (ext === 'cylinder') {
+    } else if (item.kind === 'cylinder') {
         const geometry = new CylinderGeometry(size[0], size[0], size[1], 24)
         geometry.rotateX(Math.PI / 2)
         return geometry
-    } else if (ext === 'ellipsoid') {
+    } else if (item.kind === 'ellipsoid') {
         const geometry = new SphereGeometry(1, 24, 16)
         geometry.scale(size[0] / 2, size[1] / 2, size[2] / 2)
         return geometry
-    } else if (ext === 'plane') {
-        return new PlaneGeometry(size[0], size[1])
-    } else if (ext === 'sphere') {
+    } else if (item.kind === 'plane') {
+        const geometry = new PlaneGeometry(size[0], size[1])
+        geometry.rotateY(Math.PI / 2)
+        return geometry
+    } else if (item.kind === 'sphere') {
         return new SphereGeometry(size[0], 24, 16)
     } else {
         throw new Error(`Unsupported geometry type for ${item.name}`)
     }
 }
 
-const materials = { } as Record<string, MeshStandardMaterial>
-function getMaterial(item: RobotVisual) {
+const materials = { } as Record<string, MeshStandardMaterial>,
+    textureLoader = new TextureLoader()
+function getMaterial(item: RobotVisual & { image?: Texture }) {
     const [r, g, b, a] = item.color,
         isPlane = item.name.endsWith(".plane"),
-        key = `${item.color.join(',')}:${isPlane}`
+        key = `${item.color.join(',')}:${isPlane}:${item.texture}`
     return materials[key] || (materials[key] = new MeshStandardMaterial({
         color: new Color(r, g, b),
         opacity: a,
         roughness: isPlane ? 1.0 : 0.2,
         metalness: isPlane ? 0.0 : 0.3,
         transparent: a < 1,
+        ...(item.image ? { map: item.image } : { }),
         ...(isPlane ? { side: DoubleSide } : { }),
     }))
 }
@@ -120,7 +129,11 @@ function ZapdosLoader() {
 
         async function loadVisuals() {
             const list = await call<RobotVisual[]>(sess, "get_visual"),
-                visuals = await Promise.all(list.map(async item => ({ ...item, geometry: await getGeometry(item) })))
+                visuals = await Promise.all(list.map(async item => ({
+                    ...item,
+                    geometry: await getGeometry(item),
+                    image: item.texture ? await textureLoader.loadAsync(item.texture) : undefined,
+                })))
             if (state.disposed) {
                 return
             }
@@ -163,43 +176,44 @@ export default function Zapdos() {
         controlsRef.current?.setOrbitPoint(event.point.x, event.point.y, event.point.z)
     }
 
-    return <Canvas
-        camera={ { far: 100, near: 0.01, position: [2.5, -2.5, 1.8], up: [0, 0, 1] } }
-        className="w-full h-full" >
+    return <div className="relative w-full h-full">
+        <Canvas
+            camera={ { far: 100, near: 0.01, position: [2.5, -2.5, 1.8], up: [0, 0, 1] } }
+            className="w-full h-full" >
+            { /* required to render spark splts */ }
+            <SparkRendererBridge />
 
-        { /* required to render spark splts */ }
-        <SparkRendererBridge />
+            <ambientLight intensity={ 1.2 } />
+            <directionalLight intensity={ 1.8 } position={ [6, -4, 8] } />
+            <directionalLight intensity={ 0.8 } position={ [-4, 6, 4] } />
 
-        <ambientLight intensity={ 1.2 } />
-        <directionalLight intensity={ 1.8 } position={ [6, -4, 8] } />
-        <directionalLight intensity={ 0.8 } position={ [-4, 6, 4] } />
+            <TrackballOrbitControls controlsRef={ controlsRef } />
 
-        <TrackballOrbitControls controlsRef={ controlsRef } />
+            <EffectComposer multisampling={8}>
+                <N8AO distanceFalloff={1} aoRadius={1} intensity={4} />
+            </EffectComposer>
 
-        <EffectComposer multisampling={8}>
-            <N8AO distanceFalloff={1} aoRadius={1} intensity={4} />
-        </EffectComposer>
+            <Environment resolution={256}>
+                <group rotation={[-Math.PI / 3, 0, 1]}>
+                    <Lightformer form="circle" intensity={4} rotation-x={Math.PI / 2} position={[0, 5, -9]} scale={2} />
+                    <Lightformer form="circle" intensity={2} rotation-y={Math.PI / 2} position={[-5, 1, -1]} scale={2} />
+                    <Lightformer form="circle" intensity={2} rotation-y={Math.PI / 2} position={[-5, -1, -1]} scale={2} />
+                    <Lightformer form="circle" intensity={2} rotation-y={-Math.PI / 2} position={[10, 1, 0]} scale={8} />
+                </group>
+            </Environment>
 
-        <Environment resolution={256}>
-            <group rotation={[-Math.PI / 3, 0, 1]}>
-                <Lightformer form="circle" intensity={4} rotation-x={Math.PI / 2} position={[0, 5, -9]} scale={2} />
-                <Lightformer form="circle" intensity={2} rotation-y={Math.PI / 2} position={[-5, 1, -1]} scale={2} />
-                <Lightformer form="circle" intensity={2} rotation-y={Math.PI / 2} position={[-5, -1, -1]} scale={2} />
-                <Lightformer form="circle" intensity={2} rotation-y={-Math.PI / 2} position={[10, 1, 0]} scale={8} />
+            <group position={ [0, 0, 1] }>
+                <SparkSplat url="/tmp/butterfly.spz" />
             </group>
-        </Environment>
-
-        <group position={ [0, 0, 1] }>
-            <SparkSplat url="/tmp/butterfly.spz" />
-        </group>
-        {
-            /*
-                <mesh onPointerDown={ handlePointDown } scale={ [0.1, 0.1, 0.1] } >
-                    <boxGeometry/>
-                    <meshNormalMaterial />
-                </mesh>
-             */
-        }
-        <ZapdosLoader />
-    </Canvas>
+            {
+                /*
+                    <mesh onPointerDown={ handlePointDown } scale={ [0.1, 0.1, 0.1] } >
+                        <boxGeometry/>
+                        <meshNormalMaterial />
+                    </mesh>
+                 */
+            }
+            <ZapdosLoader />
+        </Canvas>
+    </div>
 }

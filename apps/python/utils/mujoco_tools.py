@@ -5,12 +5,19 @@ import asyncio
 import numpy as np
 from pathlib import Path
 
-def decode_path(model, mesh_id: int):
+def decode_mesh_path(model, mesh_id: int):
     start = int(model.mesh_pathadr[mesh_id])
     end = model.paths.find(b'\x00', start)
     if end < 0:
         end = len(model.paths)
-    return model.paths[start:end].decode('utf-8')
+    return Path(model.paths[start:end].decode('utf-8'))
+
+def decode_texture_path(model, tex_id: int):
+    start = int(model.tex_pathadr[tex_id])
+    end = model.paths.find(b'\x00', start)
+    if end < 0:
+        end = len(model.paths)
+    return Path(model.paths[start:end].decode('utf-8'))
 
 def quat_matrix(quat: np.ndarray) -> np.ndarray:
     w, x, y, z = [float(v) for v in quat]
@@ -72,14 +79,18 @@ async def fix_urdf_path(urdf: Path) -> Path:
 async def create_xml(input: str):
     if input.endswith('.xml'):
         abs_xml = Path(input).resolve()
+
     elif input.endswith('.urdf'):
         abs_xml = Path(input).with_suffix('.xml').resolve()
+        print(f'check {abs_xml} for {input}')
         if not abs_xml.exists():
             abs_urdf = await fix_urdf_path(Path(input))
             urdf_model = mujoco.MjModel.from_xml_path(str(abs_urdf))           # type: ignore
             mujoco.mj_saveLastXML(abs_xml, urdf_model) # type: ignore
+
     elif input.endswith('.usda'):
         abs_xml = Path(input).with_suffix('.xml').resolve()
+        print(f'check {abs_xml} for {input}')
         if not abs_xml.exists():
             script = os.path.normpath(f"{__file__}/../../../../utils/usd_to_mjcf.py")
             cmd = ['python', '-u', script, input, abs_xml, '--model-name', 'r1pro']
@@ -89,6 +100,7 @@ async def create_xml(input: str):
                 stderr=asyncio.subprocess.PIPE
             )
             await process.communicate()
+
     else:
         raise Exception(f'unknown input file format: {input}')
 
