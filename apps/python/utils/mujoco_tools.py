@@ -92,8 +92,9 @@ async def create_xml(input: str):
         abs_xml = Path(input).with_suffix('.xml').resolve()
         print(f'check {abs_xml} for {input}')
         if not abs_xml.exists():
-            script = os.path.normpath(f"{__file__}/../../../../utils/usd_to_mjcf.py")
-            cmd = ['python', '-u', script, input, abs_xml, '--model-name', 'r1pro']
+            script = os.path.normpath(f"{__file__}/../usd_to_mjcf.py")
+            cmd = ['python', '-u', script, input, str(abs_xml), '--model-name', 'r1pro']
+            print('CMD: ' + ' '.join(cmd))
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,

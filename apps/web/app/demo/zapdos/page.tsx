@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js"
@@ -7,9 +7,8 @@ import { EffectComposer, N8AO } from '@react-three/postprocessing'
 
 import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
-import { OrbitPointTrackballControls, TrackballOrbitControls } from "../../../utils/three/control"
 import { BoxGeometry, BufferGeometry, Camera, CapsuleGeometry, Color, CylinderGeometry, DoubleSide, Mesh, MeshStandardMaterial, Object3D, PerspectiveCamera, PlaneGeometry, SphereGeometry, Texture, TextureLoader } from "three"
-import { Environment, Lightformer } from "@react-three/drei"
+import { ArcballControls, Environment, Lightformer, OrbitControls } from "@react-three/drei"
 
 type RobotPose = Record<string, number[]>
 
@@ -176,12 +175,11 @@ function ZapdosLoader({ updateCamera }: { updateCamera: (c: Record<string, numbe
 
 interface CameraViewport {
     viewport: { x: number, y: number, width: number, height: number },
-    camera: Camera
-    matrix: number[]
+    camera: PerspectiveCamera
 }
 
-function MultiViewRenderer({ cameras }: { cameras: Record<string, CameraViewport> }) {
-    const { gl, scene, size, camera } = useThree()
+function MultiViewRenderer({ main, cameras }: { main: PerspectiveCamera, cameras: Record<string, CameraViewport> }) {
+    const { gl, scene, size } = useThree()
     useFrame(() => {
         const w = size.width
         const h = size.height
@@ -194,70 +192,58 @@ function MultiViewRenderer({ cameras }: { cameras: Record<string, CameraViewport
         gl.setViewport(0, 0, w, h)
         gl.setScissor(0, 0, w, h)
         gl.setScissorTest(true)
-        if (camera instanceof PerspectiveCamera) {
-            camera.aspect = w / h
-        }
-        camera.updateProjectionMatrix()
-        gl.render(scene, camera)
+        main.updateProjectionMatrix()
+        gl.render(scene, main)
 
-        for (const { viewport, camera, matrix } of Object.values(cameras)) {
+        for (const { viewport, camera } of Object.values(cameras)) {
             const { x, y, width, height } = viewport
             gl.clearDepth()
             gl.setViewport(x, y, width, height)
             gl.setScissor(x, y, width, height)
-            if (matrix.length) {
-                camera.matrixAutoUpdate = false
-                camera.matrix.fromArray(matrix)
-                camera.matrix.decompose(camera.position, camera.quaternion, camera.scale)
-                camera.updateMatrixWorld(true)
-            }
             gl.render(scene, camera)
         }
     }, 1)
     return null
 }
 
-const DEFAULT_CAMERAS = {
-    head_camera: {
-        camera: new PerspectiveCamera(45, 1, 0.1, 1000),
-        viewport: { x: 50, y: 50, width: 128, height: 128 },
-        matrix: []
-    }
-} as Record<string, CameraViewport>
-
+const mainCamera = new PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 100)
+mainCamera.position.set(2.5, -2.5, 1.8)
 export default function Zapdos() {
-    const controlsRef = useRef<OrbitPointTrackballControls | null>(null),
-        [cameras, setCameras] = useState(DEFAULT_CAMERAS),
-        updateCameraRef = useRef(updateCamera)
-
-    const handlePointDown = (event: ThreeEvent<MouseEvent>) => {
-        controlsRef.current?.setOrbitPoint(event.point.x, event.point.y, event.point.z)
-    }
-
-    function updateCamera(update: Record<string, number[]>) {
-        for (const [name, matrix] of Object.entries(update)) {
-            const item = cameras[name]
-            if (item) {
-                item.matrix = matrix
+    const [cameras, setCameras] = useState({ } as Record<string, CameraViewport>),
+        // FIXME
+        cameraRef = useRef(cameras),
+        updateCamera = useCallback((update: Record<string, number[]>) => {
+            const cameras = cameraRef.current
+            for (const [name, matrix] of Object.entries(update)) {
+                const { camera } = cameras[name] || { }
+                if (camera) {
+                    camera.matrixAutoUpdate = false
+                    camera.matrix.fromArray(matrix)
+                    camera.matrix.decompose(camera.position, camera.quaternion, camera.scale)
+                    camera.updateMatrixWorld(true)
+                }
             }
-        }
-    }
-    updateCameraRef.current = updateCamera
+            if (Object.keys(cameraRef.current).sort().join(',') !== Object.keys(update).sort().join(',')) {
+                setCameras(Object.fromEntries(Object.keys(update).map((name, idx) => [name, {
+                    camera: new PerspectiveCamera(45, 1, 0.01, 100),
+                    viewport: { x: 10 + 160 * idx, y: 10, width: 150, height: 150 },
+                }])))
+            }
+        }, [])
+    cameraRef.current = cameras
 
     return <div className="relative w-full h-full">
-        <Canvas
-            camera={ { far: 100, near: 0.01, position: [2.5, -2.5, 1.8], up: [0, 0, 1] } }
-            className="w-full h-full" >
-
+        <Canvas className="w-full h-full" >
             { /* required to render spark splts */ }
             <SparkRendererBridge />
-            <MultiViewRenderer cameras={ cameras } />
+
+            <MultiViewRenderer main={ mainCamera } cameras={ cameras } />
 
             <ambientLight intensity={ 1.2 } />
             <directionalLight intensity={ 1.8 } position={ [6, -4, 8] } />
             <directionalLight intensity={ 0.8 } position={ [-4, 6, 4] } />
 
-            <TrackballOrbitControls controlsRef={ controlsRef } />
+            <OrbitControls camera={ mainCamera } />
 
             <EffectComposer multisampling={8}>
                 <N8AO distanceFalloff={1} aoRadius={1} intensity={4} />
@@ -283,7 +269,7 @@ export default function Zapdos() {
                     </mesh>
                  */
             }
-            <ZapdosLoader updateCamera={ updateCameraRef.current } />
+            <ZapdosLoader updateCamera={ updateCamera } />
         </Canvas>
     </div>
 }
