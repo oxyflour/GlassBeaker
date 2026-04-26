@@ -1,3 +1,6 @@
+import io
+import traceback
+
 import mujoco # type: ignore
 import mujoco.viewer
 import numpy as np
@@ -6,14 +9,16 @@ import os
 
 from pathlib import Path
 from dataclasses import dataclass
+from PIL import Image
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from utils.session import Session
+from utils.session import Session, Timer
 from utils.mujoco_tools import create_xml, flatten_matrix, geom_size, geom_world_pose, mesh_world_pose
 from utils.mujoco_tools import decode_mesh_path, decode_texture_path
 from utils.ros_bridge import bridge
+from utils.sim_env import TF_RENDER_TOPIC, TF_RENDER_TYPE, IsaacRenderer, _mjpeg_chunk, _placeholder_jpeg, _tf_message
 
 PRIMITIVE_TYPES = {
     int(mujoco.mjtGeom.mjGEOM_PLANE)    : 'plane',     # type: ignore
@@ -40,11 +45,11 @@ class ZapdosSession(Session):
     @staticmethod
     async def create(sess: str):
         # TODO: load file
-        path = Path('../../deps/galaxea/object/r1pro/r1pro.usda').resolve()
-        xml = await create_xml(str(path))
-        return ZapdosSession(sess, xml)
+        usd = Path('../../deps/galaxea/object/r1pro/r1pro.usda').resolve()
+        xml = await create_xml(str(usd))
+        return ZapdosSession(sess, usd, xml)
 
-    def __init__(self, sess: str, xml: Path) -> None:
+    def __init__(self, sess: str, usd: Path, xml: Path) -> None:
         self.sess = sess
 
         asset_root = xml.parent
@@ -69,7 +74,6 @@ class ZapdosSession(Session):
                 tex_id = int(self.model.mat_texid[mat_id, 0]) if mat_id >= 0 else -1
                 tex_rel = decode_texture_path(self.model, tex_id)
                 geom.texture = tex_rel.name
-                print(geom.mesh, mat_id, tex_id, geom.texture)
                 self.assets[geom.texture] = (asset_root / tex_rel).resolve()
             elif geom.kind:
                 geom.size = geom_size(self.model, geom_id, geom.kind)
@@ -82,7 +86,12 @@ class ZapdosSession(Session):
             geom.name = f'geom-{geom_id}'
             self.geoms[geom.name] = geom
 
+        self.renderer = IsaacRenderer(sess, usd, 640, 480, 30, True, 0)
+        asyncio.run_coroutine_threadsafe(self.send_ros(), self.loop)
+
         super().__init__()
+
+        self.timers.append(Timer(0.03, self.send_sse))
 
     def get_visual(self) -> list[dict]:
         poses = self.get_pose()
@@ -128,16 +137,48 @@ class ZapdosSession(Session):
             return self.get_camera()
         return super().call_once(method, args)
     
-    def step_once(self):
+    def send_sse(self):
         if not self.msgs.full():
             self.msgs.put_nowait({ 'pose': self.get_pose(), 'camera': self.get_camera() })
+    
+    async def send_ros(self):
+        while self.is_active():
+            try:
+                await bridge.call("publish", [
+                    TF_RENDER_TOPIC, TF_RENDER_TYPE,
+                    _tf_message(self.model, self.data)
+                ])
+                await asyncio.sleep(0.03)
+            except Exception:
+                traceback.print_exc()
+                await asyncio.sleep(1)
+    
+    def step_once(self):
+
         mujoco.mj_step(self.model, self.data) # type: ignore
+
+        # DEBUG
         if self.viewer:
             self.viewer.sync()
         return super().step_once()
     
     def on_message(self, topic: str, msg):
         self.msgs.put_nowait({ 'topic': topic, 'msg': msg })
+
+    async def render(self):
+        while self.is_active():
+            while not self.renderer.ready:
+                yield _mjpeg_chunk(_placeholder_jpeg(640, 480, 'Waiting'))
+                await asyncio.sleep(1)
+            try:
+                index, frame = self.renderer.read() or []
+                data = io.BytesIO()
+                Image.fromarray(frame).save(data, format="JPEG", quality=80)
+                yield _mjpeg_chunk(data.getvalue())
+                await asyncio.sleep(0.03)
+            except:
+                traceback.print_exc()
+                await asyncio.sleep(1)
     
     def destroy(self):
         for topic in bridge.subs:
@@ -164,6 +205,11 @@ async def _name_(req: Request):
         else:
             args = await req.json()
             return await session.call(name, *args)
+    
+    if action == 'render':
+        return StreamingResponse(
+            session.render(),
+            media_type="multipart/x-mixed-replace; boundary=frame")
 
     elif action == 'asset':
         asset = session.assets.get(name)

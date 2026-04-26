@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import mujoco # type: ignore
 import asyncio
 import numpy as np
@@ -103,7 +104,7 @@ async def create_xml(input: str):
         print(f'check {abs_xml} for {input}')
         if not abs_xml.exists():
             script = os.path.normpath(f"{__file__}/../usd_to_mjcf.py")
-            cmd = ['python', '-u', script, input, str(abs_xml), '--model-name', 'r1pro']
+            cmd = [sys.executable, '-u', script, input, str(abs_xml), '--model-name', 'r1pro']
             print('CMD: ' + ' '.join(cmd))
             process = await asyncio.create_subprocess_exec(
                 *cmd,
