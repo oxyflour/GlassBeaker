@@ -86,12 +86,11 @@ class ZapdosSession(Session):
             geom.name = f'geom-{geom_id}'
             self.geoms[geom.name] = geom
 
-        self.renderer = IsaacRenderer(sess, usd, 640, 480, 30, True, 0)
-        asyncio.run_coroutine_threadsafe(self.send_ros(), self.loop)
-
         super().__init__()
 
         self.timers.append(Timer(0.03, self.send_sse))
+        self.renderer = IsaacRenderer(sess, usd, 640, 480, 30, True, 0)
+        asyncio.run_coroutine_threadsafe(self.send_ros(), self.loop)
 
     def get_visual(self) -> list[dict]:
         poses = self.get_pose()
@@ -142,6 +141,8 @@ class ZapdosSession(Session):
             self.msgs.put_nowait({ 'pose': self.get_pose(), 'camera': self.get_camera() })
     
     async def send_ros(self):
+        await self.renderer.wait_ready()
+        print('ros ready')
         while self.is_active():
             try:
                 await bridge.call("publish", [
@@ -154,10 +155,7 @@ class ZapdosSession(Session):
                 await asyncio.sleep(1)
     
     def step_once(self):
-
         mujoco.mj_step(self.model, self.data) # type: ignore
-
-        # DEBUG
         if self.viewer:
             self.viewer.sync()
         return super().step_once()

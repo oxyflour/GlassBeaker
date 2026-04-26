@@ -106,7 +106,6 @@ class IsaacRenderer:
         self.frames: np.ndarray | None = None
 
         self._spawn()
-        self.wait_ready()
 
     @property
     def running(self) -> bool:
@@ -147,6 +146,7 @@ class IsaacRenderer:
             print(f'set {key}=' + env[key])
         cmd = [
             str(ISAAC_PYTHON),
+            "-u",
             str(RENDERER_SCRIPT),
             "--scene-usd", str(self.scene_usd),
             "--num-envs", "1",
@@ -160,7 +160,8 @@ class IsaacRenderer:
         ]
         if not self.headless:
             cmd.pop()
-        print(' '.join(cmd))
+        print('CMD: ' + ' '.join(cmd))
+        print('INFO: check log ' + str(self.log_path))
         self.proc = subprocess.Popen(
             cmd,
             cwd=REPO_ROOT,
@@ -169,7 +170,7 @@ class IsaacRenderer:
             stderr=subprocess.STDOUT,
             text=True)
 
-    def wait_ready(self, timeout: float = 120.0) -> dict[str, Any]:
+    async def wait_ready(self, timeout: float = 300.0) -> dict[str, Any]:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if not self.running:
@@ -181,7 +182,8 @@ class IsaacRenderer:
                 self._bind_shm()
                 return self.status()
             except FileNotFoundError:
-                time.sleep(0.1)
+                print('shared memory not ready, waiting...')
+                await asyncio.sleep(5)
         try:
             raise TimeoutError(f"renderer did not create shared memory '{self.shm_name}' in {timeout:.0f}s")
         finally:
