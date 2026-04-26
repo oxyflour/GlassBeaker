@@ -18,7 +18,7 @@ from utils.session import Session, Timer
 from utils.mujoco_tools import create_xml, flatten_matrix, geom_size, geom_world_pose, mesh_world_pose
 from utils.mujoco_tools import decode_mesh_path, decode_texture_path
 from utils.ros_bridge import bridge
-from utils.sim_env import TF_RENDER_TOPIC, TF_RENDER_TYPE, IsaacRenderer, _mjpeg_chunk, _placeholder_jpeg, _tf_message
+from utils.sim_env import TF_RENDER_TOPIC, TF_RENDER_TYPE, IsaacRenderer, mjpeg_chunk, placeholder_jpeg, tf_message
 
 PRIMITIVE_TYPES = {
     int(mujoco.mjtGeom.mjGEOM_PLANE)    : 'plane',     # type: ignore
@@ -29,6 +29,8 @@ PRIMITIVE_TYPES = {
     int(mujoco.mjtGeom.mjGEOM_BOX)      : 'box',       # type: ignore
     int(mujoco.mjtGeom.mjGEOM_MESH)     : 'mesh',      # type: ignore
 }
+
+RENDER_SIZE = (640, 480)
 
 @dataclass
 class ZapdosGeometry:
@@ -89,7 +91,7 @@ class ZapdosSession(Session):
         super().__init__()
 
         self.timers.append(Timer(0.03, self.send_sse))
-        self.renderer = IsaacRenderer(sess, usd, 640, 480, 30, True, 0)
+        self.renderer = IsaacRenderer(sess, usd, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
         asyncio.run_coroutine_threadsafe(self.send_ros(), self.loop)
 
     def get_visual(self) -> list[dict]:
@@ -146,7 +148,7 @@ class ZapdosSession(Session):
             try:
                 await bridge.call("publish", [
                     TF_RENDER_TOPIC, TF_RENDER_TYPE,
-                    _tf_message(self.model, self.data)
+                    tf_message(self.model, self.data)
                 ])
                 await asyncio.sleep(0.03)
             except Exception:
@@ -165,13 +167,13 @@ class ZapdosSession(Session):
     async def render(self):
         while self.is_active():
             while not self.renderer.ready:
-                yield _mjpeg_chunk(_placeholder_jpeg(640, 480, 'Waiting'))
+                yield mjpeg_chunk(placeholder_jpeg(RENDER_SIZE[0], RENDER_SIZE[1], 'Waiting'))
                 await asyncio.sleep(1)
             try:
                 index, frame = self.renderer.read() or []
                 data = io.BytesIO()
                 Image.fromarray(frame).save(data, format="JPEG", quality=80)
-                yield _mjpeg_chunk(data.getvalue())
+                yield mjpeg_chunk(data.getvalue())
                 await asyncio.sleep(0.03)
             except:
                 traceback.print_exc()

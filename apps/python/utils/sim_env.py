@@ -5,12 +5,14 @@ import io
 import json
 import os
 import queue
-import subprocess
 import time
 from functools import lru_cache
 from multiprocessing import shared_memory
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import mujoco  # type: ignore
 import mujoco.viewer  # type: ignore
@@ -33,6 +35,7 @@ MAIN_CAM_PRIM = "/default_viz_camera"
 TF_RENDER_TOPIC = "/env_0/tf_render"
 TF_RENDER_TYPE = "tf2_msgs/msg/TFMessage"
 SHM_HEADER_BYTES = 4
+ISAAC_API_URL = os.getenv("ISAAC_API_URL", "http://127.0.0.1:13000/api/isaac")
 
 
 def _tail(path: Path, lines: int = 40) -> str:
@@ -41,19 +44,30 @@ def _tail(path: Path, lines: int = 40) -> str:
     return "\n".join(path.read_text(encoding="utf-8", errors="ignore").splitlines()[-lines:])
 
 
-def _consume_future(task) -> None:
-    try:
-        task.exception()
-    except Exception:
-        pass
-
-
-def _mjpeg_chunk(payload: bytes) -> bytes:
+def mjpeg_chunk(payload: bytes) -> bytes:
     return b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
 
 
+def _isaac_request(method: str, payload: dict[str, Any] | None = None, query: dict[str, str] | None = None, timeout: float = 30.0) -> dict[str, Any]:
+    url = ISAAC_API_URL
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    headers = {"Content-Type": "application/json"} if payload is not None else {}
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = Request(url, data=body, headers=headers, method=method)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            data = response.read()
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Isaac API {method} failed: {exc.code} {detail or exc.reason}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Isaac API unavailable at {ISAAC_API_URL}: {exc.reason}") from exc
+    return json.loads(data.decode("utf-8")) if data else {}
+
+
 @lru_cache(maxsize=8)
-def _placeholder_jpeg(width: int, height: int, text: str) -> bytes:
+def placeholder_jpeg(width: int, height: int, text: str) -> bytes:
     image = Image.new("RGB", (width, height), (20, 24, 32))
     draw = ImageDraw.Draw(image)
     draw.rectangle((0, height - 56, width, height), fill=(10, 12, 18))
@@ -63,7 +77,7 @@ def _placeholder_jpeg(width: int, height: int, text: str) -> bytes:
     return data.getvalue()
 
 
-def _tf_message(model, data) -> dict[str, Any]:
+def tf_message(model, data) -> dict[str, Any]:
     transforms: list[dict[str, Any]] = []
     quat = np.empty(4)
     for body_id in range(1, model.nbody):
@@ -90,6 +104,7 @@ def _isaac_ros_root() -> Path | None:
             return root
     return None
 
+
 def _setup_env(env):
     env.pop("ELECTRON_RUN_AS_NODE", None)
     env["SIM_REPO_ROOT"] = str(REPO_ROOT / "deps" / "genie_sim")
@@ -114,19 +129,19 @@ class IsaacRenderer:
         self.render_hz = render_hz
         self.headless = headless
         self.ros_domain_id = ros_domain_id
+        self.proc_id: str | None = None
+        self.proc_pid: int | None = None
+        self._running = False
         self.shm_name = f"glassbeaker_{tag}_frames"
         self.log_path = REPO_ROOT / "apps" / "python" / "tmp" / f"renderer_{tag}.log"
-        self.proc: subprocess.Popen[str] | None = None
-        self.log_file = None
         self.shm: shared_memory.SharedMemory | None = None
         self.frame_counter: np.ndarray | None = None
         self.frames: np.ndarray | None = None
-
         self._spawn()
 
     @property
     def running(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
+        return self._running and self.proc_id is not None
 
     @property
     def ready(self) -> bool:
@@ -139,6 +154,16 @@ class IsaacRenderer:
         self.frame_counter = np.ndarray((1,), dtype=np.uint32, buffer=self.shm.buf, offset=0)
         self.frames = np.ndarray((1, 1, self.height, self.width, 3), dtype=np.uint8, buffer=self.shm.buf, offset=SHM_HEADER_BYTES)
 
+    def _refresh_process_state(self) -> bool:
+        if self.proc_id is None:
+            self._running = False
+            return False
+        state = _isaac_request("GET", query={"id": self.proc_id}, timeout=5.0)
+        self._running = bool(state.get("running"))
+        pid = state.get("pid")
+        self.proc_pid = int(pid) if pid is not None else self.proc_pid
+        return self._running
+
     def _spawn(self) -> None:
         if not ISAAC_PYTHON.exists():
             raise FileNotFoundError(f"Isaac Python not found: {ISAAC_PYTHON}")
@@ -146,7 +171,6 @@ class IsaacRenderer:
             raise FileNotFoundError(f"Renderer script not found: {RENDERER_SCRIPT}")
         self.close()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self.log_file = open(self.log_path, "w", encoding="utf-8")
         env = os.environ.copy()
         env["ROS_DOMAIN_ID"] = str(self.ros_domain_id)
         _setup_env(env)
@@ -168,20 +192,23 @@ class IsaacRenderer:
             cmd.pop()
         print('CMD: ' + ' '.join(cmd))
         print('INFO: check log ' + str(self.log_path))
-        self.proc = subprocess.Popen(
-            cmd,
-            cwd=REPO_ROOT / 'apps' / 'isaac',
-            env=env,
-            stdout=self.log_file,
-            stderr=subprocess.STDOUT,
-            text=True)
+        state = _isaac_request("POST", {
+            "id": self.shm_name,
+            "cmd": cmd,
+            "cwd": str(REPO_ROOT / "apps" / "isaac"),
+            "env": env,
+            "logPath": str(self.log_path),
+        })
+        self.proc_id = str(state.get("id") or self.shm_name)
+        self.proc_pid = int(state["pid"]) if state.get("pid") is not None else None
+        self._running = bool(state.get("running", True))
 
     async def wait_ready(self, timeout: float = 300.0) -> dict[str, Any]:
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if not self.running:
+            if not self._refresh_process_state():
                 try:
-                    raise RuntimeError(_tail(self.log_path) or f"renderer exited with code {self.proc.returncode if self.proc else '?'}")
+                    raise RuntimeError(_tail(self.log_path) or f"renderer exited before creating shared memory '{self.shm_name}'")
                 finally:
                     self.close()
             try:
@@ -210,6 +237,8 @@ class IsaacRenderer:
         return {
             "running": self.running,
             "ready": self.ready,
+            "proc_id": self.proc_id,
+            "proc_pid": self.proc_pid,
             "ros_domain_id": self.ros_domain_id,
             "shm_name": self.shm_name,
             "width": self.width,
@@ -218,21 +247,20 @@ class IsaacRenderer:
         }
 
     def close(self) -> None:
-        if self.proc is not None:
+        if self.proc_id is not None:
             try:
-                self.proc.terminate()
-                self.proc.wait(timeout=5)
+                _isaac_request("DELETE", {"id": self.proc_id}, timeout=10.0)
             except Exception:
-                self.proc.kill()
-            self.proc = None
+                pass
+            self.proc_id = None
+            self.proc_pid = None
+            self._running = False
         if self.shm is not None:
             self.shm.close()
             self.shm = None
             self.frame_counter = None
             self.frames = None
-        if self.log_file is not None:
-            self.log_file.close()
-            self.log_file = None
+
 
 if __name__ == '__main__':
     renderer = IsaacRenderer(

@@ -98,9 +98,11 @@ function resolvePythonRuntime(label = '') {
 }
 
 async function startServer(nextJsPort = 13000, pythonPort = 13001) {
+    const isaacRuntime = `http://127.0.0.1:${nextJsPort}/api/isaac`
+
     const pyRuntime = resolvePythonRuntime('python')
     watchProc(pyRuntime.label, spawn(pyRuntime.command, pyRuntime.args, {
-        env: { ...process.env, LISTEN_PORT: `${pythonPort}`, NO_PROXY: '*' },
+        env: { ...process.env, LISTEN_PORT: `${pythonPort}`, NO_PROXY: '*', ISAAC_API_URL: isaacRuntime },
         cwd: pyRuntime.cwd,
         stdio: 'pipe'
     }))
