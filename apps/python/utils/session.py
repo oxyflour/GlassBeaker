@@ -13,7 +13,7 @@ class Timer:
         self.last_run = time.time()
 
     def step(self, now: float):
-        while self.last_run - now > self.interval:
+        while now - self.last_run > self.interval:
             try:
                 self.step_once()
             except:

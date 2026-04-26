@@ -19,6 +19,7 @@ from utils.mujoco_tools import create_xml, flatten_matrix, geom_size, geom_world
 from utils.mujoco_tools import decode_mesh_path, decode_texture_path
 from utils.ros_bridge import bridge
 from utils.sim_env import TF_RENDER_TOPIC, TF_RENDER_TYPE, IsaacRenderer, mjpeg_chunk, placeholder_jpeg, tf_message
+from utils.usd_frames import build_frame_map
 
 PRIMITIVE_TYPES = {
     int(mujoco.mjtGeom.mjGEOM_PLANE)    : 'plane',     # type: ignore
@@ -60,6 +61,7 @@ class ZapdosSession(Session):
         self.viewer = mujoco.viewer.launch_passive(self.model, self.data) \
             if os.environ.get('DEBUG_MUJOCO_VIEWER') else None
         mujoco.mj_step(self.model, self.data)               # type: ignore
+        self.body_frames = build_frame_map(usd)
 
         self.geoms: dict[str, ZapdosGeometry] = { }
         self.assets: dict[str, Path] = { }
@@ -148,7 +150,7 @@ class ZapdosSession(Session):
             try:
                 await bridge.call("publish", [
                     TF_RENDER_TOPIC, TF_RENDER_TYPE,
-                    tf_message(self.model, self.data)
+                    tf_message(self.model, self.data, self.body_frames)
                 ])
                 await asyncio.sleep(0.03)
             except Exception:

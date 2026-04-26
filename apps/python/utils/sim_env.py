@@ -77,18 +77,19 @@ def placeholder_jpeg(width: int, height: int, text: str) -> bytes:
     return data.getvalue()
 
 
-def tf_message(model, data) -> dict[str, Any]:
+def tf_message(model, data, frame_names: dict[str, str] | None = None) -> dict[str, Any]:
     transforms: list[dict[str, Any]] = []
     quat = np.empty(4)
     for body_id in range(1, model.nbody):
         body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)  # type: ignore
         if not body:
             continue
+        child_frame = frame_names.get(body, body) if frame_names else body
         mujoco.mju_mat2Quat(quat, np.array(data.xmat[body_id], dtype=float).reshape(-1))  # type: ignore
         pos = np.array(data.xpos[body_id], dtype=float)
         transforms.append({
             "header": {"frame_id": "world"},
-            "child_frame_id": body,
+            "child_frame_id": child_frame,
             "transform": {
                 "translation": {"x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2])},
                 "rotation": {"w": float(quat[0]), "x": float(quat[1]), "y": float(quat[2]), "z": float(quat[3])},
