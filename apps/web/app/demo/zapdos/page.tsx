@@ -72,7 +72,6 @@ async function getGeometry(item: RobotVisual) {
         return geometry
     } else if (item.kind === 'plane') {
         const geometry = new PlaneGeometry(size[0], size[1])
-        geometry.rotateY(Math.PI / 2)
         return geometry
     } else if (item.kind === 'sphere') {
         return new SphereGeometry(size[0], 24, 16)

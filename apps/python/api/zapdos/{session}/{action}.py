@@ -138,6 +138,11 @@ class ZapdosSession(Session):
     
     def on_message(self, topic: str, msg):
         self.msgs.put_nowait({ 'topic': topic, 'msg': msg })
+    
+    def destroy(self):
+        for topic in bridge.subs:
+            bridge.unsubscribe(topic, self.on_message)
+        return super().destroy()
 
 sessions: dict[str, asyncio.Future[ZapdosSession]] = { }
 async def _name_(req: Request):

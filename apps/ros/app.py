@@ -34,23 +34,25 @@ class RosSession(Session):
     def call_once(self, method: str, args: tuple) -> Any:
         if method == 'list_topics':
             return self.node.get_topic_names_and_types()
-        elif method == 'subscribe' or method == 'publish':
+
+        elif method == 'subscribe':
             topic, type = args
             msg_type = get_message(type)
-            if method == 'subscribe':
-                if not topic in subs:
-                    callback = lambda msg, topic=topic: self.on_message(topic, msg)
-                    subs[topic] = self.node.create_subscription(msg_type, topic, callback, 10)
-            else:
-                if not topic in pubs:
-                    pubs[topic] = self.node.create_publisher(msg_type, topic, 10)
-                if type == 'JointState':
-                    msg = JointState()
-                elif type == 'CompressedImage':
-                    msg = CompressedImage()
-                else:
-                    raise Exception(f'unknown message type {type}')
-                pubs[topic].publish(msg)
+            if not topic in subs:
+                callback = lambda msg, topic=topic: self.on_message(topic, msg)
+                subs[topic] = self.node.create_subscription(msg_type, topic, callback, 10)
+
+        elif method == 'publish':
+            topic, type, data = args
+            msg_type = get_message(type)
+            if not topic in pubs:
+                pubs[topic] = self.node.create_publisher(msg_type, topic, 10)
+            msg = msg_type()
+            # TODO: add data
+            pubs[topic].publish(msg)
+
+        else:
+            raise Exception(f'unknown method {method}')
         return super().call_once(method, args)
     
     def on_message(self, topic, msg):

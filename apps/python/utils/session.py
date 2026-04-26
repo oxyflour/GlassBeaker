@@ -34,6 +34,9 @@ class Session:
         except Exception as err:
             self.loop.call_soon_threadsafe(res.set_exception, err)
     
+    def destroy(self):
+        pass
+    
     def run(self):
         while self.timeout <= 0 or time.time() - self.active < self.timeout:
             try:
@@ -46,6 +49,7 @@ class Session:
                 self.step_once()
             except:
                 traceback.print_exc()
+        self.destroy()
     
     async def stream(self):
         while self.timeout <= 0 or time.time() - self.active < self.timeout:

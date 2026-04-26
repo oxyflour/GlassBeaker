@@ -18,6 +18,11 @@ class Bridge:
         else:
             raise Exception('no connections now')
     
+    def unsubscribe(self, topic: str, callback):
+        subs = self.subs.get(topic)
+        if subs and callback in subs:
+            subs.remove(callback)
+    
     async def subscribe(self, topic: str, type: str, callback):
         if not topic in self.subs:
             self.subs[topic] = set()

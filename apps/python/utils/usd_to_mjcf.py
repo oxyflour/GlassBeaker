@@ -1083,8 +1083,15 @@ class USDToMJCFConverter:
                     if stiffness <= 0.0:
                         stiffness = None
 
+                authored_target_position = self.get_authored_attr(
+                    prim,
+                    f"drive:{drive_axis}:physics:targetPosition",
+                    default=None,
+                )
                 target_position = self.get_attr(prim, f"drive:{drive_axis}:physics:targetPosition", default=None)
-                if stiffness is not None and target_position is not None:
+                if target_position is not None and (
+                    stiffness is not None or authored_target_position is not None
+                ):
                     springref = self.joint_value_to_mjcf(kind, float(target_position))
 
                 max_force = self.get_attr(prim, f"drive:{drive_axis}:physics:maxForce", default=None)
@@ -1210,20 +1217,76 @@ class USDToMJCFConverter:
     def node_local_matrix(self, node: BodyNode) -> np.ndarray:
         return pose_to_matrix(node.local_pos, node.local_quat)
 
+    def joint_has_drive(self, joint: JointData) -> bool:
+        return any((
+            joint.damping is not None,
+            joint.stiffness is not None,
+            joint.springref is not None,
+            joint.actuatorfrcrange is not None,
+        ))
+
+    def range_is_finite(self, value_range: Optional[Tuple[float, float]]) -> bool:
+        if value_range is None:
+            return False
+        return math.isfinite(float(value_range[0])) and math.isfinite(float(value_range[1]))
+
+    def estimate_position_kp(self, joint: JointData) -> float:
+        if joint.stiffness is not None and joint.stiffness > 0.0:
+            return float(joint.stiffness)
+
+        if joint.actuatorfrcrange is not None:
+            max_force = max(abs(float(joint.actuatorfrcrange[0])), abs(float(joint.actuatorfrcrange[1])))
+            if max_force > 0.0:
+                if joint.range is not None and self.range_is_finite(joint.range):
+                    target = float(joint.springref) if joint.springref is not None else 0.0
+                    span = max(abs(float(joint.range[0]) - target), abs(float(joint.range[1]) - target))
+                else:
+                    span = math.pi if joint.kind == "hinge" else 0.05
+                # Make the servo hit its force limit after a very small tracking
+                # error so zero-control models still hold their rest pose.
+                return max_force / max(span * 1e-3, 1e-6)
+
+        return 1e5 if joint.kind == "slide" else 1e3
+
+    def prefers_velocity_actuator(self, joint: JointData) -> bool:
+        return (
+            joint.kind in ("hinge", "slide")
+            and joint.springref is None
+            and not self.range_is_finite(joint.range)
+            and joint.damping is not None
+        )
+
+    def estimate_velocity_kv(self, joint: JointData) -> float:
+        base = float(joint.damping) if joint.damping is not None and joint.damping > 0.0 else 1.0
+        if joint.actuatorfrcrange is not None:
+            max_force = max(abs(float(joint.actuatorfrcrange[0])), abs(float(joint.actuatorfrcrange[1])))
+            if max_force > 0.0:
+                speed_span = 1.0 if joint.kind == "slide" else 10.0
+                return max(base, max_force / speed_span)
+
+        # Treat unbounded wheel-like joints as speed-controlled with a firm
+        # zero-velocity target, so ctrl=0 acts as a brake at reset.
+        return max(base * 50.0, 100.0 if joint.kind == "slide" else 1000.0)
+
     # ------------------------
     # MJCF XML emit
     # ------------------------
 
     def create_mjcf(self) -> ET.Element:
         mujoco = ET.Element("mujoco", attrib={"model": self.model_name})
+        has_velocity_actuator = any(
+            node.joint is not None and self.prefers_velocity_actuator(node.joint)
+            for node in self.nodes.values()
+        )
 
         ET.SubElement(mujoco, "compiler", attrib={
             "angle": "radian",
             "autolimits": "true",
         })
-        ET.SubElement(mujoco, "option", attrib={
-            "gravity": "0 0 -9.81",
-        })
+        option_attr = {"gravity": "0 0 -9.81"}
+        if has_velocity_actuator:
+            option_attr["integrator"] = "implicitfast"
+        ET.SubElement(mujoco, "option", attrib=option_attr)
 
         asset = ET.SubElement(mujoco, "asset")
 
@@ -1280,6 +1343,48 @@ class USDToMJCFConverter:
 
         for root_path in self.root_paths():
             self.emit_node_recursive(root_path, emit_parent, np_identity())
+
+        actuator = ET.SubElement(mujoco, "actuator")
+        for node in self.nodes.values():
+            if node.joint is None:
+                continue
+
+            joint = node.joint
+            if joint.kind not in ("hinge", "slide") or not self.joint_has_drive(joint):
+                continue
+
+            if joint.springref is not None:
+                actuator_attr = {
+                    "name": f"{joint.name}_position",
+                    "joint": joint.name,
+                    "kp": fmt_f(self.estimate_position_kp(joint)),
+                }
+                if self.range_is_finite(joint.range):
+                    actuator_attr["ctrlrange"] = fmt_vec(joint.range)
+                if joint.actuatorfrcrange is not None:
+                    actuator_attr["forcerange"] = fmt_vec(joint.actuatorfrcrange)
+                ET.SubElement(actuator, "position", attrib=actuator_attr)
+                continue
+
+            if self.prefers_velocity_actuator(joint):
+                actuator_attr = {
+                    "name": f"{joint.name}_motor",
+                    "joint": joint.name,
+                    "kv": fmt_f(self.estimate_velocity_kv(joint)),
+                }
+                if joint.actuatorfrcrange is not None:
+                    actuator_attr["forcerange"] = fmt_vec(joint.actuatorfrcrange)
+                ET.SubElement(actuator, "velocity", attrib=actuator_attr)
+                continue
+
+            actuator_attr = {
+                "name": f"{joint.name}_motor",
+                "joint": joint.name,
+            }
+            if joint.actuatorfrcrange is not None:
+                actuator_attr["ctrlrange"] = fmt_vec(joint.actuatorfrcrange)
+                actuator_attr["forcerange"] = fmt_vec(joint.actuatorfrcrange)
+            ET.SubElement(actuator, "motor", attrib=actuator_attr)
 
         return mujoco
 
