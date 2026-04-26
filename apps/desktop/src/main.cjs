@@ -79,7 +79,7 @@ function resolvePythonRuntime(label = '') {
         } : {
             label,
             command: 'uv',
-            args: ['run', '--no-sync', '--project', '.', '--python', '3.12', 'python', '-u', 'app.py'],
+            args: ['run', '--no-sync', 'python', '-u', 'app.py'],
             cwd: path.join(root, label)
         }
     }

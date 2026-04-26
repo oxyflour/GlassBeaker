@@ -17,6 +17,9 @@ import mujoco.viewer  # type: ignore
 import numpy as np
 from PIL import Image, ImageDraw
 
+import os, sys
+sys.path.append(f'{__file__}/../../')
+
 from utils.mujoco_tools import create_xml, flatten_matrix
 from utils.ros_bridge import bridge
 from utils.session import Session
@@ -87,6 +90,20 @@ def _isaac_ros_root() -> Path | None:
             return root
     return None
 
+def _setup_env(env):
+    env.pop("ELECTRON_RUN_AS_NODE", None)
+    env["SIM_REPO_ROOT"] = str(REPO_ROOT / "deps" / "genie_sim")
+    env["PYTHONUNBUFFERED"] = "1"
+    ros_root = _isaac_ros_root()
+    py_paths = [str(REPO_ROOT / "deps" / "genie_sim" / "source")]
+    if ros_root is not None:
+        py_paths.append(str(ros_root / "rclpy"))
+        env["PATH"] = os.pathsep.join([str(ros_root / "lib"), env.get("PATH", "")])
+        print(f'set PATH=%PATH%;' + str(ros_root / "lib"))
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [*py_paths, env.get("PYTHONPATH", "")]))
+    for key in ['SIM_REPO_ROOT', 'ROS_DOMAIN_ID', 'PYTHONUNBUFFERED', 'PYTHONPATH']:
+        print(f'set {key}=' + env[key])
+
 
 class IsaacRenderer:
     def __init__(self, sess: str, scene_usd: Path, width: int, height: int, render_hz: float, headless: bool, ros_domain_id: int) -> None:
@@ -131,19 +148,8 @@ class IsaacRenderer:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_file = open(self.log_path, "w", encoding="utf-8")
         env = os.environ.copy()
-        env.pop("ELECTRON_RUN_AS_NODE", None)
-        env["SIM_REPO_ROOT"] = str(REPO_ROOT / "deps" / "genie_sim")
         env["ROS_DOMAIN_ID"] = str(self.ros_domain_id)
-        env["PYTHONUNBUFFERED"] = "1"
-        ros_root = _isaac_ros_root()
-        py_paths = [str(REPO_ROOT / "deps" / "genie_sim" / "source")]
-        if ros_root is not None:
-            py_paths.append(str(ros_root / "rclpy"))
-            env["PATH"] = os.pathsep.join([str(ros_root / "lib"), env.get("PATH", "")])
-            print(f'set PATH=%PATH%;' + str(ros_root / "lib"))
-        env["PYTHONPATH"] = os.pathsep.join(filter(None, [*py_paths, env.get("PYTHONPATH", "")]))
-        for key in ['SIM_REPO_ROOT', 'ROS_DOMAIN_ID', 'PYTHONUNBUFFERED', 'PYTHONPATH']:
-            print(f'set {key}=' + env[key])
+        _setup_env(env)
         cmd = [
             str(ISAAC_PYTHON),
             "-u",
@@ -164,7 +170,7 @@ class IsaacRenderer:
         print('INFO: check log ' + str(self.log_path))
         self.proc = subprocess.Popen(
             cmd,
-            cwd=REPO_ROOT,
+            cwd=REPO_ROOT / 'apps' / 'isaac',
             env=env,
             stdout=self.log_file,
             stderr=subprocess.STDOUT,
@@ -228,3 +234,8 @@ class IsaacRenderer:
             self.log_file.close()
             self.log_file = None
 
+if __name__ == '__main__':
+    renderer = IsaacRenderer(
+        'xx',
+        Path(rf'deps\galaxea\object\r1pro\r1pro.usda'),
+        640, 480, 30, True, 0)

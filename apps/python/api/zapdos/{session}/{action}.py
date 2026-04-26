@@ -142,7 +142,6 @@ class ZapdosSession(Session):
     
     async def send_ros(self):
         await self.renderer.wait_ready()
-        print('ros ready')
         while self.is_active():
             try:
                 await bridge.call("publish", [
