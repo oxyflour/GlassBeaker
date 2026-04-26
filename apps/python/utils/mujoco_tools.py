@@ -40,6 +40,16 @@ def pose_matrix(pos: np.ndarray, quat: np.ndarray, scale: np.ndarray | None = No
 def flatten_matrix(matrix: np.ndarray) -> list[float]:
     return [float(v) for v in matrix.T.reshape(-1)]
 
+def mesh_world_pose(model, data, geom_id: int):
+    geom_world = geom_world_pose(data, geom_id)
+    mesh_id = int(model.geom_dataid[geom_id])
+    mesh_local = pose_matrix(
+        model.mesh_pos[mesh_id],
+        model.mesh_quat[mesh_id],
+        model.mesh_scale[mesh_id],
+    )
+    return geom_world @ np.linalg.inv(mesh_local)
+
 def geom_world_pose(data, geom_id: int) -> np.ndarray:
     matrix = np.eye(4)
     matrix[:3, :3] = np.array(data.geom_xmat[geom_id], dtype=float).reshape(3, 3)

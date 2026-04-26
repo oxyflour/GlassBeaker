@@ -11,7 +11,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from utils.session import Session
-from utils.mujoco_tools import create_xml, flatten_matrix, geom_size, geom_world_pose, pose_matrix
+from utils.mujoco_tools import create_xml, flatten_matrix, geom_size, geom_world_pose, mesh_world_pose
 from utils.mujoco_tools import decode_mesh_path, decode_texture_path
 from utils.ros_bridge import bridge
 
@@ -84,19 +84,6 @@ class ZapdosSession(Session):
 
         super().__init__()
 
-    def geom_source_matrix(self, geom_id: int):
-        geom_world = geom_world_pose(self.data, geom_id)
-        mesh_id = int(self.model.geom_dataid[geom_id])
-        mesh_local = pose_matrix(
-            self.model.mesh_pos[mesh_id],
-            self.model.mesh_quat[mesh_id],
-            self.model.mesh_scale[mesh_id],
-        )
-        return geom_world @ np.linalg.inv(mesh_local)
-
-    def geom_primitive_matrix(self, geom_id: int):
-        return geom_world_pose(self.data, geom_id)
-
     def get_visual(self) -> list[dict]:
         poses = self.get_pose()
         return [{
@@ -110,12 +97,13 @@ class ZapdosSession(Session):
         } for name, geom in self.geoms.items()]
 
     def get_pose(self) -> dict[str, list[float]]:
-        return {
-            name: flatten_matrix( \
-                  self.geom_source_matrix(geom.geom_id) if geom.mesh is not None else \
-                  self.geom_primitive_matrix(geom.geom_id))
-            for name, geom in self.geoms.items()
-        }
+        poses: dict[str, list[float]] = { }
+        for name, geom in self.geoms.items():
+            pose = \
+                mesh_world_pose(self.model, self.data, geom.geom_id) if geom.mesh else \
+                geom_world_pose(self.data, geom.geom_id)
+            poses[name] = flatten_matrix(pose)
+        return poses
 
     def get_camera(self) -> dict[str, list[float]]:
         cameras: dict[str, list[float]] = {}
