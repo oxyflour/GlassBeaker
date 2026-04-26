@@ -1,0 +1,16 @@
+[project]
+name = "isaac"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "isaacsim[all,extscache]==5.1.0",
+]
+
+[tool.uv.sources]
+isaacsim = { index = "nvidia" }
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com/"
