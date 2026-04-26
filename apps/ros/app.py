@@ -13,10 +13,9 @@ from rclpy.node import Node                              # type: ignore
 from rclpy.subscription import Subscription              # type: ignore
 from rclpy.publisher import Publisher                    # type: ignore
 
-from sensor_msgs.msg import JointState, CompressedImage  # type: ignore
-
 from rosidl_runtime_py.utilities import get_message      # type: ignore
 from rosidl_runtime_py import message_to_ordereddict     # type: ignore
+from rosidl_runtime_py.set_message import set_message_fields  # type: ignore
 
 import sys
 sys.path.append(os.path.normpath(f'{__file__}/../../'))
@@ -48,7 +47,7 @@ class RosSession(Session):
             if not topic in pubs:
                 pubs[topic] = self.node.create_publisher(msg_type, topic, 10)
             msg = msg_type()
-            # TODO: add data
+            set_message_fields(msg, data)
             pubs[topic].publish(msg)
 
         else:
