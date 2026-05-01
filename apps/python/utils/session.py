@@ -41,7 +41,7 @@ class Session:
         self.calls.put_nowait((method, args, res))
         return await res
 
-    def proc_call(self):
+    def proc_once(self):
         method, args, res = self.calls.get(False)
         self.active = time.time()
         try:
@@ -49,6 +49,15 @@ class Session:
             self.loop.call_soon_threadsafe(res.set_result, ret)
         except Exception as err:
             self.loop.call_soon_threadsafe(res.set_exception, err)
+    
+    def proc_calls(self):
+        while not self.calls.empty():
+            try:
+                self.proc_once()
+            except queue.Empty:
+                pass
+            except:
+                traceback.print_exc()
     
     def is_active(self):
         return self.timeout <= 0 or time.time() - self.active < self.timeout
@@ -58,12 +67,7 @@ class Session:
             now = time.time()
             for timer in self.timers:
                 timer.step(now)
-            try:
-                self.proc_call()
-            except queue.Empty:
-                pass
-            except:
-                traceback.print_exc()
+            self.proc_calls()
             try:
                 self.step_once()
             except:
