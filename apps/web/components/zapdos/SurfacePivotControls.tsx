@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef } from "react"
 import { useThree } from "@react-three/fiber"
-import { Object3D, PerspectiveCamera, Vector2, Vector3 } from "three"
+import { PerspectiveCamera, Scene, Vector2, Vector3 } from "three"
 
 import {
     createRigState,
@@ -19,15 +19,6 @@ const DEFAULT_PIVOT = new Vector3(0, 0, 0)
 const DOLLY_SPEED = 0.002
 const MIN_DISTANCE = 0.25
 const MAX_DISTANCE = 100
-
-function isDescendantOf(object: Object3D, ancestor: Object3D | null) {
-    for (let current: Object3D | null = object; current; current = current.parent) {
-        if (current === ancestor) {
-            return true
-        }
-    }
-    return false
-}
 
 export function SurfacePivotControls({ pickRootName }: { pickRootName?: string }) {
     const { camera, gl, invalidate, scene } = useThree()
@@ -92,11 +83,8 @@ export function SurfacePivotControls({ pickRootName }: { pickRootName?: string }
                 return null
             }
 
-            const hit = pickSurfacePoint(scene, camera, toNdc(point))
-            if (!hit || (pickRoot && !isDescendantOf(hit.object, pickRoot))) {
-                return null
-            }
-            return hit.point
+            const hit = pickSurfacePoint((pickRoot ?? scene) as Scene, camera, toNdc(point))
+            return hit?.point ?? null
         }
 
         const isButtonStillPressed = (gesture: SurfacePivotGesture, buttons: number) =>
