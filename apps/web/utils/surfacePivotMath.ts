@@ -188,5 +188,6 @@ export function pickSurfacePoint(scene: Scene, camera: Camera, pointerNdc: Vecto
     }
   });
 
-  return raycaster.intersectObjects(meshes, false)[0] ?? null;
+  const hit = raycaster.intersectObjects(meshes, false)[0] as Intersection<Mesh> | undefined;
+  return hit ?? null;
 }
