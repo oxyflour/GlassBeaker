@@ -5,7 +5,7 @@ import { Canvas, useThree } from "@react-three/fiber"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js"
 import { EffectComposer, N8AO } from "@react-three/postprocessing"
-import { Environment, Html, Lightformer, OrbitControls } from "@react-three/drei"
+import { Environment, Lightformer } from "@react-three/drei"
 import {
     BoxGeometry,
     BufferGeometry,
@@ -24,6 +24,7 @@ import {
 
 import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
+import { SurfacePivotControls } from "../../../components/zapdos/SurfacePivotControls"
 
 interface RobotVisual {
     name: string
@@ -228,7 +229,7 @@ function Zapdos({ sess }: { sess: string }) {
             <ambientLight intensity={ 1.2 } />
             <directionalLight intensity={ 1.8 } position={ [6, -4, 8] } />
             <directionalLight intensity={ 0.8 } position={ [-4, 6, 4] } />
-            <OrbitControls />
+            <SurfacePivotControls />
             <EffectComposer multisampling={ 8 }>
                 <N8AO aoRadius={ 1 } distanceFalloff={ 1 } intensity={ 4 } />
             </EffectComposer>
