@@ -201,6 +201,7 @@ async function runNijikaSimulation(jsonPath: string, outputDir: string): Promise
             "--mesh-hex-build-grid",
             "--mesh-hex-grid-padding-cells", "2",
             "--mesh-hex-cell-per-wavelength", "20",
+            "--fitd-farfield-freq", "1.4e9,1.45e9,1.5e9",
             "--fitd-loop-steps", SIMULATION_CONFIG.fitd.loop_steps.toString(),
         ].join(" ")
 

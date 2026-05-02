@@ -6,7 +6,7 @@ import { PerspectiveCamera, Scene, Vector2, Vector3 } from "three"
 
 import {
     createRigState,
-    dollyRig,
+    dollyRigAnchoredToPivot,
     finishGesture,
     pickSurfacePoint,
     startGesture,
@@ -168,7 +168,7 @@ export function SurfacePivotControls({ pickRootName }: { pickRootName?: string }
         const onWheel = (event: WheelEvent) => {
             const rig = rigRef.current ?? readRig()
             event.preventDefault()
-            applyRig(dollyRig(rig, event.deltaY, DOLLY_SPEED, MIN_DISTANCE, MAX_DISTANCE))
+            applyRig(dollyRigAnchoredToPivot(rig, event.deltaY, DOLLY_SPEED, MIN_DISTANCE, MAX_DISTANCE))
         }
 
         readRig()

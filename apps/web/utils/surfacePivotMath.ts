@@ -93,7 +93,7 @@ export function updateGesture(
     const worldUnitsPerPixel = (2 * distance * Math.tan((_fov * Math.PI) / 360)) / viewport.height;
     const offset = new Vector3()
       .addScaledVector(new Vector3(1, 0, 0).applyQuaternion(currentRig.quaternion), -delta.x * worldUnitsPerPixel * panSpeed)
-      .addScaledVector(new Vector3(0, 1, 0).applyQuaternion(currentRig.quaternion), -delta.y * worldUnitsPerPixel * panSpeed);
+      .addScaledVector(new Vector3(0, 1, 0).applyQuaternion(currentRig.quaternion), delta.y * worldUnitsPerPixel * panSpeed);
 
     return {
       rig: {
@@ -174,6 +174,32 @@ export function dollyRig(
   const parallelOffset = forward.multiplyScalar(clampedParallel);
   return {
     position: rig.pivot.clone().add(lateral).add(parallelOffset),
+    quaternion: rig.quaternion.clone(),
+    pivot: rig.pivot.clone(),
+  };
+}
+
+export function dollyRigAnchoredToPivot(
+  rig: SurfacePivotRig,
+  deltaY: number,
+  speed: number,
+  minDistance: number,
+  maxDistance: number,
+): SurfacePivotRig {
+  const dolly = dollyRig(rig, deltaY, speed, minDistance, maxDistance);
+  const offset = rig.position.clone().sub(rig.pivot);
+  const distance = offset.length();
+  if (distance === 0) {
+    return dolly;
+  }
+
+  const targetDistance = dolly.position.distanceTo(dolly.pivot);
+  if (targetDistance === distance) {
+    return dolly;
+  }
+
+  return {
+    position: rig.pivot.clone().add(offset.multiplyScalar(targetDistance / distance)),
     quaternion: rig.quaternion.clone(),
     pivot: rig.pivot.clone(),
   };

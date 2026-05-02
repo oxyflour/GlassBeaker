@@ -20,6 +20,8 @@ dependencies = [
   "python-multipart>=0.0.26",
   "usd-core>=26.3",
   "trimesh>=4.11.5",
+  "pyspacemouse>=2.0.0",
+  "websockets>=16.0",
 ]
 
 [tool.uv.sources]

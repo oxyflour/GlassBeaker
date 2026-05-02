@@ -5,6 +5,7 @@ import { BoxGeometry, Mesh, MeshBasicMaterial, PerspectiveCamera, Quaternion, Sc
 import {
   createRigState,
   dollyRig,
+  dollyRigAnchoredToPivot,
   finishGesture,
   isDragGesture,
   pickSurfacePoint,
@@ -126,13 +127,14 @@ test("updateGesture pans middle-drag by the same world offset on camera and pivo
   const viewport = { width: 100, height: 100 };
   const fov = 60;
 
-  const next = stepGesture(rig, gesture, new Vector2(10, 0), viewport, fov, { panSpeed: 1 });
+  const next = stepGesture(rig, gesture, new Vector2(10, 10), viewport, fov, { panSpeed: 1 });
 
   const expectedWorldUnitsPerPixel = (2 * rig.position.distanceTo(rig.pivot) * Math.tan((fov * Math.PI) / 360)) / viewport.height;
   const expectedOffsetX = -10 * expectedWorldUnitsPerPixel;
+  const expectedOffsetY = 10 * expectedWorldUnitsPerPixel;
 
-  assert.ok(closeArray(next.rig.position.toArray(), [expectedOffsetX, 0, 10]));
-  assert.ok(closeArray(next.rig.pivot.toArray(), [expectedOffsetX, 0, 0]));
+  assert.ok(closeArray(next.rig.position.toArray(), [expectedOffsetX, expectedOffsetY, 10]));
+  assert.ok(closeArray(next.rig.pivot.toArray(), [expectedOffsetX, expectedOffsetY, 0]));
   assert.ok(closeArray(next.rig.quaternion.toArray(), rig.quaternion.toArray()));
 });
 
@@ -190,6 +192,19 @@ test("dollyRig clamps before crossing the pivot while preserving quaternion", ()
   assert.ok(next.position.z >= 0);
 });
 
+test("dollyRigAnchoredToPivot keeps the pivot at the same screen position during wheel zoom", () => {
+  const rig = createRigState(new Vector3(0, 0, 5), new Quaternion(), new Vector3(1, 0.5, 0));
+
+  const before = projectPoint(rig, rig.pivot);
+  const plainDolly = projectPoint(dollyRig(rig, -2, 1, 2, 20), rig.pivot);
+  const anchored = dollyRigAnchoredToPivot(rig, -2, 1, 2, 20);
+  const after = projectPoint(anchored, anchored.pivot);
+
+  assert.ok(!closeArray([plainDolly.x, plainDolly.y], [before.x, before.y]));
+  assert.ok(closeArray([after.x, after.y], [before.x, before.y]));
+  assert.ok(anchored.position.distanceTo(anchored.pivot) < rig.position.distanceTo(rig.pivot));
+});
+
 test("dollyRig leaves an impossible lateral maxDistance violation stable", () => {
   const rig = createRigState(new Vector3(5, 0, 3), new Quaternion(), new Vector3(0, 0, 0));
 
@@ -223,3 +238,12 @@ test("pickSurfacePoint ignores hidden meshes and returns the first visible mesh 
   assert.ok(hit);
   assert.equal(hit.object, visible);
 });
+
+function projectPoint(rig: SurfacePivotRig, point: Vector3) {
+  const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+  camera.position.copy(rig.position);
+  camera.quaternion.copy(rig.quaternion);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld(true);
+  return point.clone().project(camera);
+}
