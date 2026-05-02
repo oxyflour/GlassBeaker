@@ -15,12 +15,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from utils.mujoco_tools import decode_mesh_path, decode_texture_path
 from utils.mujoco_tools import flatten_matrix, geom_size, geom_world_pose, mesh_world_pose
+from utils.rl_cameras import camera_name_to_index, image_topic
 from utils.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
 from utils.ros_bridge import bridge
 from utils.ros_worker import acquire_ros_worker, release_ros_worker, wait_for_ros_bridge
 from utils.session import Session, Timer
 from utils.sim_env import (
-    IMAGE_TOPIC,
     IMAGE_TYPE,
     JOINT_COMMAND_TOPIC,
     JOINT_STATES_TOPIC,
@@ -78,7 +78,8 @@ class ZapdosSession(Session):
         self.geoms = self._build_geometry(asset_root)
         self.command_msgs: queue.Queue[dict] = queue.Queue(maxsize=8)
         self.command_subscribed = False
-        self.last_frame_index = -1
+        self.camera_index = camera_name_to_index(bundle.cameras)
+        self.last_frame_index = {camera.name: -1 for camera in bundle.cameras}
         self.actuator_name_to_id = self._actuator_map()
         self.joint_name_to_actuator = self._joint_command_map()
         self._seed_position_ctrl()
@@ -203,9 +204,8 @@ class ZapdosSession(Session):
                 if bridge.conns:
                     await bridge.call("publish", [JOINT_STATES_TOPIC, JOINT_STATE_TYPE, self._joint_state_msg()])
                     await bridge.call("publish", [TF_RENDER_TOPIC, TF_RENDER_TYPE, tf_message(self.model, self.data)])
-                    image_msg = self._image_msg()
-                    if image_msg is not None:
-                        await bridge.call("publish", [IMAGE_TOPIC, IMAGE_TYPE, image_msg])
+                    for topic, image_msg in self._image_messages():
+                        await bridge.call("publish", [topic, IMAGE_TYPE, image_msg])
                 await asyncio.sleep(ROS_DT)
             except Exception:
                 traceback.print_exc()
@@ -230,23 +230,26 @@ class ZapdosSession(Session):
             efforts.append(float(self.data.qfrc_actuator[qvel_adr]) if qvel_adr < len(self.data.qfrc_actuator) else 0.0)
         return {"name": names, "position": positions, "velocity": velocities, "effort": efforts}
 
-    def _image_msg(self) -> dict | None:
-        frame_state = self.renderer.read()
-        if frame_state is None:
-            return None
-        index, frame = frame_state
-        if index == self.last_frame_index:
-            return None
-        self.last_frame_index = index
-        return {
-            "header": {"frame_id": "main_camera"},
-            "height": int(frame.shape[0]),
-            "width": int(frame.shape[1]),
-            "encoding": "rgb8",
-            "is_bigendian": 0,
-            "step": int(frame.shape[1] * 3),
-            "data": frame.tobytes(),
-        }
+    def _image_messages(self) -> list[tuple[str, dict]]:
+        messages: list[tuple[str, dict]] = []
+        for camera in self.bundle.cameras:
+            frame_state = self.renderer.read(camera.name)
+            if frame_state is None:
+                continue
+            index, frame = frame_state
+            if index == self.last_frame_index[camera.name]:
+                continue
+            self.last_frame_index[camera.name] = index
+            messages.append((image_topic(camera.name), {
+                "header": {"frame_id": camera.frame_id},
+                "height": int(frame.shape[0]),
+                "width": int(frame.shape[1]),
+                "encoding": "rgb8",
+                "is_bigendian": 0,
+                "step": int(frame.shape[1] * 3),
+                "data": frame.tobytes(),
+            }))
+        return messages
 
     def _drain_joint_commands(self) -> None:
         latest = None
@@ -285,13 +288,13 @@ class ZapdosSession(Session):
         if not self.msgs.full():
             self.msgs.put_nowait({"topic": topic, "msg": msg})
 
-    async def render(self):
+    async def render(self, camera_name: str):
         while self.is_active():
             while not self.renderer.ready:
                 yield mjpeg_chunk(placeholder_jpeg(RENDER_SIZE[0], RENDER_SIZE[1], "Waiting"))
                 await asyncio.sleep(1)
             try:
-                frame_state = self.renderer.read()
+                frame_state = self.renderer.read(camera_name)
                 if frame_state is None:
                     await asyncio.sleep(ROS_DT)
                     continue
@@ -326,6 +329,12 @@ def _input_path(req: Request, key: str, default: Path) -> Path:
 sessions: dict[str, asyncio.Future[ZapdosSession]] = {}
 
 
+def _require_camera_name(session: ZapdosSession, camera_name: str) -> str:
+    if camera_name not in session.camera_index:
+        raise HTTPException(status_code=404, detail=f"Camera not found: {camera_name}")
+    return camera_name
+
+
 async def _name_(req: Request):
     sess = req.path_params["session"]
     if sess not in sessions:
@@ -345,7 +354,10 @@ async def _name_(req: Request):
         args = await req.json()
         return await session.call(name, *args)
     if action == "render":
-        return StreamingResponse(session.render(), media_type="multipart/x-mixed-replace; boundary=frame")
+        return StreamingResponse(
+            session.render(_require_camera_name(session, name)),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
     if action == "asset":
         asset = session.assets.get(name)
         if asset is None:

@@ -8,6 +8,7 @@ import mujoco  # type: ignore
 from pxr import Usd, UsdGeom
 
 from utils.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
+from utils.rl_cameras import build_render_cameras
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
@@ -30,11 +31,24 @@ class RLBundleTest(unittest.TestCase):
         body_map_jsona = json.loads(bundle.body_map_jsona.read_text(encoding="utf-8"))
         self.assertEqual(sorted(robot_bodies), sorted(body_map.keys()))
         self.assertEqual(body_map, body_map_jsona)
-        self.assertEqual(bundle.main_camera_prim, "/default_viz_camera")
         wrapper_stage = Usd.Stage.Open(str(bundle.robot_wrapper_usda))
         render_stage = Usd.Stage.Open(str(bundle.render_scene_usda))
         self.assertEqual(str(UsdGeom.GetStageUpAxis(wrapper_stage)), "Z")
         self.assertEqual(str(UsdGeom.GetStageUpAxis(render_stage)), "Z")
+
+        cameras = build_render_cameras(model, body_map)
+        self.assertEqual([camera.name for camera in cameras], bundle.camera_names())
+        self.assertEqual(
+            [camera.name for camera in cameras],
+            [
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_CAMERA, cam_id)  # type: ignore
+                for cam_id in range(model.ncam)
+            ],
+        )
+        self.assertEqual(
+            [camera.topic for camera in cameras],
+            [f"/env_0/{camera.name}/image_raw" for camera in cameras],
+        )
 
 
 if __name__ == "__main__":

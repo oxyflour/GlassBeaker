@@ -10,6 +10,7 @@ import torch
 from baseline.data import load_dataset, split_records, stack_records
 from baseline.metrics import magnitude_db, summarize_prediction_metrics
 from baseline.predict import denormalize, load_model
+from baseline.training_utils import GRAPH_KEYS, forward_model, uses_graph_features
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,13 +67,19 @@ def _predict(
     with torch.no_grad():
         for start in range(0, len(tensors["points"]), batch_size):
             end = start + batch_size
-            pred = model(
-                tensors["points"][start:end].to(device),
-                tensors["ports"][start:end].to(device),
-                tensors["geom"][start:end].to(device),
-                tensors["frame"][start:end].to(device),
-                tensors["cuts"][start:end].to(device),
-                tensors["nibs"][start:end].to(device),
+            graph_tensors = None
+            if uses_graph_features(model):
+                graph_tensors = {key: tensors[key][start:end] for key in GRAPH_KEYS if key in tensors}
+            pred = forward_model(
+                model,
+                points=tensors["points"][start:end],
+                ports=tensors["ports"][start:end],
+                geom=tensors["geom"][start:end],
+                frame=tensors["frame"][start:end],
+                cuts=tensors["cuts"][start:end],
+                nibs=tensors["nibs"][start:end],
+                device=device,
+                graph_tensors=graph_tensors,
             )
             preds.append(denormalize(pred.cpu(), checkpoint))
     return np.concatenate(preds, axis=0)

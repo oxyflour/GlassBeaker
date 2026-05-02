@@ -2,19 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 from pxr import Gf, Usd, UsdGeom
 
-from utils.usd_to_mjcf import (
-    canonicalize_quat_wxyz,
-    gf_matrix_to_np,
-    lookat_to_quat_wxyz,
-    matrix_to_pos_quat,
-    sanitize_name,
+from utils.rl_cameras import (
+    CAMERA_CLIPPING_RANGE,
+    CAMERA_HORIZONTAL_APERTURE,
+    CAMERA_VERTICAL_APERTURE,
+    RenderCamera,
+    SCENE_CAMERA_ROOT,
+    focal_length_from_fovy,
 )
+from utils.usd_to_mjcf import sanitize_name
 
-DEFAULT_CAMERA_POS = np.array([-0.2, -1.8, 1.8], dtype=float)
-DEFAULT_CAMERA_TARGET = np.array([-0.4, 0.0, 0.9], dtype=float)
 SKIP_TYPES = {"Scope", "Material", "Shader", "NodeGraph", "Camera"}
 
 
@@ -66,6 +65,7 @@ def build_robot_wrapper(
     body_names: list[str],
     source_map: dict[str, str],
     initial_poses: dict[str, tuple[list[float], list[float]]] | None,
+    cameras: list[RenderCamera],
     output_path: Path,
     up_axis: str,
     meters_per_unit: float,
@@ -78,6 +78,7 @@ def build_robot_wrapper(
     root = UsdGeom.Xform.Define(stage, "/MyRobot")
     stage.SetDefaultPrim(root.GetPrim())
     body_map: dict[str, str] = {}
+    body_cameras = _group_body_cameras(cameras)
     for body_name in body_names:
         source_path = source_map.get(body_name)
         if source_path is None:
@@ -93,20 +94,29 @@ def build_robot_wrapper(
             visuals = stage.DefinePrim(f"/MyRobot/{body_name}/visuals", source_visuals.GetTypeName())
             visuals.GetReferences().AddReference(str(robot_usd.resolve()), visuals_path)
             _deactivate_embedded_cameras(visuals)
+        for camera in body_cameras.get(body_name, []):
+            _define_camera(stage, f"/MyRobot/{body_name}/{camera.name}", camera)
         body_map[body_name] = f"MyRobot/{body_name}"
     stage.GetRootLayer().Save()
     return body_map
 
 
-def build_scene_render(scene_usd: Path, output_path: Path, up_axis: str, meters_per_unit: float) -> str:
+def build_scene_render(
+    scene_usd: Path,
+    output_path: Path,
+    up_axis: str,
+    meters_per_unit: float,
+    cameras: list[RenderCamera],
+) -> None:
     stage = Usd.Stage.CreateNew(str(output_path))
     _configure_stage(stage, up_axis, meters_per_unit)
     root = UsdGeom.Xform.Define(stage, "/SceneRender")
     stage.SetDefaultPrim(root.GetPrim())
     root.GetPrim().GetReferences().AddReference(str(scene_usd.resolve()))
-    _define_main_camera(stage, scene_usd)
+    for camera in cameras:
+        if camera.body is None:
+            _define_camera(stage, f"{SCENE_CAMERA_ROOT}/{camera.name}", camera)
     stage.GetRootLayer().Save()
-    return "/default_viz_camera"
 
 
 def build_render_scene(
@@ -139,68 +149,21 @@ def _configure_stage(stage: Usd.Stage, up_axis: str, meters_per_unit: float) -> 
     UsdGeom.SetStageMetersPerUnit(stage, float(meters_per_unit))
 
 
-def _define_main_camera(stage: Usd.Stage, scene_usd: Path) -> None:
-    spec = _camera_spec(scene_usd)
-    camera = UsdGeom.Camera.Define(stage, "/SceneRender/default_viz_camera")
+def _group_body_cameras(cameras: list[RenderCamera]) -> dict[str, list[RenderCamera]]:
+    grouped: dict[str, list[RenderCamera]] = {}
+    for camera in cameras:
+        if camera.body is None:
+            continue
+        grouped.setdefault(camera.body, []).append(camera)
+    return grouped
+
+
+def _define_camera(stage: Usd.Stage, path: str, spec: RenderCamera) -> None:
+    camera = UsdGeom.Camera.Define(stage, path)
     xform = UsdGeom.Xformable(camera.GetPrim())
-    xform.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*spec["pos"]))
-    xform.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(Gf.Quatf(*spec["quat"]))
-    camera.CreateFocalLengthAttr(float(spec["focal_length"]))
-    camera.CreateHorizontalApertureAttr(float(spec["horizontal_aperture"]))
-    camera.CreateVerticalApertureAttr(float(spec["vertical_aperture"]))
-    camera.CreateClippingRangeAttr(Gf.Vec2f(*spec["clipping_range"]))
-
-
-def _camera_spec(scene_usd: Path) -> dict[str, object]:
-    stage = Usd.Stage.Open(str(scene_usd))
-    if stage is None:
-        return _fallback_camera_spec()
-    cache = UsdGeom.XformCache()
-    for prim in stage.Traverse():
-        if not prim.IsA(UsdGeom.Camera):
-            continue
-        path = str(prim.GetPath())
-        if path.startswith("/Render/"):
-            continue
-        camera = UsdGeom.Camera(prim)
-        matrix = gf_matrix_to_np(cache.GetLocalToWorldTransform(prim))
-        pos, quat = matrix_to_pos_quat(matrix)
-        quat = canonicalize_quat_wxyz(quat)
-        return {
-            "pos": pos.tolist(),
-            "quat": quat.tolist(),
-            "focal_length": _attr(camera.GetFocalLengthAttr(), 18.0),
-            "horizontal_aperture": _attr(camera.GetHorizontalApertureAttr(), 20.955),
-            "vertical_aperture": _attr(camera.GetVerticalApertureAttr(), 15.2908),
-            "clipping_range": _clip_attr(camera),
-        }
-    return _fallback_camera_spec()
-
-
-def _fallback_camera_spec() -> dict[str, object]:
-    quat = canonicalize_quat_wxyz(lookat_to_quat_wxyz(
-        DEFAULT_CAMERA_POS,
-        DEFAULT_CAMERA_TARGET,
-        np.array([0.0, 0.0, 1.0], dtype=float),
-    ))
-    return {
-        "pos": DEFAULT_CAMERA_POS.tolist(),
-        "quat": quat.tolist(),
-        "focal_length": 18.0,
-        "horizontal_aperture": 20.955,
-        "vertical_aperture": 15.2908,
-        "clipping_range": [0.01, 100.0],
-    }
-
-
-def _attr(attr, default: float) -> float:
-    value = attr.Get() if attr and attr.IsValid() else None
-    return float(value) if value is not None else float(default)
-
-
-def _clip_attr(camera: UsdGeom.Camera) -> list[float]:
-    attr = camera.GetClippingRangeAttr()
-    value = attr.Get() if attr and attr.IsValid() else None
-    if value is None:
-        return [0.01, 100.0]
-    return [float(value[0]), float(value[1])]
+    xform.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*spec.pos))
+    xform.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(Gf.Quatf(*spec.quat))
+    camera.CreateFocalLengthAttr(float(focal_length_from_fovy(spec.fovy)))
+    camera.CreateHorizontalApertureAttr(float(CAMERA_HORIZONTAL_APERTURE))
+    camera.CreateVerticalApertureAttr(float(CAMERA_VERTICAL_APERTURE))
+    camera.CreateClippingRangeAttr(Gf.Vec2f(*CAMERA_CLIPPING_RANGE))

@@ -20,7 +20,9 @@
 
 - 用 `GET /python/zapdos/{session}/call/start` 建立 SSE
 - 用 `POST /python/zapdos/{session}/call/get_visual` 拉取 MuJoCo 几何
-- 用 `GET /python/zapdos/{session}/render/main` 读取 Isaac MJPEG
+- 用 `GET /python/zapdos/{session}/render/{camera_name}` 读取 Isaac MJPEG
+  - 例如：`/python/zapdos/{session}/render/head_camera`
+  - `camera_name` 必须精确等于 MuJoCo 里的真实 camera 名；不存在时返回 `404`
 
 ### 2. Python API 入口
 
@@ -36,7 +38,7 @@
 6. 启动后台循环，持续发布：
    - `/env_0/joint_states`
    - `/env_0/tf_render`
-   - `/env_0/main_camera/image_raw`
+   - `/env_0/<camera_name>/image_raw`
 
 控制输入边界固定为：
 
@@ -101,7 +103,7 @@
 
 - 把 `SingleThreadedExecutor.spin` 改成 no-op
 - 在主循环中显式 `spin_once(timeout_sec=0.0)`
-- 如果场景里已经有 `/default_viz_camera`，就复用，不再重复创建
+- 优先通过 `--cameras-json` 配置多 camera；只有显式传 `/default_viz_camera` 时才复用现有默认 camera
 
 ### 6. ROS bridge
 
@@ -201,7 +203,7 @@ ROS worker 侧：
 
 - 输入：`/env_0/joint_command` `sensor_msgs/msg/JointState`
 - 输出：`/env_0/joint_states` `sensor_msgs/msg/JointState`
-- 输出：`/env_0/main_camera/image_raw` `sensor_msgs/msg/Image`
+- 输出：`/env_0/<camera_name>/image_raw` `sensor_msgs/msg/Image`
 - 内部：`/env_0/tf_render` `tf2_msgs/msg/TFMessage`
 
 ### 运行约束
@@ -218,7 +220,7 @@ ROS worker 侧：
 - `ensure_render_bundle(...)` 能产出完整 bundle
 - `apps/python/tests/test_rl_bundle.py` 通过
 - MuJoCo -> TF -> Isaac 的姿态同步已恢复正确
-- Isaac MJPEG 能经 `render/main` 输出
+- Isaac MJPEG 能经 `render/head_camera` 等真实 camera 名输出
 
 调试阶段生成过的对照图位于：
 
@@ -232,6 +234,7 @@ ROS worker 侧：
 - `ZapdosSession.get_camera()` 当前前端没有消费
 - `call/subscribe` 路径当前 demo 没有实际用例
 - SSE 中的 `camera` 字段当前前端没有实际使用
+- MJPEG URL 与 ROS image topic 都要求精确 camera 名，当前不提供别名或兼容 `render/main`
 - `apps/python/utils/mujoco_tools.py` 下半部分仍有旧链路残留 helper，可后续拆理
 - `apps/python/tmp/**` 下有大量调试脚本、旧 bundle、截图、日志，适合后续清理
 - `deps/galaxea/object/r1pro/r1pro.xml` 和 `out.xml` 看起来已不在当前主链上

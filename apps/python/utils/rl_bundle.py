@@ -8,6 +8,7 @@ from pathlib import Path
 import mujoco  # type: ignore
 import numpy as np
 
+from utils.rl_cameras import RenderCamera, build_render_cameras
 from utils.rl_bundle_stage import (
     build_render_scene,
     build_robot_wrapper,
@@ -21,7 +22,7 @@ from utils.usd_to_mjcf import USDToMJCFConverter
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SCENE_USD = REPO_ROOT / "apps" / "python" / "assets" / "default_scene.usda"
 TMP_ROOT = REPO_ROOT / "apps" / "python" / "tmp" / "rl_bundles"
-BUNDLE_VERSION = 4
+BUNDLE_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -36,14 +37,15 @@ class RenderBundle:
     render_scene_usda: Path
     body_map_json: Path
     body_map_jsona: Path
-    main_camera_prim: str
+    cameras: list[RenderCamera]
 
-    def to_json(self) -> dict[str, str]:
+    def to_json(self) -> dict[str, object]:
         data = asdict(self)
+        data["cameras"] = [camera.to_json() for camera in self.cameras]
         return {key: (str(value) if isinstance(value, Path) else value) for key, value in data.items()}
 
     @classmethod
-    def from_json(cls, data: dict[str, str]) -> "RenderBundle":
+    def from_json(cls, data: dict[str, object]) -> "RenderBundle":
         path_fields = {
             "robot_usd",
             "scene_usd",
@@ -56,8 +58,12 @@ class RenderBundle:
             "body_map_json",
             "body_map_jsona",
         }
-        kwargs = {key: (Path(value) if key in path_fields else value) for key, value in data.items()}
+        kwargs = {key: (Path(value) if key in path_fields else value) for key, value in data.items() if key != "cameras"}
+        kwargs["cameras"] = [RenderCamera.from_json(item) for item in data.get("cameras", [])]  # type: ignore[arg-type]
         return cls(**kwargs)
+
+    def camera_names(self) -> list[str]:
+        return [camera.name for camera in self.cameras]
 
     def outputs(self) -> tuple[Path, ...]:
         return (
@@ -93,7 +99,7 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
         render_scene_usda=bundle_dir / "render_scene.usda",
         body_map_json=bundle_dir / "render_scene_body_map.json",
         body_map_jsona=bundle_dir / "render_scene_body_map.jsona",
-        main_camera_prim="/default_viz_camera",
+        cameras=[],
     )
     source_map = robot_source_map(robot_usd)
     up_axis, meters_per_unit = compose_stage_metadata(scene_usd, robot_usd)
@@ -102,11 +108,13 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
     model = mujoco.MjModel.from_xml_path(str(bundle.mjcf))  # type: ignore
     robot_bodies = _robot_body_names(model, source_map)
     body_poses = _body_pose_map(model, robot_bodies)
+    cameras = build_render_cameras(model, {body: f"MyRobot/{body}" for body in robot_bodies})
     body_map = build_robot_wrapper(
         robot_usd,
         robot_bodies,
         source_map,
         body_poses,
+        cameras,
         bundle.robot_wrapper_usda,
         up_axis,
         meters_per_unit,
@@ -117,9 +125,10 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
     bundle = RenderBundle(
         **{
             **bundle.__dict__,
-            "main_camera_prim": build_scene_render(scene_usd, bundle.scene_render_usda, up_axis, meters_per_unit),
+            "cameras": cameras,
         }
     )
+    build_scene_render(scene_usd, bundle.scene_render_usda, up_axis, meters_per_unit, cameras)
     build_render_scene(
         bundle.scene_render_usda,
         bundle.robot_wrapper_usda,

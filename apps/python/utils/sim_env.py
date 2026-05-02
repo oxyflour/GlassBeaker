@@ -26,15 +26,15 @@ sys.path.append(f'{__file__}/../../')
 if TYPE_CHECKING:
     from utils.rl_bundle import RenderBundle
 
+from utils.rl_cameras import camera_name_to_index, cameras_json
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ISAAC_PYTHON = REPO_ROOT / "apps" / "isaac" / ".venv" / "Scripts" / "python.exe"
 ISAAC_SITE = REPO_ROOT / "apps" / "isaac" / ".venv" / "Lib" / "site-packages" / "isaacsim" / "exts" / "isaacsim.ros2.bridge"
 RENDERER_ENTRY = REPO_ROOT / "apps" / "isaac" / "rl_renderer_entry.py"
-MAIN_CAM_PRIM = "/default_viz_camera"
 JOINT_COMMAND_TOPIC = "/env_0/joint_command"
 JOINT_STATES_TOPIC = "/env_0/joint_states"
 TF_RENDER_TOPIC = "/env_0/tf_render"
-IMAGE_TOPIC = "/env_0/main_camera/image_raw"
 JOINT_STATE_TYPE = "sensor_msgs/msg/JointState"
 IMAGE_TYPE = "sensor_msgs/msg/Image"
 TF_RENDER_TYPE = "tf2_msgs/msg/TFMessage"
@@ -144,6 +144,7 @@ class IsaacRenderer:
         self.shm: shared_memory.SharedMemory | None = None
         self.frame_counter: np.ndarray | None = None
         self.frames: np.ndarray | None = None
+        self.camera_index = camera_name_to_index(bundle.cameras)
         self._spawn()
 
     @property
@@ -159,7 +160,12 @@ class IsaacRenderer:
             return
         self.shm = shared_memory.SharedMemory(name=self.shm_name)
         self.frame_counter = np.ndarray((1,), dtype=np.uint32, buffer=self.shm.buf, offset=0)
-        self.frames = np.ndarray((1, 1, self.height, self.width, 3), dtype=np.uint8, buffer=self.shm.buf, offset=SHM_HEADER_BYTES)
+        self.frames = np.ndarray(
+            (1, len(self.bundle.cameras), self.height, self.width, 3),
+            dtype=np.uint8,
+            buffer=self.shm.buf,
+            offset=SHM_HEADER_BYTES,
+        )
 
     def _refresh_process_state(self) -> bool:
         if self.proc is not None:
@@ -194,7 +200,8 @@ class IsaacRenderer:
             "--render-hz", str(self.render_hz),
             "--cam-width", str(self.width),
             "--cam-height", str(self.height),
-            "--main-cam-prim", self.bundle.main_camera_prim or MAIN_CAM_PRIM,
+            "--main-cam-prim", self.bundle.cameras[0].prim,
+            "--cameras-json", cameras_json(self.bundle.cameras),
             "--shm-name", self.shm_name,
             "--ros-domain-id", str(self.ros_domain_id),
             "--headless",
@@ -252,7 +259,7 @@ class IsaacRenderer:
         finally:
             self.close()
 
-    def read(self) -> tuple[int, np.ndarray] | None:
+    def read(self, camera_name: str) -> tuple[int, np.ndarray] | None:
         if not self.running:
             return None
         try:
@@ -261,7 +268,7 @@ class IsaacRenderer:
             return None
         if self.frame_counter is None or self.frames is None:
             return None
-        return int(self.frame_counter[0]), self.frames[0, 0].copy()
+        return int(self.frame_counter[0]), self.frames[0, self.camera_index[camera_name]].copy()
 
     def status(self) -> dict[str, Any]:
         return {

@@ -51,7 +51,6 @@ const stlLoader = new STLLoader()
 const objLoader = new OBJLoader()
 const textureLoader = new TextureLoader()
 const materials: Record<string, MeshStandardMaterial> = {}
-const pendingDeletes = new Map<string, ReturnType<typeof setTimeout>>()
 
 async function getGeometry(item: RobotVisual) {
     const { size = [1, 1, 1] } = item
@@ -158,8 +157,28 @@ function ZapdosLoader({ sess }: { sess: string }) {
     return null
 }
 
+function CameraStreams({ sess }: { sess: string }) {
+    const [cameras, setCameras] = useState([] as string[])
+    useEffect(() => {
+        call<RobotVisual[]>(sess, "get_camera")
+            .then(res => setCameras(Object.keys(res)))
+            .catch(console.error)
+    }, [sess])
+    return <div className="absolute bottom-0 left-0 w-full">
+    {
+        cameras.map(camera => <img
+            className="inline"
+            key={ camera } alt={ camera }
+            style={{ width: 256, height: 256, marginLeft: 16, marginBottom: 16 }}
+            src={ `/python/zapdos/${sess}/render/${camera}` } >
+        </img>)
+    }
+    </div>
+}
+
 export default function Zapdos() {
     const sess = useLocalUUID("zapdos-session")
+    const cameraName = "head_camera"
 
     return <div className="relative h-full w-full">
         <Canvas camera={ { position: [2.5, -2.5, 1.8], fov: 45, near: 0.01, far: 100 } } className="h-full w-full">
@@ -184,12 +203,6 @@ export default function Zapdos() {
             </group>
             {sess && <ZapdosLoader sess={ sess } />}
         </Canvas>
-        {
-            sess && <img
-                alt="Isaac renderer"
-                style={{ left: 32, bottom: 32, width: 128, height: 128 }}
-                className="h-full w-full object-cover absolute"
-                src={ `/python/zapdos/${sess}/render/main` } />
-        }
+        { sess && <CameraStreams sess={ sess } /> }
     </div>
 }
