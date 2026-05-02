@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Sequence
 
 import torch
@@ -12,29 +13,26 @@ def _upper_triangle_pairs(port_count: int) -> list[tuple[int, int]]:
     return [(row, col) for row in range(port_count) for col in range(row, port_count)]
 
 
-class StructuredSpectralPredictor(nn.Module):
+class StructuredCouplingFreqPredictor(nn.Module):
     def __init__(
         self,
         freq_grid: Sequence[float] | torch.Tensor,
         port_count: int,
         hidden_dim: int = 128,
         dropout: float = 0.1,
+        freq_bands: int = 8,
         max_cuts: int = MAX_CUTS,
         max_nibs: int = MAX_NIBS,
-        split_decoder: bool = False,
-        use_pair_topology: bool = False,
     ):
         super().__init__()
         self.port_count = port_count
         self.max_cuts = max_cuts
         self.max_nibs = max_nibs
         self.freq_bins = len(freq_grid)
+        self.freq_bands = freq_bands
         self.pairs = _upper_triangle_pairs(port_count)
-        self.split_decoder = split_decoder
-        self.use_pair_topology = use_pair_topology
-        self.uses_graph_features = use_pair_topology
-        if use_pair_topology:
-            self.graph_feature_keys = ("pair_topology",)
+        self.diag_indices = [i for i, (row, col) in enumerate(self.pairs) if row == col]
+        self.offdiag_indices = [i for i, (row, col) in enumerate(self.pairs) if row != col]
         self.frame_encoder = nn.Sequential(nn.Linear(6, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
         self.cut_encoder = nn.Sequential(nn.Linear(7, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
         self.nib_encoder = nn.Sequential(nn.Linear(8, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
@@ -60,54 +58,33 @@ class StructuredSpectralPredictor(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
-        if use_pair_topology:
-            self.pair_topology_encoder = nn.Sequential(
-                nn.Linear(8, hidden_dim),
-                nn.GELU(),
-                nn.Linear(hidden_dim, hidden_dim),
-            )
-            self.pair_topology_adapter = nn.Linear(hidden_dim, hidden_dim)
-            nn.init.zeros_(self.pair_topology_adapter.weight)
-            nn.init.zeros_(self.pair_topology_adapter.bias)
-            self.register_buffer(
-                "pair_coupling_mask",
-                torch.tensor([0.0 if row == col else 1.0 for row, col in self.pairs], dtype=torch.float32).view(1, -1, 1),
-                persistent=False,
-            )
         self.pair_mlp = nn.Sequential(
             nn.Linear(hidden_dim * 5, hidden_dim * 2),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim * 2, hidden_dim),
         )
-        if split_decoder:
-            self.diag_indices = [i for i, (r, c) in enumerate(self.pairs) if r == c]
-            self.offdiag_indices = [i for i, (r, c) in enumerate(self.pairs) if r != c]
-            self.diag_decoder = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim * 2),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim * 2, self.freq_bins * 2),
-            )
-            self.coupling_decoder = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim * 2),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim * 2, hidden_dim * 2),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim * 2, hidden_dim * 2),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim * 2, self.freq_bins * 2),
-            )
-        else:
-            self.spectral_decoder = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim * 2),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim * 2, self.freq_bins * 2),
-            )
+        self.diag_decoder = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, self.freq_bins * 2),
+        )
+        freq_dim = 1 + freq_bands * 2
+        self.freq_encoder = nn.Sequential(
+            nn.Linear(freq_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.coupling_decoder = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 2),
+        )
+        self.register_buffer("freq_grid", torch.as_tensor(freq_grid, dtype=torch.float32), persistent=False)
 
     def _port_features(self, ports: torch.Tensor, geom: torch.Tensor) -> torch.Tensor:
         start = ports[..., :3]
@@ -136,6 +113,14 @@ class StructuredSpectralPredictor(nn.Module):
         )
         return self.token_type(type_ids).unsqueeze(0).expand(batch_size, -1, -1)
 
+    def _freq_features(self) -> torch.Tensor:
+        freq = self.freq_grid
+        freq = (freq - freq.min()) / (freq.max() - freq.min() + 1e-6)
+        freq = freq * 2.0 - 1.0
+        bands = (2.0 ** torch.arange(self.freq_bands, device=freq.device, dtype=freq.dtype)) * math.pi
+        angles = freq.unsqueeze(-1) * bands
+        return torch.cat([freq.unsqueeze(-1), torch.sin(angles), torch.cos(angles)], dim=-1)
+
     def forward(
         self,
         points: torch.Tensor,
@@ -144,13 +129,10 @@ class StructuredSpectralPredictor(nn.Module):
         frame: torch.Tensor | None = None,
         cuts: torch.Tensor | None = None,
         nibs: torch.Tensor | None = None,
-        pair_topology: torch.Tensor | None = None,
     ) -> torch.Tensor:
         del points
         if frame is None or cuts is None or nibs is None:
-            raise ValueError("StructuredSpectralPredictor requires frame/cuts/nibs features")
-        if self.use_pair_topology and pair_topology is None:
-            raise ValueError("StructuredSpectralPredictor requires pair_topology features")
+            raise ValueError("StructuredCouplingFreqPredictor requires frame/cuts/nibs features")
         frame_token = self.frame_encoder(frame).unsqueeze(1)
         cut_tokens = self.cut_encoder(cuts)
         nib_tokens = self.nib_encoder(nibs)
@@ -174,28 +156,21 @@ class StructuredSpectralPredictor(nn.Module):
         global_latent = self.global_context(torch.cat([geometry_latent, frame, geom[:, 3:]], dim=1))
         port_tokens = tokens[:, -ports.size(1) :]
         port_tokens = self.port_refiner(torch.cat([port_tokens, global_latent.unsqueeze(1).expand_as(port_tokens)], dim=-1))
-        pair_topology_latent = self.pair_topology_encoder(pair_topology) if self.use_pair_topology else None
         pair_tokens = []
         for row, col in self.pairs:
             row_token = port_tokens[:, row]
             col_token = port_tokens[:, col]
             pair_tokens.append(torch.cat([row_token, col_token, torch.abs(row_token - col_token), row_token * col_token, global_latent], dim=1))
         pair_latent = self.pair_mlp(torch.stack(pair_tokens, dim=1))
-        if pair_topology_latent is not None:
-            pair_delta = self.pair_topology_adapter(pair_topology_latent) * self.pair_coupling_mask
-            pair_latent = pair_latent + pair_delta
-        if self.split_decoder:
-            pair_output = pair_latent.new_zeros(frame.size(0), len(self.pairs), self.freq_bins, 2)
-            diag_latent = pair_latent[:, self.diag_indices]
-            pair_output[:, self.diag_indices] = self.diag_decoder(diag_latent).view(
-                frame.size(0), len(self.diag_indices), self.freq_bins, 2
-            )
-            offdiag_latent = pair_latent[:, self.offdiag_indices]
-            pair_output[:, self.offdiag_indices] = self.coupling_decoder(offdiag_latent).view(
-                frame.size(0), len(self.offdiag_indices), self.freq_bins, 2
-            )
-        else:
-            pair_output = self.spectral_decoder(pair_latent).view(frame.size(0), len(self.pairs), self.freq_bins, 2)
+        pair_output = pair_latent.new_zeros(frame.size(0), len(self.pairs), self.freq_bins, 2)
+        diag_latent = pair_latent[:, self.diag_indices]
+        pair_output[:, self.diag_indices] = self.diag_decoder(diag_latent).view(frame.size(0), len(self.diag_indices), self.freq_bins, 2)
+        offdiag_latent = pair_latent[:, self.offdiag_indices]
+        freq_latent = self.freq_encoder(self._freq_features())
+        offdiag_pair = offdiag_latent.unsqueeze(1).expand(-1, self.freq_bins, -1, -1)
+        offdiag_freq = freq_latent.unsqueeze(0).unsqueeze(2).expand(frame.size(0), -1, len(self.offdiag_indices), -1)
+        offdiag_output = self.coupling_decoder(torch.cat([offdiag_pair, offdiag_freq], dim=-1))
+        pair_output[:, self.offdiag_indices] = offdiag_output.permute(0, 2, 1, 3)
         pair_output = pair_output.permute(0, 2, 1, 3)
         full = torch.zeros(
             frame.size(0),

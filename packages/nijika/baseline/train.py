@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from baseline.data import load_dataset, split_records, stack_records
 from baseline.model import create_model
 from baseline.plotting import save_matrix_plot
-from baseline.training_utils import composite_loss, evaluate
+from baseline.training_utils import GRAPH_KEYS, composite_loss, evaluate, forward_model, uses_graph_features
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the Nijika S-parameter baseline.")
@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("tmp/nijika-baseline"))
     parser.add_argument(
         "--model-kind",
-        choices=["structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_token_decoder", "symmetric_freq_decoder", "legacy_global_head"],
+        choices=["graph_topology_spectral_head", "structured_pair_coupling_freq_head", "structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_pair_topology_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "legacy_global_head"],
         default="structured_pair_spectral_head",
     )
     parser.add_argument("--epochs", type=int, default=400)
@@ -38,9 +38,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mag-weight", type=float, default=0.2)
     parser.add_argument("--smooth-weight", type=float, default=0.05)
     parser.add_argument("--db-weight", type=float, default=0.0)
+    parser.add_argument("--db-weight-final", type=float)
     parser.add_argument("--coupling-weight", type=float, default=1.0)
+    parser.add_argument("--coupling-weight-final", type=float)
     parser.add_argument("--notch-weight", type=float, default=0.0)
+    parser.add_argument("--notch-weight-final", type=float)
     parser.add_argument("--notch-threshold-db", type=float, default=-20.0)
+    parser.add_argument("--loss-ramp-start-epoch", type=int, default=0)
+    parser.add_argument("--loss-ramp-end-epoch", type=int, default=0)
     parser.add_argument("--warmup-epochs", type=int, default=10)
     parser.add_argument("--reciprocity-weight", type=float, default=0.0, help="Weight for reciprocity constraint loss (S_ij = S_ji)")
     parser.add_argument("--passivity-weight", type=float, default=0.0, help="Weight for passivity constraint loss (|S| <= 1)")
@@ -63,11 +68,53 @@ def build_loss_config(args: argparse.Namespace) -> dict[str, float]:
         "passivity_weight": getattr(args, "passivity_weight", 0.0),
     }
 
+
+def build_final_loss_config(args: argparse.Namespace, base_config: dict[str, float]) -> dict[str, float] | None:
+    final_config = dict(base_config)
+    changed = False
+    for arg_name, key in (
+        ("db_weight_final", "db_weight"),
+        ("coupling_weight_final", "coupling_weight"),
+        ("notch_weight_final", "notch_weight"),
+    ):
+        value = getattr(args, arg_name, None)
+        if value is not None:
+            final_config[key] = float(value)
+            changed = True
+    return final_config if changed else None
+
+
+def scheduled_loss_config(
+    base_config: dict[str, float],
+    final_config: dict[str, float] | None,
+    *,
+    epoch: int,
+    start_epoch: int,
+    end_epoch: int,
+) -> dict[str, float]:
+    if final_config is None or end_epoch <= start_epoch:
+        return dict(base_config)
+    if epoch <= start_epoch:
+        alpha = 0.0
+    elif epoch >= end_epoch:
+        alpha = 1.0
+    else:
+        alpha = (epoch - start_epoch) / max(1, end_epoch - start_epoch)
+    return {key: base_config[key] + alpha * (final_config[key] - base_config[key]) for key in base_config}
+
+
+def build_dataset(tensors: dict[str, torch.Tensor], target: torch.Tensor, use_graph: bool) -> TensorDataset:
+    items = [tensors["points"], tensors["ports"], tensors["geom"], tensors["frame"], tensors["cuts"], tensors["nibs"], target]
+    if use_graph:
+        items.extend(tensors[key] for key in GRAPH_KEYS)
+    return TensorDataset(*items)
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loss_config = build_loss_config(args)
+    final_loss_config = build_final_loss_config(args, loss_config)
     bundle = load_dataset(args.dataset_root, n_points=args.points, freq_bins=args.freq_bins)
     train_records, val_records = split_records(bundle.records, seed=args.seed)
     train_tensors = stack_records(train_records)
@@ -78,32 +125,6 @@ def main() -> None:
     target_std_device = target_std.to(device)
     train_target = (train_tensors["target"] - target_mean) / target_std
     val_target = (val_tensors["target"] - target_mean) / target_std
-    train_loader = DataLoader(
-        TensorDataset(
-            train_tensors["points"],
-            train_tensors["ports"],
-            train_tensors["geom"],
-            train_tensors["frame"],
-            train_tensors["cuts"],
-            train_tensors["nibs"],
-            train_target,
-        ),
-        batch_size=min(args.batch_size, len(train_records)),
-        shuffle=True,
-    )
-    val_loader = DataLoader(
-        TensorDataset(
-            val_tensors["points"],
-            val_tensors["ports"],
-            val_tensors["geom"],
-            val_tensors["frame"],
-            val_tensors["cuts"],
-            val_tensors["nibs"],
-            val_target,
-        ),
-        batch_size=min(args.batch_size, len(val_records)),
-        shuffle=False,
-    )
     model_config = {"hidden_dim": args.hidden_dim, "dropout": 0.1, "freq_bands": 8, "num_poles": args.num_poles}
     model = create_model(
         freq_grid=bundle.freq_grid,
@@ -111,6 +132,17 @@ def main() -> None:
         model_kind=args.model_kind,
         model_config=model_config,
     ).to(device)
+    use_graph = uses_graph_features(model)
+    train_loader = DataLoader(
+        build_dataset(train_tensors, train_target, use_graph),
+        batch_size=min(args.batch_size, len(train_records)),
+        shuffle=True,
+    )
+    val_loader = DataLoader(
+        build_dataset(val_tensors, val_target, use_graph),
+        batch_size=min(args.batch_size, len(val_records)),
+        shuffle=False,
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     warmup_epochs = min(args.warmup_epochs, args.epochs)
     best = {"epoch": 0, "score": float("inf"), "state": None, "metrics": None}
@@ -122,17 +154,31 @@ def main() -> None:
             lr_scale = 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
         for pg in optimizer.param_groups:
             pg["lr"] = args.lr * lr_scale
+        epoch_loss_config = scheduled_loss_config(
+            loss_config,
+            final_loss_config,
+            epoch=epoch,
+            start_epoch=args.loss_ramp_start_epoch,
+            end_epoch=args.loss_ramp_end_epoch,
+        )
         model.train()
         batch_losses = []
-        for points, ports, geom, frame, cuts, nibs, target in train_loader:
+        for batch in train_loader:
+            points, ports, geom, frame, cuts, nibs, target, *graph_extra = batch
+            graph_tensors = None
+            if graph_extra:
+                graph_tensors = {key: tensor for key, tensor in zip(GRAPH_KEYS, graph_extra, strict=False)}
             optimizer.zero_grad(set_to_none=True)
-            pred = model(
-                points.to(device),
-                ports.to(device),
-                geom.to(device),
-                frame.to(device),
-                cuts.to(device),
-                nibs.to(device),
+            pred = forward_model(
+                model,
+                points=points,
+                ports=ports,
+                geom=geom,
+                frame=frame,
+                cuts=cuts,
+                nibs=nibs,
+                device=device,
+                graph_tensors=graph_tensors,
             )
             loss = composite_loss(
                 pred,
@@ -140,7 +186,7 @@ def main() -> None:
                 port_count=bundle.port_count,
                 target_mean=target_mean_device,
                 target_std=target_std_device,
-                loss_config=loss_config,
+                loss_config=epoch_loss_config,
             )
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -153,7 +199,7 @@ def main() -> None:
             target_mean=target_mean,
             target_std=target_std,
             port_count=bundle.port_count,
-            loss_config=loss_config,
+            loss_config=epoch_loss_config,
         )
         score = float(val_metrics["db_mae"])
         if score < best["score"]:
@@ -172,7 +218,13 @@ def main() -> None:
         target_mean=target_mean,
         target_std=target_std,
         port_count=bundle.port_count,
-        loss_config=loss_config,
+        loss_config=scheduled_loss_config(
+            loss_config,
+            final_loss_config,
+            epoch=args.epochs,
+            start_epoch=args.loss_ramp_start_epoch,
+            end_epoch=args.loss_ramp_end_epoch,
+        ),
     )
     example = val_records[0]
     plot_path = args.output_dir / f"{example.name}_matrix_db.png"
@@ -197,6 +249,11 @@ def main() -> None:
             "model_kind": args.model_kind,
             "model_config": model_config,
             "loss_config": loss_config,
+            "loss_schedule": {
+                "final_loss_config": final_loss_config,
+                "start_epoch": args.loss_ramp_start_epoch,
+                "end_epoch": args.loss_ramp_end_epoch,
+            },
         },
         model_path,
     )
@@ -227,6 +284,11 @@ def main() -> None:
         "model_kind": args.model_kind,
         "model_config": model_config,
         "loss_config": loss_config,
+        "loss_schedule": {
+            "final_loss_config": final_loss_config,
+            "start_epoch": args.loss_ramp_start_epoch,
+            "end_epoch": args.loss_ramp_end_epoch,
+        },
         "warmup_epochs": warmup_epochs,
     }
     metrics_path = args.output_dir / "metrics.json"

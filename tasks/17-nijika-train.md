@@ -1,0 +1,136 @@
+根据 `tasks/09-nijika-train.md`，继续尝试优化模型，减小 S 参数预测误差。历史过程保留在 `09`，从这里开始只记录新的增量进展。
+
+Progress update 2026-05-02 (6600-sample result + compact analysis entry)
+
+- Added a compact validation-analysis entry:
+  - code: `packages/nijika/baseline/analyze.py`
+  - wrapper: `packages/nijika/analyze_baseline.py`
+  - purpose: reproduce the existing `analysis.json` / `val_summary.json` statistics directly from a checkpoint + dataset split, without generating per-sample plots for every validation run
+- Regression check for the new analysis entry:
+  - command: `uv run --project apps/python python packages/nijika/analyze_baseline.py --dataset-root tmp/antenna-dataset-2400 --model-path tmp/nijika-baseline-2400/baseline_model.pt --split val --batch-size 256 --output-dir tmp/nijika-baseline-2400-analysis-repro`
+  - result: reproduced the historical `2400`-sample analysis within small float-level differences
+  - example comparison:
+    - historical mean validation `dB MAE`: `6.49531`
+    - reproduced mean validation `dB MAE`: `6.49544`
+    - best / worst sample IDs matched: `antenna_1581` / `antenna_1060`
+- The 6600-sample nib-randomized training run completed successfully:
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-v2-6600 --model-kind structured_pair_spectral_head --epochs 300 --batch-size 64 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10`
+  - summary metrics from `tmp/nijika-v2-6600/metrics.json`:
+    - train / val samples: `5280 / 1320`
+    - best epoch: `244`
+    - validation RMSE: `0.10754`
+    - validation magnitude `dB MAE`: `6.21287 dB`
+    - validation magnitude `dB RMSE`: `10.01904 dB`
+- Compared with the previous best nib-randomized `2400`-sample run (`tmp/nijika-v2-2400`):
+  - validation `dB MAE`: `7.08619 dB` -> `6.21287 dB` (`12.32%` better)
+  - validation RMSE: `0.13878` -> `0.10754` (`22.51%` better)
+  - validation `dB RMSE`: `11.05665 dB` -> `10.01904 dB` (`9.38%` better)
+- Important comparison against the older low-diversity `2400`-sample baseline:
+  - old non-randomized `2400` validation `dB MAE`: `6.49544 dB`
+  - current `6600` nib-randomized validation `dB MAE`: `6.21287 dB`
+  - interpretation: after scaling to `6600` samples, the model now beats the earlier easier / less diverse benchmark by `4.35%` on the main metric
+- Ran full validation-set analysis for the `6600` model:
+  - command: `uv run --project apps/python python packages/nijika/analyze_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --model-path tmp/nijika-v2-6600/baseline_model.pt --split val --batch-size 256 --output-dir tmp/nijika-v2-6600-analysis`
+  - artifacts:
+    - summary: `tmp/nijika-v2-6600-analysis/val_summary.json`
+    - analysis: `tmp/nijika-v2-6600-analysis/analysis.json`
+- Main findings from the 6600-sample validation analysis:
+  - sample-level `dB MAE` mean / median / p90 / max = `6.21 / 5.96 / 8.71 / 20.27 dB`
+  - validation set now covers all `24` nib-side patterns, so this is no longer the old single-topology evaluation case
+  - reflection terms are still much easier than coupling terms:
+    - average reflection `dB MAE` (`S11/S22/S33`): `0.94 dB`
+    - average coupling `dB MAE` (`S12/S13/S21/S23/S31/S32`): `8.85 dB`
+  - deep-notch / low-magnitude regions remain the main bottleneck:
+    - truth `>= -10 dB`: `1.33 dB` MAE
+    - truth `< -10 dB`: `9.14 dB` MAE
+    - truth `< -20 dB`: `9.37 dB` MAE
+  - error still grows with structural complexity:
+    - `1` cut: mean `5.04 dB`
+    - `2` cuts: mean `6.22 dB`
+    - `3` cuts: mean `6.65 dB`
+    - `4` cuts: mean `6.91 dB`
+- Interpretation:
+  - dataset scaling was the right move; the `6600`-sample run recovered the diversity penalty introduced by nib-side randomization and pushed the model beyond the old easier benchmark
+  - the dominant remaining problem is still off-diagonal coupling prediction in deep-notch regions, not reflection prediction or simple geometry coverage
+  - the next high-value work should target coupling / notch behavior more structurally, instead of more generic capacity increases
+
+Progress update 2026-05-02 (graph branch scaffolded)
+
+- Added a new graph-oriented model branch under `packages/nijika/baseline/models/graph`:
+  - `topology.py`: derive a compact conductor-topology graph from `cuts / nibs / ports / geom`
+  - `layers.py`: small relation-aware message-passing block
+  - `predictor.py`: `graph_topology_spectral_head`
+- Integration status:
+  - `baseline/model.py` now exposes `model_kind=graph_topology_spectral_head`
+  - `baseline/train.py` accepts the new model kind without changing the train / predict CLI interface
+- Current design:
+  - keep the existing baseline forward signature unchanged: `points, ports, geom, frame, cuts, nibs`
+  - model internally builds graph nodes for `inner`, `outer segments`, and `ports`
+  - graph readout feeds the same symmetric full-spectrum prediction path used by the current spectral baseline
+- Smoke-test status:
+  - train command: `uv run --project apps/python python packages/nijika/run_baseline.py --model-kind graph_topology_spectral_head --epochs 1 --batch-size 8 --hidden-dim 64 --output-dir tmp/nijika-graph-smoke`
+  - predict command: `uv run --project apps/python python packages/nijika/predict_baseline.py --model-path tmp/nijika-graph-smoke/baseline_model.pt --sample-name antenna_001 --output-dir tmp/nijika-graph-predict-smoke`
+  - both paths completed successfully
+- Smoke metrics are only for interface / correctness validation, not model selection:
+  - 1-epoch validation RMSE: `0.18902`
+  - 1-epoch validation magnitude `dB MAE`: `9.73 dB`
+  - sample `antenna_001` prediction `dB MAE`: `7.31 dB`
+- Next useful step:
+  - run a fair 6600-sample comparison against `structured_pair_spectral_head`
+  - if the raw graph branch is not yet competitive, add stronger pair-topology features before larger sweeps
+
+Progress update 2026-05-02 (graph branch speed fix + 6600-sample comparison)
+
+- Found and fixed a major implementation bottleneck in the first graph branch:
+  - profiling on a `64`-sample batch showed the original graph branch was about `71x` slower than `structured_pair_spectral_head`
+  - dominant cost was `GraphTopologyBuilder.build()` being recomputed in Python on every forward pass
+  - fix: precompute graph topology features once during dataset loading / inference input build
+  - new helper: `packages/nijika/baseline/models/graph/precompute.py`
+  - `baseline/data.py` now stores graph features in each `SampleRecord`
+  - `baseline/train.py`, `baseline/predict.py`, and `baseline/training_utils.py` now pass the precomputed graph tensors only when the model requires them
+- Speed result after the fix:
+  - same `64`-sample batch, same `hidden_dim=160`
+  - spectral baseline step: `0.0366 s`
+  - graph branch step: `0.0296 s`
+  - graph / spectral ratio: `0.81x`
+  - conclusion: the graph branch is no longer blocked by implementation overhead
+- 50-epoch pilot on the `6600`-sample dataset:
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-graph-6600-pilot50-v2 --model-kind graph_topology_spectral_head --epochs 50 --batch-size 64 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10`
+  - best epoch: `39`
+  - validation RMSE: `0.11811`
+  - validation magnitude `dB MAE`: `6.81709 dB`
+  - validation magnitude `dB RMSE`: `10.88528 dB`
+- Stage-matched comparison against the current spectral baseline:
+  - spectral baseline at epoch `50`: validation `dB MAE = 7.1605 dB`
+  - graph branch at epoch `50`: validation `dB MAE = 6.8171 dB`
+  - interpretation: graph topology helps early convergence
+- Full 300-epoch fair comparison on the `6600`-sample dataset:
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-graph-6600 --model-kind graph_topology_spectral_head --epochs 300 --batch-size 64 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10`
+  - best epoch: `81`
+  - validation RMSE: `0.11718`
+  - validation magnitude `dB MAE`: `6.78167 dB`
+  - validation magnitude `dB RMSE`: `10.91369 dB`
+- Comparison against the current best `structured_pair_spectral_head` on the same `6600`-sample dataset:
+  - graph branch `dB MAE`: `6.78167 dB`
+  - spectral baseline `dB MAE`: `6.21287 dB`
+  - gap: graph is `9.16%` worse on the main metric
+  - graph branch improved only `0.52%` from epoch `50` to its final best epoch, so it plateaued early
+- Validation analysis for the full graph run:
+  - command: `uv run --project apps/python python packages/nijika/analyze_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --model-path tmp/nijika-graph-6600/baseline_model.pt --split val --batch-size 256 --output-dir tmp/nijika-graph-6600-analysis`
+  - graph analysis artifacts:
+    - summary: `tmp/nijika-graph-6600-analysis/val_summary.json`
+    - analysis: `tmp/nijika-graph-6600-analysis/analysis.json`
+- Main comparison findings from the validation analysis:
+  - graph branch is worse than the spectral baseline on the exact regions we care about:
+    - average reflection `dB MAE`: `1.07 dB` vs spectral `0.94 dB`
+    - average coupling `dB MAE`: `9.64 dB` vs spectral `8.85 dB`
+    - truth `< -20 dB` MAE: `10.19 dB` vs spectral `9.37 dB`
+    - `1` cut mean `dB MAE`: `5.52 dB` vs spectral `5.04 dB`
+    - `4` cuts mean `dB MAE`: `7.27 dB` vs spectral `6.91 dB`
+  - the only notable win is tail robustness:
+    - worst-sample `dB MAE`: `17.23 dB` vs spectral `20.27 dB`
+- Interpretation:
+  - pure topology graph encoding converges faster at the start, so the representation is not useless
+  - but by itself it loses too much continuous geometry / positional detail, and the final fit is worse almost everywhere
+  - the most promising next step is NOT a deeper pure graph model
+  - the best next step is a hybrid: keep `structured_pair_spectral_head` as the main architecture, and inject the precomputed pair-topology features into its pair head instead of replacing the whole encoder with the graph branch

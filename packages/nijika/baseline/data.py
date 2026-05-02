@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from baseline.antenna_features import extract_antenna_features
+from baseline.models.graph import build_graph_features_np
 
 
 @dataclass
@@ -19,6 +20,7 @@ class SampleRecord:
     frame: np.ndarray
     cuts: np.ndarray
     nibs: np.ndarray
+    graph: dict[str, np.ndarray] | None
     target: np.ndarray
 
 
@@ -144,6 +146,7 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201) -> Datas
         config_path = root / f"{sample_dir.name}.json"
         _, points, ports, geom, frame, cuts, nibs = _build_input_sample(config_path, n_points=n_points)
         port_count = max(port_count, len(ports))
+        graph = build_graph_features_np(frame=frame, cuts=cuts, nibs=nibs, ports=ports, geom=geom, port_count=len(ports))
         curves = []
         for row in range(1, len(ports) + 1):
             for col in range(1, len(ports) + 1):
@@ -159,6 +162,7 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201) -> Datas
                 frame=frame,
                 cuts=cuts,
                 nibs=nibs,
+                graph=graph,
                 target=target,
             )
         )
@@ -169,7 +173,8 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201) -> Datas
 
 def load_inference_input(config_path: Path, n_points: int) -> dict[str, np.ndarray | str]:
     name, points, ports, geom, frame, cuts, nibs = _build_input_sample(config_path, n_points=n_points)
-    return {"name": name, "points": points, "ports": ports, "geom": geom, "frame": frame, "cuts": cuts, "nibs": nibs}
+    graph = build_graph_features_np(frame=frame, cuts=cuts, nibs=nibs, ports=ports, geom=geom, port_count=len(ports))
+    return {"name": name, "points": points, "ports": ports, "geom": geom, "frame": frame, "cuts": cuts, "nibs": nibs, "graph": graph}
 
 
 def load_truth_target(sample_dir: Path, port_count: int, freq_grid: np.ndarray) -> np.ndarray | None:
@@ -200,7 +205,7 @@ def split_records(records: list[SampleRecord], seed: int, val_ratio: float = 0.2
 
 
 def stack_records(records: list[SampleRecord]) -> dict[str, torch.Tensor]:
-    return {
+    stacked = {
         "points": torch.tensor(np.stack([record.points for record in records]), dtype=torch.float32),
         "ports": torch.tensor(np.stack([record.ports for record in records]), dtype=torch.float32),
         "geom": torch.tensor(np.stack([record.geom for record in records]), dtype=torch.float32),
@@ -209,3 +214,7 @@ def stack_records(records: list[SampleRecord]) -> dict[str, torch.Tensor]:
         "nibs": torch.tensor(np.stack([record.nibs for record in records]), dtype=torch.float32),
         "target": torch.tensor(np.stack([record.target for record in records]), dtype=torch.float32),
     }
+    if records and records[0].graph is not None:
+        for key in ("graph_inner", "graph_segment", "graph_port", "graph_mask", "graph_adj", "graph_edge_attr", "pair_topology"):
+            stacked[key] = torch.tensor(np.stack([record.graph[key] for record in records]), dtype=torch.float32)
+    return stacked

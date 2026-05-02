@@ -5,11 +5,12 @@ import io
 import json
 import os
 import queue
+import subprocess
 import time
 from functools import lru_cache
 from multiprocessing import shared_memory
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -22,17 +23,20 @@ from PIL import Image, ImageDraw
 import os, sys
 sys.path.append(f'{__file__}/../../')
 
-from utils.mujoco_tools import create_xml, flatten_matrix
-from utils.ros_bridge import bridge
-from utils.session import Session
+if TYPE_CHECKING:
+    from utils.rl_bundle import RenderBundle
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_SOURCE_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 ISAAC_PYTHON = REPO_ROOT / "apps" / "isaac" / ".venv" / "Scripts" / "python.exe"
 ISAAC_SITE = REPO_ROOT / "apps" / "isaac" / ".venv" / "Lib" / "site-packages" / "isaacsim" / "exts" / "isaacsim.ros2.bridge"
-RENDERER_SCRIPT = REPO_ROOT / "deps" / "genie_sim" / "source" / "geniesim" / "rl" / "renderer" / "rl_renderer.py"
+RENDERER_ENTRY = REPO_ROOT / "apps" / "python" / "scripts" / "rl_renderer_entry.py"
 MAIN_CAM_PRIM = "/default_viz_camera"
+JOINT_COMMAND_TOPIC = "/env_0/joint_command"
+JOINT_STATES_TOPIC = "/env_0/joint_states"
 TF_RENDER_TOPIC = "/env_0/tf_render"
+IMAGE_TOPIC = "/env_0/main_camera/image_raw"
+JOINT_STATE_TYPE = "sensor_msgs/msg/JointState"
+IMAGE_TYPE = "sensor_msgs/msg/Image"
 TF_RENDER_TYPE = "tf2_msgs/msg/TFMessage"
 SHM_HEADER_BYTES = 4
 ISAAC_API_URL = os.getenv("ISAAC_API_URL", "http://127.0.0.1:13000/api/isaac")
@@ -122,9 +126,9 @@ def _setup_env(env):
 
 
 class IsaacRenderer:
-    def __init__(self, sess: str, scene_usd: Path, width: int, height: int, render_hz: float, headless: bool, ros_domain_id: int) -> None:
+    def __init__(self, sess: str, bundle: "RenderBundle", width: int, height: int, render_hz: float, headless: bool, ros_domain_id: int) -> None:
         tag = "".join(ch if ch.isalnum() else "_" for ch in sess)[:20] or "default"
-        self.scene_usd = scene_usd
+        self.bundle = bundle
         self.width = width
         self.height = height
         self.render_hz = render_hz
@@ -132,6 +136,8 @@ class IsaacRenderer:
         self.ros_domain_id = ros_domain_id
         self.proc_id: str | None = None
         self.proc_pid: int | None = None
+        self.proc: subprocess.Popen[bytes] | None = None
+        self._proc_log = None
         self._running = False
         self.shm_name = f"glassbeaker_{tag}_frames"
         self.log_path = REPO_ROOT / "apps" / "python" / "tmp" / f"renderer_{tag}.log"
@@ -142,7 +148,7 @@ class IsaacRenderer:
 
     @property
     def running(self) -> bool:
-        return self._running and self.proc_id is not None
+        return self._running and (self.proc_id is not None or self.proc is not None)
 
     @property
     def ready(self) -> bool:
@@ -156,6 +162,10 @@ class IsaacRenderer:
         self.frames = np.ndarray((1, 1, self.height, self.width, 3), dtype=np.uint8, buffer=self.shm.buf, offset=SHM_HEADER_BYTES)
 
     def _refresh_process_state(self) -> bool:
+        if self.proc is not None:
+            self._running = self.proc.poll() is None
+            self.proc_pid = self.proc.pid if self._running else self.proc_pid
+            return self._running
         if self.proc_id is None:
             self._running = False
             return False
@@ -168,8 +178,8 @@ class IsaacRenderer:
     def _spawn(self) -> None:
         if not ISAAC_PYTHON.exists():
             raise FileNotFoundError(f"Isaac Python not found: {ISAAC_PYTHON}")
-        if not RENDERER_SCRIPT.exists():
-            raise FileNotFoundError(f"Renderer script not found: {RENDERER_SCRIPT}")
+        if not RENDERER_ENTRY.exists():
+            raise FileNotFoundError(f"Renderer entry not found: {RENDERER_ENTRY}")
         self.close()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
@@ -178,13 +188,13 @@ class IsaacRenderer:
         cmd = [
             str(ISAAC_PYTHON),
             "-u",
-            str(RENDERER_SCRIPT),
-            "--scene-usd", str(self.scene_usd),
+            str(RENDERER_ENTRY),
+            "--scene-usd", str(self.bundle.render_scene_usda),
             "--num-envs", "1",
             "--render-hz", str(self.render_hz),
             "--cam-width", str(self.width),
             "--cam-height", str(self.height),
-            "--main-cam-prim", MAIN_CAM_PRIM,
+            "--main-cam-prim", self.bundle.main_camera_prim or MAIN_CAM_PRIM,
             "--shm-name", self.shm_name,
             "--ros-domain-id", str(self.ros_domain_id),
             "--headless",
@@ -193,16 +203,35 @@ class IsaacRenderer:
             cmd.pop()
         print('CMD: ' + ' '.join(cmd))
         print('INFO: check log ' + str(self.log_path))
-        state = _isaac_request("POST", {
-            "id": self.shm_name,
-            "cmd": cmd,
-            "cwd": str(REPO_ROOT / "apps" / "isaac"),
-            "env": env,
-            "logPath": str(self.log_path),
-        })
-        self.proc_id = str(state.get("id") or self.shm_name)
-        self.proc_pid = int(state["pid"]) if state.get("pid") is not None else None
-        self._running = bool(state.get("running", True))
+        try:
+            state = _isaac_request("POST", {
+                "id": self.shm_name,
+                "cmd": cmd,
+                "cwd": str(REPO_ROOT / "apps" / "isaac"),
+                "env": env,
+                "logPath": str(self.log_path),
+            })
+            self.proc_id = str(state.get("id") or self.shm_name)
+            self.proc_pid = int(state["pid"]) if state.get("pid") is not None else None
+            self._running = bool(state.get("running", True))
+        except RuntimeError:
+            self._spawn_local(cmd, env)
+
+    def _spawn_local(self, cmd: list[str], env: dict[str, str]) -> None:
+        self.proc_id = None
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._proc_log = self.log_path.open("wb")
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        self.proc = subprocess.Popen(
+            cmd,
+            cwd=str(REPO_ROOT / "apps" / "isaac"),
+            env=env,
+            stdout=self._proc_log,
+            stderr=subprocess.STDOUT,
+            creationflags=creationflags,
+        )
+        self.proc_pid = self.proc.pid
+        self._running = True
 
     async def wait_ready(self, timeout: float = 300.0) -> dict[str, Any]:
         deadline = time.time() + timeout
@@ -248,6 +277,28 @@ class IsaacRenderer:
         }
 
     def close(self) -> None:
+        if self.proc is not None:
+            if self.proc.poll() is None:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(self.proc.pid), "/T", "/F"],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                    )
+                except Exception:
+                    try:
+                        self.proc.terminate()
+                        self.proc.wait(timeout=5)
+                    except Exception:
+                        pass
+            self.proc = None
+            self._running = False
+            self.proc_pid = None
+        if self._proc_log is not None:
+            self._proc_log.close()
+            self._proc_log = None
         if self.proc_id is not None:
             try:
                 _isaac_request("DELETE", {"id": self.proc_id}, timeout=10.0)
@@ -264,7 +315,4 @@ class IsaacRenderer:
 
 
 if __name__ == '__main__':
-    renderer = IsaacRenderer(
-        'xx',
-        Path(rf'deps\galaxea\object\r1pro\r1pro.usda'),
-        640, 480, 30, True, 0)
+    print(RENDERER_ENTRY)

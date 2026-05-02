@@ -8,7 +8,7 @@ export default function HomePage() {
                 <a href="/demo/agent-cpk">Agent CopilotKit</a>
             </li>
             <li>
-                <a href="/demo/agent-pi">Agent Pi</a>
+                <a href="/demo/agent-pi-web">Agent Pi Web</a>
             </li>
             <li>
                 <a href="/demo/chinatsu">Circuit design</a>

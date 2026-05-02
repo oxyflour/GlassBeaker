@@ -11,6 +11,7 @@ from baseline.data import load_dataset, load_inference_input, load_truth_target,
 from baseline.metrics import summarize_prediction_metrics
 from baseline.model import create_model
 from baseline.plotting import save_matrix_plot
+from baseline.training_utils import forward_model, uses_graph_features
 
 
 def parse_args() -> argparse.Namespace:
@@ -86,14 +87,20 @@ def predict_split(args: argparse.Namespace, checkpoint: dict[str, object], model
     train_records, val_records = split_records(bundle.records, seed=args.seed, val_ratio=args.val_ratio)
     selected = {"train": train_records, "val": val_records, "all": bundle.records}[str(args.split)]
     tensors = stack_records(selected)
+    graph_tensors = None
+    if uses_graph_features(model):
+        graph_tensors = {key: tensors[key] for key in ("graph_inner", "graph_segment", "graph_port", "graph_mask", "graph_adj", "graph_edge_attr", "pair_topology")}
     with torch.no_grad():
-        pred = model(
-            tensors["points"],
-            tensors["ports"],
-            tensors["geom"],
-            tensors["frame"],
-            tensors["cuts"],
-            tensors["nibs"],
+        pred = forward_model(
+            model,
+            points=tensors["points"],
+            ports=tensors["ports"],
+            geom=tensors["geom"],
+            frame=tensors["frame"],
+            cuts=tensors["cuts"],
+            nibs=tensors["nibs"],
+            device=torch.device("cpu"),
+            graph_tensors=graph_tensors,
         )
     pred_np = denormalize(pred, checkpoint)
     truth_np = tensors["target"].numpy()
@@ -123,14 +130,20 @@ def predict_split(args: argparse.Namespace, checkpoint: dict[str, object], model
 def predict_single(args: argparse.Namespace, checkpoint: dict[str, object], model: torch.nn.Module, freq_grid: np.ndarray) -> None:
     config_path = args.config_path or (args.dataset_root / f"{args.sample_name}.json")
     sample = load_inference_input(config_path, n_points=int(checkpoint["sample_points"]))
+    graph_tensors = None
+    if uses_graph_features(model):
+        graph_tensors = {key: torch.tensor(sample["graph"][key], dtype=torch.float32).unsqueeze(0) for key in ("graph_inner", "graph_segment", "graph_port", "graph_mask", "graph_adj", "graph_edge_attr", "pair_topology")}
     with torch.no_grad():
-        pred = model(
-            torch.tensor(sample["points"], dtype=torch.float32).unsqueeze(0),
-            torch.tensor(sample["ports"], dtype=torch.float32).unsqueeze(0),
-            torch.tensor(sample["geom"], dtype=torch.float32).unsqueeze(0),
-            torch.tensor(sample["frame"], dtype=torch.float32).unsqueeze(0),
-            torch.tensor(sample["cuts"], dtype=torch.float32).unsqueeze(0),
-            torch.tensor(sample["nibs"], dtype=torch.float32).unsqueeze(0),
+        pred = forward_model(
+            model,
+            points=torch.tensor(sample["points"], dtype=torch.float32).unsqueeze(0),
+            ports=torch.tensor(sample["ports"], dtype=torch.float32).unsqueeze(0),
+            geom=torch.tensor(sample["geom"], dtype=torch.float32).unsqueeze(0),
+            frame=torch.tensor(sample["frame"], dtype=torch.float32).unsqueeze(0),
+            cuts=torch.tensor(sample["cuts"], dtype=torch.float32).unsqueeze(0),
+            nibs=torch.tensor(sample["nibs"], dtype=torch.float32).unsqueeze(0),
+            device=torch.device("cpu"),
+            graph_tensors=graph_tensors,
         )
     pred_np = denormalize(pred, checkpoint)[0]
     args.output_dir.mkdir(parents=True, exist_ok=True)

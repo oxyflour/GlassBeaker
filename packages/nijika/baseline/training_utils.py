@@ -8,6 +8,47 @@ from torch.utils.data import DataLoader
 from baseline.metrics import summarize_prediction_metrics
 
 
+GRAPH_KEYS = ("graph_inner", "graph_segment", "graph_port", "graph_mask", "graph_adj", "graph_edge_attr", "pair_topology")
+
+
+def uses_graph_features(model: nn.Module) -> bool:
+    return bool(getattr(model, "uses_graph_features", False))
+
+
+def graph_feature_keys(model: nn.Module) -> tuple[str, ...]:
+    if not uses_graph_features(model):
+        return ()
+    keys = getattr(model, "graph_feature_keys", None)
+    return tuple(keys) if keys is not None else GRAPH_KEYS
+
+
+def forward_model(
+    model: nn.Module,
+    *,
+    points: torch.Tensor,
+    ports: torch.Tensor,
+    geom: torch.Tensor,
+    frame: torch.Tensor,
+    cuts: torch.Tensor,
+    nibs: torch.Tensor,
+    device: torch.device,
+    graph_tensors: dict[str, torch.Tensor] | None = None,
+) -> torch.Tensor:
+    kwargs = {}
+    if graph_tensors is not None and uses_graph_features(model):
+        needed = set(graph_feature_keys(model))
+        kwargs = {key: value.to(device) for key, value in graph_tensors.items() if key in needed}
+    return model(
+        points.to(device),
+        ports.to(device),
+        geom.to(device),
+        frame.to(device),
+        cuts.to(device),
+        nibs.to(device),
+        **kwargs,
+    )
+
+
 def _weighted_mean(error: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     expanded = weight.expand_as(error)
     return (error * expanded).sum() / expanded.sum().clamp_min(1e-6)
@@ -106,14 +147,21 @@ def evaluate(
     mean_device = target_mean.to(device)
     std_device = target_std.to(device)
     with torch.no_grad():
-        for points, ports, geom, frame, cuts, nibs, target in loader:
-            pred = model(
-                points.to(device),
-                ports.to(device),
-                geom.to(device),
-                frame.to(device),
-                cuts.to(device),
-                nibs.to(device),
+        for batch in loader:
+            points, ports, geom, frame, cuts, nibs, target, *graph_extra = batch
+            graph_tensors = None
+            if graph_extra:
+                graph_tensors = {key: tensor for key, tensor in zip(GRAPH_KEYS, graph_extra, strict=False)}
+            pred = forward_model(
+                model,
+                points=points,
+                ports=ports,
+                geom=geom,
+                frame=frame,
+                cuts=cuts,
+                nibs=nibs,
+                device=device,
+                graph_tensors=graph_tensors,
             )
             target_device = target.to(device)
             losses.append(

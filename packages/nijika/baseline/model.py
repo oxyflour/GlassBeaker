@@ -4,6 +4,8 @@ import math
 from typing import Any, Sequence
 import torch
 from torch import nn
+from baseline.models.graph import GraphTopologySpectralPredictor
+from baseline.structured_coupling_freq_model import StructuredCouplingFreqPredictor
 from baseline.structured_pole_model import StructuredPoleResiduePredictor
 from baseline.structured_spectral_model import StructuredSpectralPredictor
 from baseline.structured_model import StructuredAntennaPredictor
@@ -183,6 +185,22 @@ def create_model(*, freq_grid: Sequence[float] | torch.Tensor, port_count: int, 
             hidden_dim=hidden_dim,
             dropout=dropout,
         )
+    if model_kind == "structured_pair_topology_spectral_head":
+        return StructuredSpectralPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            use_pair_topology=True,
+        )
+    if model_kind == "structured_pair_coupling_freq_head":
+        return StructuredCouplingFreqPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            freq_bands=int(config.get("freq_bands", 8)),
+        )
     if model_kind == "structured_pair_split_decoder":
         return StructuredSpectralPredictor(
             freq_grid=freq_grid,
@@ -198,5 +216,12 @@ def create_model(*, freq_grid: Sequence[float] | torch.Tensor, port_count: int, 
             hidden_dim=hidden_dim,
             dropout=dropout,
             num_poles=int(config.get("num_poles", 12)),
+        )
+    if model_kind == "graph_topology_spectral_head":
+        return GraphTopologySpectralPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
         )
     raise ValueError(f"Unsupported model kind: {model_kind}")
