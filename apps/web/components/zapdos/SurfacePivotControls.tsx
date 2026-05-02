@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useRef } from "react"
+import { useEffect, useLayoutEffect, useRef } from "react"
 import { useThree } from "@react-three/fiber"
-import { PerspectiveCamera, Vector2, Vector3 } from "three"
+import { Object3D, PerspectiveCamera, Vector2, Vector3 } from "three"
 
 import {
     createRigState,
@@ -20,20 +20,47 @@ const DOLLY_SPEED = 0.002
 const MIN_DISTANCE = 0.25
 const MAX_DISTANCE = 100
 
-export function SurfacePivotControls() {
+function isDescendantOf(object: Object3D, ancestor: Object3D | null) {
+    for (let current: Object3D | null = object; current; current = current.parent) {
+        if (current === ancestor) {
+            return true
+        }
+    }
+    return false
+}
+
+export function SurfacePivotControls({ pickRootName }: { pickRootName?: string }) {
     const { camera, gl, invalidate, scene } = useThree()
     const rigRef = useRef<SurfacePivotRig | null>(null)
     const gestureRef = useRef<SurfacePivotGesture | null>(null)
     const pointerIdRef = useRef<number | null>(null)
+    const initializedRef = useRef(false)
+
+    useLayoutEffect(() => {
+        if (initializedRef.current || !(camera instanceof PerspectiveCamera)) {
+            return
+        }
+
+        camera.lookAt(DEFAULT_PIVOT)
+        camera.updateMatrixWorld(true)
+        rigRef.current = createRigState(camera.position, camera.quaternion, DEFAULT_PIVOT)
+        initializedRef.current = true
+    }, [camera])
 
     useEffect(() => {
         if (!(camera instanceof PerspectiveCamera)) {
             rigRef.current = null
             gestureRef.current = null
+            pointerIdRef.current = null
             return
         }
 
         const element = gl.domElement
+
+        const clearGesture = () => {
+            gestureRef.current = null
+            pointerIdRef.current = null
+        }
 
         const readRig = () => {
             const rig = createRigState(camera.position, camera.quaternion, rigRef.current?.pivot ?? DEFAULT_PIVOT)
@@ -59,8 +86,30 @@ export function SurfacePivotControls() {
             -(point.y / element.clientHeight) * 2 + 1,
         )
 
+        const resolvePendingPivot = (point: Vector2) => {
+            const pickRoot = pickRootName ? scene.getObjectByName(pickRootName) : null
+            if (pickRootName && !pickRoot) {
+                return null
+            }
+
+            const hit = pickSurfacePoint(scene, camera, toNdc(point))
+            if (!hit || (pickRoot && !isDescendantOf(hit.object, pickRoot))) {
+                return null
+            }
+            return hit.point
+        }
+
+        const isButtonStillPressed = (gesture: SurfacePivotGesture, buttons: number) =>
+            gesture.button === 0 ? (buttons & 1) !== 0 : (buttons & 4) !== 0
+
+        const releasePointerCapture = (pointerId: number) => {
+            if (element.hasPointerCapture(pointerId)) {
+                element.releasePointerCapture(pointerId)
+            }
+        }
+
         const onPointerDown = (event: PointerEvent) => {
-            if (event.button !== 0 && event.button !== 1) {
+            if (event.pointerType !== "mouse" || (event.button !== 0 && event.button !== 1)) {
                 return
             }
 
@@ -70,7 +119,7 @@ export function SurfacePivotControls() {
             if (event.button === 0) {
                 scene.updateMatrixWorld(true)
                 camera.updateMatrixWorld(true)
-                pendingPivot = pickSurfacePoint(scene, camera, toNdc(point))?.point ?? null
+                pendingPivot = resolvePendingPivot(point)
             }
 
             readRig()
@@ -82,7 +131,14 @@ export function SurfacePivotControls() {
         const onPointerMove = (event: PointerEvent) => {
             const gesture = gestureRef.current
             const rig = rigRef.current
-            if (!gesture || !rig || event.pointerId !== pointerIdRef.current) {
+            if (!gesture || !rig || event.pointerType !== "mouse" || event.pointerId !== pointerIdRef.current || !element.hasPointerCapture(event.pointerId)) {
+                return
+            }
+            if (!isButtonStillPressed(gesture, event.buttons)) {
+                const next = finishGesture(rig, gesture)
+                releasePointerCapture(event.pointerId)
+                clearGesture()
+                applyRig(next)
                 return
             }
 
@@ -105,17 +161,20 @@ export function SurfacePivotControls() {
         const endGesture = (event: PointerEvent) => {
             const gesture = gestureRef.current
             const rig = rigRef.current
-            if (!gesture || !rig || event.pointerId !== pointerIdRef.current) {
+            if (!gesture || !rig || event.pointerType !== "mouse" || event.pointerId !== pointerIdRef.current) {
                 return
             }
 
             const next = finishGesture(rig, gesture)
-            gestureRef.current = null
-            pointerIdRef.current = null
-            if (element.hasPointerCapture(event.pointerId)) {
-                element.releasePointerCapture(event.pointerId)
-            }
+            releasePointerCapture(event.pointerId)
+            clearGesture()
             applyRig(next)
+        }
+
+        const onLostPointerCapture = (event: PointerEvent) => {
+            if (event.pointerType === "mouse" && event.pointerId === pointerIdRef.current) {
+                clearGesture()
+            }
         }
 
         const onWheel = (event: WheelEvent) => {
@@ -129,15 +188,21 @@ export function SurfacePivotControls() {
         element.addEventListener("pointermove", onPointerMove)
         element.addEventListener("pointerup", endGesture)
         element.addEventListener("pointercancel", endGesture)
+        element.addEventListener("lostpointercapture", onLostPointerCapture)
         element.addEventListener("wheel", onWheel, { passive: false })
         return () => {
+            if (pointerIdRef.current !== null) {
+                releasePointerCapture(pointerIdRef.current)
+            }
+            clearGesture()
             element.removeEventListener("pointerdown", onPointerDown)
             element.removeEventListener("pointermove", onPointerMove)
             element.removeEventListener("pointerup", endGesture)
             element.removeEventListener("pointercancel", endGesture)
+            element.removeEventListener("lostpointercapture", onLostPointerCapture)
             element.removeEventListener("wheel", onWheel)
         }
-    }, [camera, gl, invalidate, scene])
+    }, [camera, gl, invalidate, pickRootName, scene])
 
     return null
 }

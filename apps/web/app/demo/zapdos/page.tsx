@@ -26,6 +26,8 @@ import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
 import { SurfacePivotControls } from "../../../components/zapdos/SurfacePivotControls"
 
+const PIVOT_PICK_ROOT = "surface-pivot-content"
+
 interface RobotVisual {
     name: string
     kind: string
@@ -125,6 +127,7 @@ function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: numb
         const sse = new EventSource(`/python/zapdos/${sess}/call/start`)
         const ping = setInterval(() => void call(sess, "ping").catch(() => null), 30000)
         const added: Record<string, Object3D> = {}
+        const root = scene.getObjectByName(PIVOT_PICK_ROOT) ?? scene
         const counter = new Counter(sse => setStats({ sse }))
         let disposed = false
 
@@ -163,7 +166,7 @@ function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: numb
                 mesh.matrix.fromArray(item.matrix)
                 mesh.matrixWorldNeedsUpdate = true
                 added[item.name] = mesh
-                scene.add(mesh)
+                root.add(mesh)
             }
         }
 
@@ -173,7 +176,7 @@ function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: numb
             sse.close()
             clearInterval(ping)
             for (const item of Object.values(added)) {
-                scene.remove(item)
+                root.remove(item)
             }
         }
     }, [scene, sess])
@@ -229,7 +232,7 @@ function Zapdos({ sess }: { sess: string }) {
             <ambientLight intensity={ 1.2 } />
             <directionalLight intensity={ 1.8 } position={ [6, -4, 8] } />
             <directionalLight intensity={ 0.8 } position={ [-4, 6, 4] } />
-            <SurfacePivotControls />
+            <SurfacePivotControls pickRootName={ PIVOT_PICK_ROOT } />
             <EffectComposer multisampling={ 8 }>
                 <N8AO aoRadius={ 1 } distanceFalloff={ 1 } intensity={ 4 } />
             </EffectComposer>
@@ -241,8 +244,10 @@ function Zapdos({ sess }: { sess: string }) {
                     <Lightformer form="circle" intensity={ 2 } position={ [10, 1, 0] } rotation-y={ -Math.PI / 2 } scale={ 8 } />
                 </group>
             </Environment>
-            <group position={ [0, 0, 2] }>
-                <SparkSplat url="/tmp/butterfly.spz" />
+            <group name={ PIVOT_PICK_ROOT }>
+                <group position={ [0, 0, 2] }>
+                    <SparkSplat url="/tmp/butterfly.spz" />
+                </group>
             </group>
             { sess && <Models sess={ sess } setStats={ setStats } /> }
         </Canvas>
