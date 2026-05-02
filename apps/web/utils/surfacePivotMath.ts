@@ -89,9 +89,11 @@ export function updateGesture(
 
   if (gesture.button === 1) {
     const panSpeed = config.panSpeed ?? 1;
+    const distance = currentRig.position.distanceTo(currentRig.pivot);
+    const worldUnitsPerPixel = (2 * distance * Math.tan((_fov * Math.PI) / 360)) / viewport.height;
     const offset = new Vector3()
-      .addScaledVector(new Vector3(1, 0, 0).applyQuaternion(currentRig.quaternion), (-delta.x / viewport.width) * panSpeed)
-      .addScaledVector(new Vector3(0, 1, 0).applyQuaternion(currentRig.quaternion), (-delta.y / viewport.height) * panSpeed);
+      .addScaledVector(new Vector3(1, 0, 0).applyQuaternion(currentRig.quaternion), -delta.x * worldUnitsPerPixel * panSpeed)
+      .addScaledVector(new Vector3(0, 1, 0).applyQuaternion(currentRig.quaternion), -delta.y * worldUnitsPerPixel * panSpeed);
 
     return {
       rig: {

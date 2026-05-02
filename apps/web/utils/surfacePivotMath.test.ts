@@ -120,6 +120,37 @@ test("updateGesture reports unchanged for zero delta after dragging starts", () 
   assert.deepEqual(second.rig.quaternion.toArray(), first.rig.quaternion.toArray());
 });
 
+test("updateGesture pans middle-drag by the same world offset on camera and pivot with perspective scaling", () => {
+  const rig = createRigState(new Vector3(0, 0, 10), new Quaternion(), new Vector3(0, 0, 0));
+  const gesture = startGesture(1, new Vector2(0, 0), null);
+  const viewport = { width: 100, height: 100 };
+  const fov = 60;
+
+  const next = stepGesture(rig, gesture, new Vector2(10, 0), viewport, fov, { panSpeed: 1 });
+
+  const expectedWorldUnitsPerPixel = (2 * rig.position.distanceTo(rig.pivot) * Math.tan((fov * Math.PI) / 360)) / viewport.height;
+  const expectedOffsetX = -10 * expectedWorldUnitsPerPixel;
+
+  assert.ok(closeArray(next.rig.position.toArray(), [expectedOffsetX, 0, 10]));
+  assert.ok(closeArray(next.rig.pivot.toArray(), [expectedOffsetX, 0, 0]));
+  assert.ok(closeArray(next.rig.quaternion.toArray(), rig.quaternion.toArray()));
+});
+
+test("updateGesture middle-drag scales with camera distance and fov instead of a constant world step", () => {
+  const viewport = { width: 100, height: 100 };
+  const gesture = startGesture(1, new Vector2(0, 0), null);
+
+  const nearRig = createRigState(new Vector3(0, 0, 5), new Quaternion(), new Vector3(0, 0, 0));
+  const farRig = createRigState(new Vector3(0, 0, 20), new Quaternion(), new Vector3(0, 0, 0));
+
+  const near = stepGesture(nearRig, gesture, new Vector2(10, 0), viewport, 60, { panSpeed: 1 });
+  const far = stepGesture(farRig, gesture, new Vector2(10, 0), viewport, 60, { panSpeed: 1 });
+  const narrowFov = stepGesture(nearRig, gesture, new Vector2(10, 0), viewport, 30, { panSpeed: 1 });
+
+  assert.ok(Math.abs(far.rig.position.x) > Math.abs(near.rig.position.x));
+  assert.ok(Math.abs(near.rig.position.x) > Math.abs(narrowFov.rig.position.x));
+});
+
 function closeArray(actual: number[], expected: number[], epsilon = 1e-12): boolean {
   if (actual.length !== expected.length) {
     return false;
