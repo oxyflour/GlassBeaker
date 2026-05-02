@@ -114,7 +114,6 @@ Python 侧 websocket bridge：
 
 ROS worker 侧：
 
-- `apps/python/utils/ros_worker.py`
 - `apps/ros/app.py`
 
 职责：

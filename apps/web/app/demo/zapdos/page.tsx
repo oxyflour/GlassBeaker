@@ -5,7 +5,7 @@ import { Canvas, useThree } from "@react-three/fiber"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js"
 import { EffectComposer, N8AO } from "@react-three/postprocessing"
-import { Environment, Lightformer, OrbitControls } from "@react-three/drei"
+import { Environment, Html, Lightformer, OrbitControls } from "@react-three/drei"
 import {
     BoxGeometry,
     BufferGeometry,
@@ -102,15 +102,33 @@ function getMaterial(item: RobotVisual & { image?: Texture }) {
     }))
 }
 
-function ZapdosLoader({ sess }: { sess: string }) {
+class Counter {
+    frame = 0
+    start = Date.now()
+    constructor(private callback: (fps: number) => void) {
+    }
+    record() {
+        this.frame += 1
+        const now = Date.now()
+        if (now - this.start > 1000 || this.frame > 100) {
+            this.callback(this.frame / (now - this.start) * 1000)
+            this.frame = 0
+            this.start = now
+        }
+    }
+}
+
+function ZapdosLoader({ sess, setStats }: { sess: string, setStats: (stat: { sse: number }) => void }) {
     const { scene } = useThree()
     useEffect(() => {
         const sse = new EventSource(`/python/zapdos/${sess}/call/start`)
         const ping = setInterval(() => void call(sess, "ping").catch(() => null), 30000)
         const added: Record<string, Object3D> = {}
+        const counter = new Counter(sse => setStats({ sse }))
         let disposed = false
 
         sse.onmessage = event => {
+            counter.record()
             const { pose = {}, topic, msg } = JSON.parse(event.data) as {
                 pose?: Record<string, number[]>
                 topic?: string
@@ -122,7 +140,9 @@ function ZapdosLoader({ sess }: { sess: string }) {
                 object.matrix.fromArray(matrix)
                 object.matrixWorldNeedsUpdate = true
             }
-            if (topic) console.log("got topic", topic, msg)
+            if (topic) {
+                console.log("got topic", topic, msg)
+            }
         }
 
         async function loadVisuals() {
@@ -151,7 +171,9 @@ function ZapdosLoader({ sess }: { sess: string }) {
             disposed = true
             sse.close()
             clearInterval(ping)
-            for (const item of Object.values(added)) scene.remove(item)
+            for (const item of Object.values(added)) {
+                scene.remove(item)
+            }
         }
     }, [scene, sess])
     return null
@@ -177,8 +199,8 @@ function CameraStreams({ sess }: { sess: string }) {
 }
 
 export default function Zapdos() {
-    const sess = useLocalUUID("zapdos-session")
-    const cameraName = "head_camera"
+    const sess = useLocalUUID("zapdos-session"),
+        [stats, setStats] = useState({ sse: 0 })
 
     return <div className="relative h-full w-full">
         <Canvas camera={ { position: [2.5, -2.5, 1.8], fov: 45, near: 0.01, far: 100 } } className="h-full w-full">
@@ -201,8 +223,11 @@ export default function Zapdos() {
             <group position={ [0, 0, 2] }>
                 <SparkSplat url="/tmp/butterfly.spz" />
             </group>
-            {sess && <ZapdosLoader sess={ sess } />}
+            { sess && <ZapdosLoader sess={ sess } setStats={ setStats } /> }
         </Canvas>
         { sess && <CameraStreams sess={ sess } /> }
+        <div className="absolute left-8 top-8">
+            SSE { stats.sse.toFixed(2) } Hz
+        </div>
     </div>
 }

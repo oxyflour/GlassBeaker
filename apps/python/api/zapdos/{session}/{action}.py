@@ -18,7 +18,6 @@ from utils.mujoco_tools import flatten_matrix, geom_size, geom_world_pose, mesh_
 from utils.rl_cameras import camera_name_to_index, image_topic
 from utils.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
 from utils.ros_bridge import bridge
-from utils.ros_worker import acquire_ros_worker, release_ros_worker, wait_for_ros_bridge
 from utils.session import Session, Timer
 from utils.sim_env import (
     IMAGE_TYPE,
@@ -85,7 +84,6 @@ class ZapdosSession(Session):
         self._seed_position_ctrl()
         mujoco.mj_forward(self.model, self.data)  # type: ignore
         super().__init__()
-        acquire_ros_worker()
         self.timers.append(Timer(ROS_DT, self.send_sse))
         self.renderer = IsaacRenderer(sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
         asyncio.run_coroutine_threadsafe(self.send_ros(), self.loop)
@@ -190,14 +188,12 @@ class ZapdosSession(Session):
 
     def send_sse(self):
         if not self.msgs.full():
-            self.msgs.put_nowait({"pose": self.get_pose(), "camera": self.get_camera()})
+            self.msgs.put_nowait({ "pose": self.get_pose() })
 
     async def send_ros(self):
         await self.renderer.wait_ready()
         while self.is_active():
             try:
-                if not bridge.conns:
-                    await wait_for_ros_bridge()
                 if not self.command_subscribed and bridge.conns:
                     await bridge.subscribe(JOINT_COMMAND_TOPIC, JOINT_STATE_TYPE, self.on_message)
                     self.command_subscribed = True
@@ -313,7 +309,6 @@ class ZapdosSession(Session):
         self.renderer.close()
         if self.viewer:
             self.viewer.close()
-        release_ros_worker()
         return super().destroy()
 
 
@@ -346,7 +341,15 @@ async def _name_(req: Request):
     name = req.path_params["name"]
     if action == "call":
         if name == "start":
-            return StreamingResponse(session.stream(), media_type="text/event-stream")
+            return StreamingResponse(
+                session.stream(),
+                media_type="text/event-stream; charset=utf-8",
+                headers={
+                    "Cache-Control": "no-cache, no-transform",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
         if name == "subscribe":
             topic, type = await req.json()
             await bridge.subscribe(topic, type, session.on_message)
