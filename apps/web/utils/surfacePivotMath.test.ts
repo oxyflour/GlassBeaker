@@ -42,6 +42,30 @@ test("updateGesture commits pending pivot before the first left-drag rotation", 
   assert.equal(next.position.length(), rig.position.length());
 });
 
+test("updateGesture does not commit a pending pivot below the drag threshold", () => {
+  const rig = createRigState(new Vector3(1, 2, 3), new Quaternion(), new Vector3(0, 0, 0));
+  const gesture = startGesture(0, new Vector2(0, 0), new Vector3(4, 5, 6));
+  const viewport = { width: 100, height: 100 };
+
+  const next = updateGesture(rig, gesture, new Vector2(3, 4), viewport, 60, { rotateSpeed: 1 });
+
+  assert.deepEqual(next.pivot.toArray(), [0, 0, 0]);
+  assert.deepEqual(next.position.toArray(), [1, 2, 3]);
+  assert.deepEqual(next.quaternion.toArray(), [0, 0, 0, 1]);
+});
+
+test("updateGesture preserves roll instead of world-up locking during rotation", () => {
+  const roll = new Quaternion().setFromAxisAngle(new Vector3(0, 0, -1), Math.PI / 2);
+  const rig = createRigState(new Vector3(0, 0, 10), roll, new Vector3(0, 0, 0));
+  const gesture = startGesture(0, new Vector2(0, 0), null);
+  const viewport = { width: 100, height: 100 };
+
+  const next = updateGesture(rig, gesture, new Vector2(40, 0), viewport, 60, { rotateSpeed: 1 });
+  const up = new Vector3(0, 1, 0).applyQuaternion(next.quaternion);
+
+  assert.ok(Math.abs(up.x) > 1e-6 || Math.abs(up.z) > 1e-6);
+});
+
 test("middle drag pans camera and pivot by the same world offset", () => {
   const rig = createRigState(new Vector3(1, 2, 3), new Quaternion(), new Vector3(4, 5, 6));
   const gesture = startGesture(1, new Vector2(0, 0), null);
@@ -62,6 +86,16 @@ test("dollyRig keeps the camera-to-pivot distance inside configured bounds", () 
 
   const farther = dollyRig(closer, -1000, 0.01, 2, 8);
   assert.ok(Math.abs(farther.position.distanceTo(farther.pivot) - 2) < 1e-9);
+});
+
+test("dollyRig preserves lateral offset after a pivot-only commit", () => {
+  const rig = createRigState(new Vector3(2, 0, 10), new Quaternion(), new Vector3(1, 0, 0));
+
+  const next = dollyRig(rig, 3, 1, 2, 20);
+
+  assert.equal(next.position.x, 2);
+  assert.equal(next.pivot.x, 1);
+  assert.ok(next.position.distanceTo(next.pivot) <= 20);
 });
 
 test("pickSurfacePoint ignores hidden meshes and returns the first visible mesh hit", () => {

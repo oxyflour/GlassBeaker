@@ -1,14 +1,4 @@
-import {
-  Camera,
-  Intersection,
-  Matrix4,
-  Mesh,
-  Quaternion,
-  Raycaster,
-  Scene,
-  Vector2,
-  Vector3,
-} from "three";
+import { Camera, Intersection, Mesh, Quaternion, Raycaster, Scene, Vector2, Vector3 } from "three";
 
 export interface SurfacePivotRig {
   position: Vector3;
@@ -25,9 +15,8 @@ export interface SurfacePivotGesture {
 export interface SurfacePivotUpdateConfig {
   rotateSpeed?: number;
   panSpeed?: number;
+  dragThresholdPx?: number;
 }
-
-const dragThresholdPx = 5;
 
 export function createRigState(position: Vector3, quaternion: Quaternion, pivot: Vector3): SurfacePivotRig {
   return {
@@ -69,16 +58,16 @@ export function updateGesture(
   _fov: number,
   config: SurfacePivotUpdateConfig,
 ): SurfacePivotRig {
-  const committed = finishGesture(rig, gesture);
-  if (!isDragGesture(gesture.start, point, dragThresholdPx)) {
-    return committed;
+  const thresholdPx = config.dragThresholdPx ?? 5;
+  if (!isDragGesture(gesture.start, point, thresholdPx)) {
+    return createRigState(rig.position, rig.quaternion, rig.pivot);
   }
-
-  const dx = point.x - gesture.start.x;
-  const dy = point.y - gesture.start.y;
 
   if (gesture.button === 1) {
     const panSpeed = config.panSpeed ?? 1;
+    const committed = createRigState(rig.position, rig.quaternion, rig.pivot);
+    const dx = point.x - gesture.start.x;
+    const dy = point.y - gesture.start.y;
     const right = new Vector3(1, 0, 0).applyQuaternion(committed.quaternion).multiplyScalar((-dx / viewport.width) * panSpeed);
     const up = new Vector3(0, 1, 0).applyQuaternion(committed.quaternion).multiplyScalar((-dy / viewport.height) * panSpeed);
     const offset = right.add(up);
@@ -90,30 +79,34 @@ export function updateGesture(
   }
 
   if (gesture.button === 0) {
+    const committed = finishGesture(rig, gesture);
     const rotateSpeed = config.rotateSpeed ?? 1;
+    const dx = point.x - gesture.start.x;
+    const dy = point.y - gesture.start.y;
     const yaw = (-dx / viewport.width) * Math.PI * rotateSpeed;
     const pitch = (-dy / viewport.height) * Math.PI * rotateSpeed;
+
+    const orientation = committed.quaternion.clone();
     const offset = committed.position.clone().sub(committed.pivot);
 
-    const yawQuat = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), yaw);
+    const yawAxis = new Vector3(0, 1, 0).applyQuaternion(orientation).normalize();
+    const yawQuat = new Quaternion().setFromAxisAngle(yawAxis, yaw);
     offset.applyQuaternion(yawQuat);
+    orientation.premultiply(yawQuat);
 
-    const right = new Vector3(1, 0, 0).applyQuaternion(committed.quaternion).applyQuaternion(yawQuat);
-    const pitchQuat = new Quaternion().setFromAxisAngle(right.normalize(), pitch);
+    const pitchAxis = new Vector3(1, 0, 0).applyQuaternion(orientation).normalize();
+    const pitchQuat = new Quaternion().setFromAxisAngle(pitchAxis, pitch);
     offset.applyQuaternion(pitchQuat);
-
-    const position = committed.pivot.clone().add(offset);
-    const matrix = new Matrix4().lookAt(position, committed.pivot, new Vector3(0, 1, 0));
-    const quaternion = new Quaternion().setFromRotationMatrix(matrix);
+    orientation.premultiply(pitchQuat);
 
     return {
-      position,
-      quaternion,
+      position: committed.pivot.clone().add(offset),
+      quaternion: orientation,
       pivot: committed.pivot.clone(),
     };
   }
 
-  return committed;
+  return createRigState(rig.position, rig.quaternion, rig.pivot);
 }
 
 export function dollyRig(
@@ -125,13 +118,23 @@ export function dollyRig(
 ): SurfacePivotRig {
   const forward = new Vector3(0, 0, -1).applyQuaternion(rig.quaternion).normalize();
   const amount = -deltaY * speed;
-  const candidate = rig.position.clone().addScaledVector(forward, amount);
-  const distance = candidate.distanceTo(rig.pivot);
-  const clampedDistance = Math.min(Math.max(distance, minDistance), maxDistance);
-  const position = rig.pivot.clone().sub(forward.multiplyScalar(clampedDistance));
+  const relative = rig.position.clone().sub(rig.pivot);
+  const parallel = relative.dot(forward);
+  const lateral = relative.clone().addScaledVector(forward, -parallel);
+  const lateralLengthSq = lateral.lengthSq();
+  const desiredParallel = parallel + amount;
+  const desiredDistance = Math.sqrt(lateralLengthSq + desiredParallel * desiredParallel);
+  const sign = Math.sign(desiredParallel) || Math.sign(parallel) || 1;
+  let clampedParallel = desiredParallel;
+
+  if (desiredDistance > maxDistance) {
+    clampedParallel = sign * Math.sqrt(Math.max(0, maxDistance * maxDistance - lateralLengthSq));
+  } else if (desiredDistance < minDistance) {
+    clampedParallel = sign * Math.sqrt(Math.max(0, minDistance * minDistance - lateralLengthSq));
+  }
 
   return {
-    position,
+    position: rig.pivot.clone().add(lateral).addScaledVector(forward, clampedParallel),
     quaternion: rig.quaternion.clone(),
     pivot: rig.pivot.clone(),
   };
