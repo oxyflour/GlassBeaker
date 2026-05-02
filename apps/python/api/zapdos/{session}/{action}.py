@@ -97,6 +97,8 @@ class ZapdosSession(Session):
             if geom.kind == "mesh":
                 mesh_id = int(self.model.geom_dataid[geom_id])
                 mesh_rel = decode_mesh_path(self.model, mesh_id)
+                if 'collisions' in mesh_rel.name:
+                    continue
                 geom.mesh = mesh_rel.name
                 self.assets[geom.mesh] = (asset_root / mesh_rel).resolve()
                 mat_id = int(self.model.geom_matid[geom_id])
@@ -336,9 +338,17 @@ async def _name_(req: Request):
         robot_usd = _input_path(req, "robot_usd", DEFAULT_ROBOT_USD)
         scene_usd = _input_path(req, "scene_usd", DEFAULT_SCENE_USD)
         sessions[sess] = asyncio.create_task(ZapdosSession.create(sess, robot_usd, scene_usd))
-    session = await sessions[sess]
+
     action = req.path_params["action"]
     name = req.path_params["name"]
+    if action == "init":
+        async def stream():
+            yield f"data: loading\n\n"
+            await sessions[sess]
+            yield f"data: started\n\n"
+        return StreamingResponse(stream(), media_type="text/event-stream; charset=utf-8")
+
+    session = await sessions[sess]
     if action == "call":
         if name == "start":
             return StreamingResponse(

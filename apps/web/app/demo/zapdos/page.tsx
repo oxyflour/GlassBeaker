@@ -118,7 +118,7 @@ class Counter {
     }
 }
 
-function ZapdosLoader({ sess, setStats }: { sess: string, setStats: (stat: { sse: number }) => void }) {
+function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: number }) => void }) {
     const { scene } = useThree()
     useEffect(() => {
         const sse = new EventSource(`/python/zapdos/${sess}/call/start`)
@@ -179,7 +179,7 @@ function ZapdosLoader({ sess, setStats }: { sess: string, setStats: (stat: { sse
     return null
 }
 
-function CameraStreams({ sess }: { sess: string }) {
+function Cameras({ sess }: { sess: string }) {
     const [cameras, setCameras] = useState([] as string[])
     useEffect(() => {
         call<RobotVisual[]>(sess, "get_camera")
@@ -198,10 +198,30 @@ function CameraStreams({ sess }: { sess: string }) {
     </div>
 }
 
-export default function Zapdos() {
+export default function ZapdosInit() {
     const sess = useLocalUUID("zapdos-session"),
-        [stats, setStats] = useState({ sse: 0 })
+        [state, setState] = useState('')
+    useEffect(() => {
+        const sse = new EventSource(`/python/zapdos/${sess}/init/start`)
+        sse.onmessage = event => {
+            setState(event.data)
+            if (event.data === 'started') {
+                sse.close()
+            }
+        }
+        return () => {
+            sse.close()
+        }
+    }, [sess])
+    return state === 'started' ?
+        <Zapdos sess={ sess } /> :
+        <div className="w-full h-full text-center">
+            { state }
+        </div>
+}
 
+function Zapdos({ sess }: { sess: string }) {
+    const [stats, setStats] = useState({ sse: 0 })
     return <div className="relative h-full w-full">
         <Canvas camera={ { position: [2.5, -2.5, 1.8], fov: 45, near: 0.01, far: 100 } } className="h-full w-full">
             <SparkRendererBridge />
@@ -223,9 +243,9 @@ export default function Zapdos() {
             <group position={ [0, 0, 2] }>
                 <SparkSplat url="/tmp/butterfly.spz" />
             </group>
-            { sess && <ZapdosLoader sess={ sess } setStats={ setStats } /> }
+            { sess && <Models sess={ sess } setStats={ setStats } /> }
         </Canvas>
-        { sess && <CameraStreams sess={ sess } /> }
+        { sess && <Cameras sess={ sess } /> }
         <div className="absolute left-8 top-8">
             SSE { stats.sse.toFixed(2) } Hz
         </div>

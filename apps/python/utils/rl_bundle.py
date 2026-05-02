@@ -81,7 +81,7 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
     robot_usd = robot_usd.resolve()
     scene_usd = scene_usd.resolve()
     bundle_dir = TMP_ROOT / _bundle_key(robot_usd, scene_usd)
-    manifest_path = bundle_dir / "manifest.json"
+    manifest_path = bundle_dir / "manifest-v1.json"
     if manifest_path.exists():
         bundle = RenderBundle.from_json(json.loads(manifest_path.read_text(encoding="utf-8")))
         if all(path.exists() for path in bundle.outputs()):

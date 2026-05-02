@@ -372,6 +372,7 @@ class BodyNode:
 # ----------------------------
 
 class USDToMJCFConverter:
+    WHEEL_NAME_HINTS = ("wheel", "tire", "caster", "rim")
     SENSOR_CAMERA_SPECS = {
         "zed_link": {
             "camera_name": "head_camera",
@@ -486,6 +487,30 @@ class USDToMJCFConverter:
                 return str(p.GetPath())
             p = p.GetParent()
         return None
+
+    def path_looks_wheel_like(self, *paths: Optional[str]) -> bool:
+        for path in paths:
+            if path is None:
+                continue
+            lower = path.lower()
+            if any(token in lower for token in self.WHEEL_NAME_HINTS):
+                return True
+        return False
+
+    def add_contact_exclude(self, body_a: str, body_b: str):
+        if body_a == body_b or body_a not in self.nodes or body_b not in self.nodes:
+            return
+        if not self.should_emit_body(self.nodes[body_a]) or not self.should_emit_body(self.nodes[body_b]):
+            return
+        a = self.nodes[body_a].name
+        b = self.nodes[body_b].name
+        self.contact_excludes.add(tuple(sorted((a, b))))
+
+    def exclude_contacts_with_ancestors(self, child_path: str):
+        current = self.nodes[child_path].parent
+        while current and current in self.nodes:
+            self.add_contact_exclude(child_path, current)
+            current = self.nodes[current].parent
 
     def get_world_matrix(self, prim) -> np.ndarray:
         return gf_matrix_to_np(self.xform_cache.GetLocalToWorldTransform(prim))
@@ -1033,9 +1058,9 @@ class USDToMJCFConverter:
             if body0 and body0 in self.nodes and body0 != child.parent:
                 child.parent = body0
             if body0 and body0 in self.nodes:
-                a = self.nodes[body0].name
-                b = child.name
-                self.contact_excludes.add(tuple(sorted((a, b)))) # type: ignore
+                self.add_contact_exclude(body0, body1)
+            if self.path_looks_wheel_like(str(prim.GetPath()), body0, body1):
+                self.exclude_contacts_with_ancestors(body1)
 
             if kind == "fixed":
                 # fixed joint in MuJoCo means "no joint element"
