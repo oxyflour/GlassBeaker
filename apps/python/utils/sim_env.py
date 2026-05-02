@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ISAAC_PYTHON = REPO_ROOT / "apps" / "isaac" / ".venv" / "Scripts" / "python.exe"
 ISAAC_SITE = REPO_ROOT / "apps" / "isaac" / ".venv" / "Lib" / "site-packages" / "isaacsim" / "exts" / "isaacsim.ros2.bridge"
-RENDERER_ENTRY = REPO_ROOT / "apps" / "python" / "scripts" / "rl_renderer_entry.py"
+RENDERER_ENTRY = REPO_ROOT / "apps" / "isaac" / "rl_renderer_entry.py"
 MAIN_CAM_PRIM = "/default_viz_camera"
 JOINT_COMMAND_TOPIC = "/env_0/joint_command"
 JOINT_STATES_TOPIC = "/env_0/joint_states"

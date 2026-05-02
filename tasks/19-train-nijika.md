@@ -59,3 +59,76 @@ Plan update 2026-05-02 (next experiment queue)
 - Step 4: 如果 Step 1 失败，下一条路线改为 loss 侧
   - 在现有 spectral baseline 上做 staged `db_weight / notch_weight / coupling_weight`
   - 优先让训练目标更对齐最终关注的 coupling / deep-notch dB 误差
+
+Progress update 2026-05-02 (coupling-freq head failed, staged loss succeeded)
+
+- 按上面的计划先实现了一个新的 `structured_pair_coupling_freq_head`
+  - 新文件：`packages/nijika/baseline/structured_coupling_freq_model.py`
+  - 集成位置：`packages/nijika/baseline/model.py`
+  - 设计：
+    - 保留当前 structured geometry encoder / token mixer / pair latent
+    - reflection pair 继续用原来的整条频谱一次性回归头
+    - coupling pair 改成 frequency-conditioned decoder，让 pair latent 和频率 embedding 逐频交互
+- 接口验证：
+  - compile: `uv run --project apps/python python -m compileall packages/nijika/baseline packages/nijika/run_baseline.py packages/nijika/predict_baseline.py`
+  - smoke train: `uv run --project apps/python python packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-smoke --output-dir tmp/nijika-coupling-freq-smoke --model-kind structured_pair_coupling_freq_head --epochs 1 --batch-size 8 --hidden-dim 64`
+  - smoke predict: `uv run --project apps/python python packages/nijika/predict_baseline.py --dataset-root tmp/antenna-dataset-smoke --model-path tmp/nijika-coupling-freq-smoke/baseline_model.pt --sample-name antenna_000 --output-dir tmp/nijika-coupling-freq-predict-smoke`
+  - 结果：接口正常，checkpoint 读回正常
+- `6600` 样本上的 `50` epoch 公平 pilot：
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-coupling-freq-6600-pilot50 --model-kind structured_pair_coupling_freq_head --epochs 50 --batch-size 64 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10`
+  - best epoch: `38`
+  - validation RMSE: `0.15110`
+  - validation `dB MAE`: `9.11893 dB`
+  - 结论：远差于当前 `structured_pair_spectral_head` 的 `50` epoch 水平（`7.1605 dB`），也差于之前的 graph pilot，所以这条 decoder 路线按 gate 直接停止，不再上 `300` epoch
+
+- 然后切换到 loss 侧，给现有 `structured_pair_spectral_head` 加 staged loss schedule
+  - 代码位置：`packages/nijika/baseline/train.py`
+  - 新能力：
+    - `--db-weight-final`
+    - `--coupling-weight-final`
+    - `--notch-weight-final`
+    - `--loss-ramp-start-epoch`
+    - `--loss-ramp-end-epoch`
+  - 训练时会从 base loss 线性 ramp 到 final loss；checkpoint 和 `metrics.json` 里也会记录 `loss_schedule`
+- smoke 验证：
+  - command: `uv run --project apps/python python packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-smoke --output-dir tmp/nijika-staged-loss-smoke --model-kind structured_pair_spectral_head --epochs 1 --batch-size 8 --hidden-dim 64 --db-weight-final 0.1 --coupling-weight-final 1.5 --notch-weight-final 2.0 --notch-threshold-db -10 --loss-ramp-start-epoch 1 --loss-ramp-end-epoch 1`
+  - 结果：接口正常
+- `6600` 样本上的 `50` epoch staged-loss pilot：
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-staged-loss-6600-pilot50 --model-kind structured_pair_spectral_head --epochs 50 --batch-size 64 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10 --db-weight-final 0.1 --coupling-weight-final 1.5 --notch-weight-final 2.0 --notch-threshold-db -10 --loss-ramp-start-epoch 10 --loss-ramp-end-epoch 35`
+  - best epoch: `49`
+  - validation RMSE: `0.12581`
+  - validation `dB MAE`: `5.17867 dB`
+  - validation `dB RMSE`: `8.13090 dB`
+  - 对比当前旧 baseline 在 epoch `50` 的 `7.1605 dB`，已经有明显优势，所以按计划继续跑 `300` epoch
+- 独立复核：
+  - command: `uv run --project apps/python python packages/nijika/analyze_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --model-path tmp/nijika-staged-loss-6600-pilot50/baseline_model.pt --split val --batch-size 256 --output-dir tmp/nijika-staged-loss-6600-pilot50-analysis`
+  - 结果：独立 analysis 与 train 时的 `val_db_mae / val_db_rmse` 一致，确认不是统计口径问题
+- `6600` 样本上的 `300` epoch 全量 staged-loss run：
+  - command: `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-staged-loss-6600 --model-kind structured_pair_spectral_head --epochs 300 --batch-size 64 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10 --db-weight-final 0.1 --coupling-weight-final 1.5 --notch-weight-final 2.0 --notch-threshold-db -10 --loss-ramp-start-epoch 10 --loss-ramp-end-epoch 35`
+  - best epoch: `268`
+  - validation RMSE: `0.10842`
+  - validation `dB MAE`: `4.49499 dB`
+  - validation `dB RMSE`: `7.24104 dB`
+- 相比旧的 `6600` spectral baseline（`tmp/nijika-v2-6600`）：
+  - validation `dB MAE`: `6.21287 dB` -> `4.49499 dB`（`27.65%` better）
+  - validation `dB RMSE`: `10.01904 dB` -> `7.24104 dB`（`27.73%` better）
+  - validation RMSE: `0.10754` -> `0.10842`
+  - 解读：新的 staged loss 几乎不改变 RI-domain RMSE，但大幅改善了我们真正关心的 dB 指标
+- 最终 validation analysis：
+  - command: `uv run --project apps/python python packages/nijika/analyze_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --model-path tmp/nijika-staged-loss-6600/baseline_model.pt --split val --batch-size 256 --output-dir tmp/nijika-staged-loss-6600-analysis`
+  - 关键对比（旧 baseline -> 新 staged loss）：
+    - reflection `dB MAE`: `0.94` -> `0.93 dB`
+    - coupling `dB MAE`: `8.85` -> `6.28 dB`
+    - truth `< -10 dB`: `9.14` -> `6.39 dB`
+    - truth `< -20 dB`: `9.37` -> `6.27 dB`
+    - sample median `dB MAE`: `5.96` -> `4.11 dB`
+    - sample p90 `dB MAE`: `8.71` -> `5.84 dB`
+    - worst sample `dB MAE`: `20.27` -> `15.93 dB`
+    - `1` cut mean `dB MAE`: `5.04` -> `4.18 dB`
+    - `4` cuts mean `dB MAE`: `6.91` -> `4.71 dB`
+- 当前结论更新：
+  - 这轮最有效的改进不是换 encoder，也不是给 pair head 注入 topology
+  - 真正高价值的是让优化目标对齐 coupling / deep-notch dB 误差
+  - 下一步优先级应该改成：
+    - 以 staged loss 版本作为新的主 baseline
+    - 再基于这个新 baseline 继续尝试更细的 decoder / topology 改进，而不是反过来

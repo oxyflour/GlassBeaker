@@ -138,7 +138,7 @@ class ZapdosSession(Session):
     def _seed_position_ctrl(self) -> None:
         self.data.ctrl[:] = 0
         for joint_name, actuator_id in self.joint_name_to_actuator.items():
-            actuator_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id) or ""
+            actuator_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id) or "" # type: ignore
             if not actuator_name.endswith("_position"):
                 continue
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)  # type: ignore

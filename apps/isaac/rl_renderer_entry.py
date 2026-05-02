@@ -4,13 +4,13 @@ import os
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "deps" / "genie_sim" / "source"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 os.environ.setdefault("SIM_REPO_ROOT", str(REPO_ROOT / "deps" / "genie_sim"))
 
-import geniesim.rl.renderer.rl_renderer as upstream
+import geniesim.rl.renderer.rl_renderer as upstream  # type: ignore
 
 
 def _noop_spin(self) -> None:
