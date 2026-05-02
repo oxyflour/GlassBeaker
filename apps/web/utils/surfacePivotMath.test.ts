@@ -8,9 +8,31 @@ import {
   finishGesture,
   isDragGesture,
   pickSurfacePoint,
+  type SurfacePivotGesture,
+  type SurfacePivotRig,
   startGesture,
   updateGesture,
 } from "./surfacePivotMath";
+
+type GestureUpdate = {
+  rig: SurfacePivotRig;
+  gesture: SurfacePivotGesture & {
+    last: Vector2;
+    dragging: boolean;
+  };
+  changed: boolean;
+};
+
+function stepGesture(
+  rig: SurfacePivotRig,
+  gesture: SurfacePivotGesture,
+  point: Vector2,
+  viewport: { width: number; height: number },
+  fov: number,
+  config: { rotateSpeed?: number; panSpeed?: number; dragThresholdPx?: number },
+): GestureUpdate {
+  return updateGesture(rig, gesture, point, viewport, fov, config) as unknown as GestureUpdate;
+}
 
 test("finishGesture commits a pending left-click pivot without moving the camera", () => {
   const rig = createRigState(new Vector3(1, 2, 3), new Quaternion(), new Vector3(0, 0, 0));
@@ -35,11 +57,12 @@ test("updateGesture commits pending pivot before the first left-drag rotation", 
   const gesture = startGesture(0, new Vector2(0, 0), new Vector3(0, 0, 0));
   const viewport = { width: 100, height: 100 };
 
-  const next = updateGesture(rig, gesture, new Vector2(50, 0), viewport, 60, { rotateSpeed: 1 });
+  const next = stepGesture(rig, gesture, new Vector2(50, 0), viewport, 60, { rotateSpeed: 1 });
 
-  assert.deepEqual(next.pivot.toArray(), [0, 0, 0]);
-  assert.notDeepEqual(next.quaternion.toArray(), [0, 0, 0, 1]);
-  assert.equal(next.position.length(), rig.position.length());
+  assert.equal(next.changed, true);
+  assert.deepEqual(next.rig.pivot.toArray(), [0, 0, 0]);
+  assert.notDeepEqual(next.rig.quaternion.toArray(), [0, 0, 0, 1]);
+  assert.equal(next.rig.position.length(), rig.position.length());
 });
 
 test("updateGesture does not commit a pending pivot below the drag threshold", () => {
@@ -47,11 +70,14 @@ test("updateGesture does not commit a pending pivot below the drag threshold", (
   const gesture = startGesture(0, new Vector2(0, 0), new Vector3(4, 5, 6));
   const viewport = { width: 100, height: 100 };
 
-  const next = updateGesture(rig, gesture, new Vector2(3, 4), viewport, 60, { rotateSpeed: 1 });
+  const next = stepGesture(rig, gesture, new Vector2(3, 4), viewport, 60, { rotateSpeed: 1 });
 
-  assert.deepEqual(next.pivot.toArray(), [0, 0, 0]);
-  assert.deepEqual(next.position.toArray(), [1, 2, 3]);
-  assert.deepEqual(next.quaternion.toArray(), [0, 0, 0, 1]);
+  assert.equal(next.changed, false);
+  assert.deepEqual(next.rig.pivot.toArray(), [0, 0, 0]);
+  assert.deepEqual(next.rig.position.toArray(), [1, 2, 3]);
+  assert.deepEqual(next.rig.quaternion.toArray(), [0, 0, 0, 1]);
+  assert.deepEqual(next.gesture.last.toArray(), [3, 4]);
+  assert.equal(next.gesture.dragging, false);
 });
 
 test("updateGesture preserves roll instead of world-up locking during rotation", () => {
@@ -60,8 +86,8 @@ test("updateGesture preserves roll instead of world-up locking during rotation",
   const gesture = startGesture(0, new Vector2(0, 0), null);
   const viewport = { width: 100, height: 100 };
 
-  const next = updateGesture(rig, gesture, new Vector2(40, 0), viewport, 60, { rotateSpeed: 1 });
-  const up = new Vector3(0, 1, 0).applyQuaternion(next.quaternion);
+  const next = stepGesture(rig, gesture, new Vector2(40, 0), viewport, 60, { rotateSpeed: 1 });
+  const up = new Vector3(0, 1, 0).applyQuaternion(next.rig.quaternion);
 
   assert.ok(Math.abs(up.x) > 1e-6 || Math.abs(up.z) > 1e-6);
 });
@@ -71,11 +97,24 @@ test("middle drag pans camera and pivot by the same world offset", () => {
   const gesture = startGesture(1, new Vector2(0, 0), null);
   const viewport = { width: 100, height: 100 };
 
-  const next = updateGesture(rig, gesture, new Vector2(10, 20), viewport, 60, { panSpeed: 1 });
+  const next = stepGesture(rig, gesture, new Vector2(10, 20), viewport, 60, { panSpeed: 1 });
 
-  assert.deepEqual(next.position.toArray(), [0.9, 1.8, 3]);
-  assert.deepEqual(next.pivot.toArray(), [3.9, 4.8, 6]);
-  assert.deepEqual(next.quaternion.toArray(), [0, 0, 0, 1]);
+  assert.deepEqual(next.rig.position.toArray(), [0.9, 1.8, 3]);
+  assert.deepEqual(next.rig.pivot.toArray(), [3.9, 4.8, 6]);
+  assert.deepEqual(next.rig.quaternion.toArray(), [0, 0, 0, 1]);
+});
+
+test("updateGesture applies incremental deltas across repeated pointermoves", () => {
+  const rig = createRigState(new Vector3(1, 2, 3), new Quaternion(), new Vector3(0, 0, 0));
+  const gesture = startGesture(1, new Vector2(0, 0), null);
+  const viewport = { width: 100, height: 100 };
+
+  const first = stepGesture(rig, gesture, new Vector2(10, 0), viewport, 60, { panSpeed: 1 });
+  const second = stepGesture(first.rig, first.gesture, new Vector2(20, 0), viewport, 60, { panSpeed: 1 });
+
+  assert.deepEqual(first.rig.position.toArray(), [0.9, 2, 3]);
+  assert.deepEqual(second.rig.position.toArray(), [0.8, 2, 3]);
+  assert.deepEqual(second.gesture.last.toArray(), [20, 0]);
 });
 
 test("dollyRig keeps the camera-to-pivot distance inside configured bounds", () => {
@@ -96,6 +135,27 @@ test("dollyRig preserves lateral offset after a pivot-only commit", () => {
   assert.equal(next.position.x, 2);
   assert.equal(next.pivot.x, 1);
   assert.ok(next.position.distanceTo(next.pivot) <= 20);
+});
+
+test("dollyRig clamps before crossing the pivot while preserving quaternion", () => {
+  const rig = createRigState(new Vector3(0, 0, 1), new Quaternion(), new Vector3(0, 0, 0));
+
+  const next = dollyRig(rig, -5, 1, 0, 10);
+
+  assert.equal(next.quaternion.x, rig.quaternion.x);
+  assert.equal(next.quaternion.y, rig.quaternion.y);
+  assert.equal(next.quaternion.z, rig.quaternion.z);
+  assert.equal(next.quaternion.w, rig.quaternion.w);
+  assert.ok(next.position.z >= 0);
+});
+
+test("dollyRig leaves an impossible lateral maxDistance violation stable", () => {
+  const rig = createRigState(new Vector3(5, 0, 3), new Quaternion(), new Vector3(0, 0, 0));
+
+  const next = dollyRig(rig, 5, 1, 0, 4);
+
+  assert.deepEqual(next.position.toArray(), rig.position.toArray());
+  assert.deepEqual(next.quaternion.toArray(), rig.quaternion.toArray());
 });
 
 test("pickSurfacePoint ignores hidden meshes and returns the first visible mesh hit", () => {
