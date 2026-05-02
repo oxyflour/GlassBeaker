@@ -76,46 +76,56 @@ test("updateGesture does not commit a pending pivot below the drag threshold", (
   assert.deepEqual(next.rig.pivot.toArray(), [0, 0, 0]);
   assert.deepEqual(next.rig.position.toArray(), [1, 2, 3]);
   assert.deepEqual(next.rig.quaternion.toArray(), [0, 0, 0, 1]);
-  assert.deepEqual(next.gesture.last.toArray(), [3, 4]);
+  assert.deepEqual(next.gesture.last.toArray(), [0, 0]);
   assert.equal(next.gesture.dragging, false);
 });
 
-test("updateGesture preserves roll instead of world-up locking during rotation", () => {
-  const roll = new Quaternion().setFromAxisAngle(new Vector3(0, 0, -1), Math.PI / 2);
-  const rig = createRigState(new Vector3(0, 0, 10), roll, new Vector3(0, 0, 0));
+test("updateGesture applies the full start-to-current delta on the threshold-crossing left-drag step", () => {
+  const rig = createRigState(new Vector3(0, 0, 10), new Quaternion(), new Vector3(0, 0, 0));
+  const directGesture = startGesture(0, new Vector2(0, 0), null);
+  const crossedGesture = startGesture(0, new Vector2(0, 0), null);
+  const viewport = { width: 100, height: 100 };
+
+  const direct = stepGesture(rig, directGesture, new Vector2(6, 0), viewport, 60, { rotateSpeed: 1, dragThresholdPx: 5 });
+  const under = stepGesture(rig, crossedGesture, new Vector2(3, 0), viewport, 60, { rotateSpeed: 1, dragThresholdPx: 5 });
+  const crossed = stepGesture(under.rig, under.gesture, new Vector2(6, 0), viewport, 60, { rotateSpeed: 1, dragThresholdPx: 5 });
+
+  assert.deepEqual(crossed.rig.position.toArray(), direct.rig.position.toArray());
+  assert.deepEqual(crossed.rig.quaternion.toArray(), direct.rig.quaternion.toArray());
+});
+
+test("updateGesture uses incremental deltas after dragging starts for rotation too", () => {
+  const rig = createRigState(new Vector3(0, 0, 10), new Quaternion(), new Vector3(0, 0, 0));
   const gesture = startGesture(0, new Vector2(0, 0), null);
   const viewport = { width: 100, height: 100 };
 
-  const next = stepGesture(rig, gesture, new Vector2(40, 0), viewport, 60, { rotateSpeed: 1 });
-  const up = new Vector3(0, 1, 0).applyQuaternion(next.rig.quaternion);
+  const first = stepGesture(rig, gesture, new Vector2(10, 0), viewport, 60, { rotateSpeed: 1 });
+  const second = stepGesture(first.rig, first.gesture, new Vector2(20, 0), viewport, 60, { rotateSpeed: 1 });
+  const direct = stepGesture(rig, startGesture(0, new Vector2(0, 0), null), new Vector2(20, 0), viewport, 60, { rotateSpeed: 1 });
 
-  assert.ok(Math.abs(up.x) > 1e-6 || Math.abs(up.z) > 1e-6);
+  assert.deepEqual(second.rig.position.toArray(), direct.rig.position.toArray());
+  assert.ok(closeArray(second.rig.quaternion.toArray(), direct.rig.quaternion.toArray()));
 });
 
-test("middle drag pans camera and pivot by the same world offset", () => {
-  const rig = createRigState(new Vector3(1, 2, 3), new Quaternion(), new Vector3(4, 5, 6));
-  const gesture = startGesture(1, new Vector2(0, 0), null);
+test("updateGesture reports unchanged for zero delta after dragging starts", () => {
+  const rig = createRigState(new Vector3(0, 0, 10), new Quaternion(), new Vector3(0, 0, 0));
+  const gesture = startGesture(0, new Vector2(0, 0), null);
   const viewport = { width: 100, height: 100 };
 
-  const next = stepGesture(rig, gesture, new Vector2(10, 20), viewport, 60, { panSpeed: 1 });
+  const first = stepGesture(rig, gesture, new Vector2(10, 0), viewport, 60, { rotateSpeed: 1 });
+  const second = stepGesture(first.rig, first.gesture, new Vector2(10, 0), viewport, 60, { rotateSpeed: 1 });
 
-  assert.deepEqual(next.rig.position.toArray(), [0.9, 1.8, 3]);
-  assert.deepEqual(next.rig.pivot.toArray(), [3.9, 4.8, 6]);
-  assert.deepEqual(next.rig.quaternion.toArray(), [0, 0, 0, 1]);
+  assert.equal(second.changed, false);
+  assert.deepEqual(second.rig.position.toArray(), first.rig.position.toArray());
+  assert.deepEqual(second.rig.quaternion.toArray(), first.rig.quaternion.toArray());
 });
 
-test("updateGesture applies incremental deltas across repeated pointermoves", () => {
-  const rig = createRigState(new Vector3(1, 2, 3), new Quaternion(), new Vector3(0, 0, 0));
-  const gesture = startGesture(1, new Vector2(0, 0), null);
-  const viewport = { width: 100, height: 100 };
-
-  const first = stepGesture(rig, gesture, new Vector2(10, 0), viewport, 60, { panSpeed: 1 });
-  const second = stepGesture(first.rig, first.gesture, new Vector2(20, 0), viewport, 60, { panSpeed: 1 });
-
-  assert.deepEqual(first.rig.position.toArray(), [0.9, 2, 3]);
-  assert.deepEqual(second.rig.position.toArray(), [0.8, 2, 3]);
-  assert.deepEqual(second.gesture.last.toArray(), [20, 0]);
-});
+function closeArray(actual: number[], expected: number[], epsilon = 1e-12): boolean {
+  if (actual.length !== expected.length) {
+    return false;
+  }
+  return actual.every((value, index) => Math.abs(value - expected[index]) <= epsilon);
+}
 
 test("dollyRig keeps the camera-to-pivot distance inside configured bounds", () => {
   const rig = createRigState(new Vector3(0, 0, 10), new Quaternion(), new Vector3(0, 0, 0));

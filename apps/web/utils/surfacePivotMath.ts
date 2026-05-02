@@ -65,21 +65,27 @@ export function updateGesture(
   config: SurfacePivotUpdateConfig,
 ): SurfacePivotUpdate {
   const thresholdPx = config.dragThresholdPx ?? 5;
-  const nextGesture: SurfacePivotGesture = {
-    ...gesture,
-    last: point.clone(),
-  };
+  const crossedThreshold = !gesture.dragging && isDragGesture(gesture.start, point, thresholdPx);
+  const active = gesture.dragging || crossedThreshold;
+  const delta = active ? point.clone().sub(gesture.dragging ? gesture.last : gesture.start) : new Vector2();
 
-  if (!gesture.dragging && !isDragGesture(gesture.start, point, thresholdPx)) {
+  if (!active) {
     return {
       rig: createRigState(rig.position, rig.quaternion, rig.pivot),
-      gesture: nextGesture,
+      gesture: {
+        ...gesture,
+      },
       changed: false,
     };
   }
 
-  const currentRig = gesture.button === 0 && !gesture.dragging ? finishGesture(rig, gesture) : createRigState(rig.position, rig.quaternion, rig.pivot);
-  const delta = point.clone().sub(gesture.last);
+  const currentRig = gesture.button === 0 && crossedThreshold ? finishGesture(rig, gesture) : createRigState(rig.position, rig.quaternion, rig.pivot);
+  const changed = delta.lengthSq() > 0;
+  const nextGesture: SurfacePivotGesture = {
+    ...gesture,
+    last: point.clone(),
+    dragging: true,
+  };
 
   if (gesture.button === 1) {
     const panSpeed = config.panSpeed ?? 1;
@@ -93,12 +99,8 @@ export function updateGesture(
         quaternion: currentRig.quaternion.clone(),
         pivot: currentRig.pivot.clone().add(offset),
       },
-      gesture: {
-        ...nextGesture,
-        dragging: true,
-        pendingPivot: gesture.pendingPivot,
-      },
-      changed: true,
+      gesture: nextGesture,
+      changed,
     };
   }
 
@@ -128,10 +130,9 @@ export function updateGesture(
       },
       gesture: {
         ...nextGesture,
-        dragging: true,
         pendingPivot: null,
       },
-      changed: true,
+      changed,
     };
   }
 
@@ -160,18 +161,15 @@ export function dollyRig(
 
   const amount = -deltaY * speed;
   const targetParallel = parallel + amount;
-  const currentSign = Math.sign(parallel) || Math.sign(targetParallel) || Math.sign(amount) || 1;
+  const sign = Math.sign(parallel) || Math.sign(targetParallel) || Math.sign(amount) || 1;
   const minMagnitude = lateralLength >= minDistance ? 0 : Math.sqrt(Math.max(0, minDistance * minDistance - lateralLength * lateralLength));
   const maxMagnitude = Math.sqrt(Math.max(0, maxDistance * maxDistance - lateralLength * lateralLength));
-
-  let magnitude = Math.abs(targetParallel);
-  if (currentSign * targetParallel < 0) {
-    magnitude = currentSign * amount < 0 ? minMagnitude : maxMagnitude;
-  } else {
-    magnitude = Math.min(maxMagnitude, Math.max(minMagnitude, magnitude));
-  }
-
-  const parallelOffset = forward.multiplyScalar(currentSign * magnitude);
+  const signedMin = sign * minMagnitude;
+  const signedMax = sign * maxMagnitude;
+  const low = Math.min(signedMin, signedMax);
+  const high = Math.max(signedMin, signedMax);
+  const clampedParallel = Math.min(high, Math.max(low, targetParallel));
+  const parallelOffset = forward.multiplyScalar(clampedParallel);
   return {
     position: rig.pivot.clone().add(lateral).add(parallelOffset),
     quaternion: rig.quaternion.clone(),
