@@ -5,6 +5,8 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import mujoco  # type: ignore
+
 from utils.usd_to_mjcf import USDToMJCFConverter
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -12,6 +14,34 @@ ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 
 
 class USDToMJCFTest(unittest.TestCase):
+    def test_mass_only_body_defaults_inertial_position(self):
+        scene_usda = """#usda 1.0
+(
+    defaultPrim = "World"
+)
+
+def Xform "World"
+{
+    def Xform "Body"
+    {
+        float physics:mass = 2
+        def Cube "Visual"
+        {
+            double size = 1
+        }
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "mass_only.usda"
+            output_xml = Path(tmpdir) / "mass_only.xml"
+            scene_path.write_text(scene_usda, encoding="utf-8")
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="mass_only").convert()
+
+            model = mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
+            self.assertGreater(model.nbody, 0)
+
     def test_r1pro_excludes_base_contacts_for_wheels(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_xml = Path(tmpdir) / "r1pro.xml"

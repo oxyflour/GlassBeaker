@@ -1008,16 +1008,17 @@ class USDToMJCFConverter:
             return None
 
         com = self.get_authored_attr(prim, "physics:centerOfMass", default=None)
-
-        pos = None
+        pos = np.zeros(3, dtype=float)
         if com is not None:
-            pos = np.array([float(com[0]), float(com[1]), float(com[2])], dtype=float) * self.meters_per_unit
+            com_vec = np.array([float(com[0]), float(com[1]), float(com[2])], dtype=float)
+            if np.all(np.isfinite(com_vec)):
+                pos = com_vec * self.meters_per_unit
 
         diagI = self.get_authored_attr(prim, "physics:diagonalInertia", default=None)
         diaginertia = None
         if diagI is not None:
             diaginertia = np.array([float(diagI[0]), float(diagI[1]), float(diagI[2])], dtype=float)
-            if np.any(diaginertia <= 0.0):
+            if not np.all(np.isfinite(diaginertia)) or np.any(diaginertia <= 0.0):
                 diaginertia = None
 
         quat = gf_quat_to_wxyz(self.get_authored_attr(prim, "physics:principalAxes", default=None))

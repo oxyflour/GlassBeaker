@@ -138,6 +138,83 @@ def _patch_rotation_matrix_compat(helper: Any) -> None:
     helper.rotation_matrix = rotation_matrix_compat
 
 
+def _install_exposed_primitive_compat() -> None:
+    try:
+        from geniesim.generator.scene_language._shape_utils import primitive_call
+        from geniesim.generator.scene_language.math_utils import _scale_matrix
+    except ModuleNotFoundError as exc:
+        if exc.name in {
+            "geniesim",
+            "geniesim.generator",
+            "geniesim.generator.scene_language",
+            "geniesim.generator.scene_language._shape_utils",
+            "geniesim.generator.scene_language.math_utils",
+        }:
+            return
+        raise
+
+    if getattr(primitive_call, "is_implemented", False):
+        return
+
+    def _bsdf(color: Any) -> dict[str, Any]:
+        return {
+            "type": "diffuse",
+            "reflectance": {"type": "rgb", "value": np.asarray(color[:3]).clip(0, 1)},
+        }
+
+    def cube_fn(*, info: Any, scale: Any, color: Any = (1, 1, 1)) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "cube",
+                "to_world": _scale_matrix(scale, enforce_uniform=False) @ _scale_matrix(0.5),
+                "bsdf": _bsdf(color),
+                "info": {"stack": [], "info": info},
+            }
+        ]
+
+    def sphere_fn(*, info: Any, radius: float = 1.0, color: Any = (1, 1, 1)) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "sphere",
+                "to_world": _scale_matrix(radius),
+                "bsdf": _bsdf(color),
+                "info": {"stack": [], "info": info},
+            }
+        ]
+
+    def cylinder_fn(
+        *,
+        info: Any,
+        radius: float,
+        p0: Any,
+        p1: Any,
+        color: Any = (1, 1, 1),
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "cylinder",
+                "p0": tuple(float(value) for value in p0),
+                "p1": tuple(float(value) for value in p1),
+                "radius": float(radius),
+                "to_world": np.eye(4),
+                "bsdf": _bsdf(color),
+                "info": {"stack": [], "info": info},
+            }
+        ]
+
+    def impl_primitive_call():
+        def fn(name: str, **kwargs):
+            return {
+                "cube": cube_fn,
+                "sphere": sphere_fn,
+                "cylinder": cylinder_fn,
+            }.get(name, cube_fn)(**kwargs)
+
+        return fn
+
+    primitive_call.implement(impl_primitive_call)
+
+
 @lru_cache(maxsize=1)
 def _prepare_runtime_cached(assets_root: str):
     repo_root = resolve_repo_root()
@@ -153,6 +230,7 @@ def _prepare_runtime_cached(assets_root: str):
     import helper
 
     _patch_rotation_matrix_compat(helper)
+    _install_exposed_primitive_compat()
     return helper
 
 
