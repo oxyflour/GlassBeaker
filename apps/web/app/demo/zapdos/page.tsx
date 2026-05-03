@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { Canvas, useThree } from "@react-three/fiber"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js"
@@ -26,6 +27,12 @@ import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
 import { SurfacePivotControls } from "../../../components/zapdos/SurfacePivotControls"
 import { SpaceMouseModeSelect } from "../../../components/zapdos/SpaceMouseModeSelect"
+import {
+    buildZapdosInitStreamUrl,
+    buildZapdosSessionStorageKey,
+    parseZapdosInitEvent,
+    type ZapdosInitPhase,
+} from "../../../components/zapdos/zapdos-import"
 
 const PIVOT_PICK_ROOT = "surface-pivot-content"
 
@@ -210,24 +217,35 @@ function Cameras({ sess }: { sess: string }) {
 }
 
 export default function ZapdosInit() {
-    const sess = useLocalUUID("zapdos-session"),
-        [state, setState] = useState('')
+    const searchParams = useSearchParams()
+    const sceneUsd = searchParams.get("scene_usd")
+    const robotUsd = searchParams.get("robot_usd")
+    const sess = useLocalUUID(buildZapdosSessionStorageKey(sceneUsd, robotUsd))
+    const [state, setState] = useState<{ phase: ZapdosInitPhase, message: string }>({
+        phase: "loading",
+        message: "loading",
+    })
     useEffect(() => {
-        const sse = new EventSource(`/python/zapdos/${sess}/init/start`)
+        const sse = new EventSource(buildZapdosInitStreamUrl(sess, sceneUsd, robotUsd))
         sse.onmessage = event => {
-            setState(event.data)
-            if (event.data === 'started') {
+            const next = parseZapdosInitEvent(event.data)
+            setState(next)
+            if (next.phase !== "loading") {
                 sse.close()
             }
+        }
+        sse.onerror = () => {
+            setState({ phase: "error", message: "Session bootstrap failed" })
+            sse.close()
         }
         return () => {
             sse.close()
         }
-    }, [sess])
-    return state === 'started' ?
+    }, [robotUsd, sceneUsd, sess])
+    return state.phase === 'started' ?
         <Zapdos sess={ sess } /> :
         <div className="w-full h-full text-center">
-            { state }
+            { state.message }
         </div>
 }
 

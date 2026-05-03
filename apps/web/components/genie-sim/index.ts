@@ -6,6 +6,7 @@ export {
   SEARCH_ASSETS_PARAMETERS_CPK,
   SET_SCENE_DESCRIPTION,
 } from "./scene-instructions";
+export { OpenInZapdosLink } from "./OpenInZapdosLink";
 export { simPointToThree, simQuaternionToThree } from "./scene-math";
 export { SceneUsdaBadge } from "./scene-usda-badge";
 export { useSceneState } from "./scene-state";

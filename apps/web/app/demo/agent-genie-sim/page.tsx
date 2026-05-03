@@ -6,6 +6,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 
 import {
   GENIE_SIM_AGENT_NAME,
+  OpenInZapdosLink,
   SCENE_ADDITIONAL_INSTRUCTIONS,
   SCENE_PARAMETERS_CPK,
   SceneViewer,
@@ -106,6 +107,7 @@ function GenieSimWorkspace() {
           <Panel defaultSize={ 58 } minSize={ 30 }>
             <div className="relative h-full min-h-0">
               <div className="absolute inset-0"><SceneViewer scene={ scene } /></div>
+              <OpenInZapdosLink sceneUsdaPath={ scene.sceneUsdaPath } />
               <SceneUsdaBadge path={ scene.sceneUsdaPath } />
             </div>
           </Panel>
