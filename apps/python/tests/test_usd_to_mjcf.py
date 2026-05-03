@@ -34,6 +34,31 @@ class USDToMJCFTest(unittest.TestCase):
             }
             self.assertTrue(expected.issubset(excludes))
 
+    def test_r1pro_excludes_gripper_finger_self_contacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_xml = Path(tmpdir) / "r1pro.xml"
+            converter = USDToMJCFConverter(ROBOT_USD, output_xml, model_name="r1pro_test")
+
+            converter.convert()
+
+            root = ET.parse(output_xml).getroot()
+            excludes = {
+                tuple(sorted((node.attrib["body1"], node.attrib["body2"])))
+                for node in root.findall("./contact/exclude")
+            }
+
+            expected = {
+                tuple(sorted((
+                    "Root_r1_pro_with_gripper_left_gripper_finger_link1",
+                    "Root_r1_pro_with_gripper_left_gripper_finger_link2",
+                ))),
+                tuple(sorted((
+                    "Root_r1_pro_with_gripper_right_gripper_finger_link1",
+                    "Root_r1_pro_with_gripper_right_gripper_finger_link2",
+                ))),
+            }
+            self.assertTrue(expected.issubset(excludes))
+
 
 if __name__ == "__main__":
     unittest.main()

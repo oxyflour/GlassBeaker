@@ -11,6 +11,9 @@ export default function HomePage() {
                 <a href="/demo/agent-pi-web">Agent Pi Web</a>
             </li>
             <li>
+                <a href="/demo/agent-genie-sim">Agent Genie Sim</a>
+            </li>
+            <li>
                 <a href="/demo/chinatsu">Circuit design</a>
             </li>
             <li>

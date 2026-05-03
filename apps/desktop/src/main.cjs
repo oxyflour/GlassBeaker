@@ -134,8 +134,8 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
 
 async function createMainWindow() {
     mainWindow = new BrowserWindow({
-        width: 1200,
-        height: 760,
+        width: 640,
+        height: 480,
         show: false,
         webPreferences: {
             additionalArguments: [`--glassbeaker-packaged=${app.isPackaged ? "1" : "0"}`],

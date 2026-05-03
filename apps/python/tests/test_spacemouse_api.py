@@ -33,6 +33,10 @@ class _StubManager:
         self.calls.append(("set_active_arm", arm))
         return {"running": True, "active_arm": arm}
 
+    def set_mode(self, mode: str):
+        self.calls.append(("set_mode", mode))
+        return {"running": True, "mode": mode}
+
     def shutdown(self) -> None:
         self.calls.append(("shutdown", None))
 
@@ -61,9 +65,19 @@ class SpaceMouseApiTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(stub.calls[0][0], "start")
-        self.assertEqual(stub.calls[0][1]["rate_hz"], 60.0)
+        self.assertEqual(stub.calls[-1][0], "start")
+        self.assertEqual(stub.calls[-1][1]["rate_hz"], 60.0)
         self.assertEqual(response.json()["active_arm"], "right")
+
+    def test_start_endpoint_omits_none_overrides(self):
+        client, stub = self.make_client()
+
+        response = client.post("/api/teleop/spacemouse/start", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(stub.calls[-1][0], "start")
+        self.assertNotIn("robot_usd", stub.calls[-1][1])
+        self.assertNotIn("scene_usd", stub.calls[-1][1])
 
     def test_set_active_arm_only_accepts_left_or_right(self):
         client, stub = self.make_client()
@@ -72,8 +86,29 @@ class SpaceMouseApiTest(unittest.TestCase):
         bad = client.post("/api/teleop/spacemouse/set_active_arm", json={"arm": "both"})
 
         self.assertEqual(ok.status_code, 200)
-        self.assertEqual(stub.calls[0], ("set_active_arm", "left"))
+        self.assertIn(("set_active_arm", "left"), stub.calls)
         self.assertEqual(bad.status_code, 422)
+
+    def test_set_mode_endpoint_accepts_off_left_and_right(self):
+        client, stub = self.make_client()
+
+        off = client.post("/api/teleop/spacemouse/set_mode", json={"mode": "off"})
+        left = client.post("/api/teleop/spacemouse/set_mode", json={"mode": "left"})
+        bad = client.post("/api/teleop/spacemouse/set_mode", json={"mode": "both"})
+
+        self.assertEqual(off.status_code, 200)
+        self.assertEqual(left.status_code, 200)
+        self.assertIn(("set_mode", "off"), stub.calls)
+        self.assertIn(("set_mode", "left"), stub.calls)
+        self.assertEqual(bad.status_code, 422)
+
+    def test_startup_event_autostarts_manager(self):
+        client, stub = self.make_client()
+
+        with client:
+            pass
+
+        self.assertIn(("start", {"mode_override": "off"}), stub.calls)
 
     def test_shutdown_event_stops_manager(self):
         client, stub = self.make_client()

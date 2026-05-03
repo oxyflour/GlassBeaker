@@ -27,6 +27,7 @@ class SpaceMouseManager:
         self.ik_controller = ik_controller
         self._running = False
         self._active_arm = "right"
+        self._mode = "off"
         self._config = self._default_config()
         self._target_poses: dict[str, dict[str, tuple[float, ...]]] = {}
         self._gripper_openings = {"left": 0.0, "right": 0.0}
@@ -35,7 +36,7 @@ class SpaceMouseManager:
         self._ros_connected = False
         self._last_joint_state_at: float | None = None
 
-    def start(self, **config: Any) -> dict[str, Any]:
+    def start(self, mode_override: str | None = None, **config: Any) -> dict[str, Any]:
         with self._lock:
             if self._running:
                 self._stop_locked()
@@ -49,6 +50,7 @@ class SpaceMouseManager:
             self._target_poses.clear()
             self._gripper_openings = {"left": 0.0, "right": 0.0}
             self._pending_reset = {"left", "right", self._active_arm}
+            self._mode = mode_override or self._active_arm
             self._stop.clear()
             self._running = True
             self._thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -68,7 +70,18 @@ class SpaceMouseManager:
             raise ValueError(f"Unsupported arm: {arm}")
         with self._lock:
             self._active_arm = arm
+            self._mode = arm
             self._pending_reset.add(arm)
+            return self._status_unlocked()
+
+    def set_mode(self, mode: str) -> dict[str, Any]:
+        if mode not in {"off", "left", "right"}:
+            raise ValueError(f"Unsupported mode: {mode}")
+        with self._lock:
+            self._mode = mode
+            if mode in {"left", "right"}:
+                self._active_arm = mode
+                self._pending_reset.add(mode)
             return self._status_unlocked()
 
     def status(self) -> dict[str, Any]:
@@ -80,6 +93,7 @@ class SpaceMouseManager:
             return
         self.ros_client.poll_messages()
         self._ros_connected = bool(self.ros_client.status().get("connected"))
+        sample = self.device.poll()
         self._device_connected = bool(self.device.status().get("connected"))
         joint_state = self.ros_client.latest_joint_state()
         if joint_state is None:
@@ -87,8 +101,8 @@ class SpaceMouseManager:
         self.ik_controller.sync_joint_state(joint_state)
         self._last_joint_state_at = time.time()
         self._sync_gripper_openings(joint_state)
-        sample = self.device.poll()
-        self._device_connected = bool(self.device.status().get("connected"))
+        if self._mode == "off":
+            return
         active_arm = self._active_arm
         target = self._ensure_target_pose(active_arm)
         if sample is not None:
@@ -114,7 +128,7 @@ class SpaceMouseManager:
             "robot_usd": str(DEFAULT_ROBOT_USD),
             "scene_usd": str(DEFAULT_SCENE_USD),
             "rate_hz": 60.0,
-            "linear_scale": 0.15,
+            "linear_scale": 0.5,
             "angular_scale": 0.8,
             "gripper_step": 0.005,
         }
@@ -122,6 +136,7 @@ class SpaceMouseManager:
     def _status_unlocked(self) -> dict[str, Any]:
         return {
             "running": self._running,
+            "mode": self._mode,
             "active_arm": self._active_arm,
             "device_connected": self._device_connected,
             "ros_connected": self._ros_connected,

@@ -15,6 +15,13 @@ ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 
 
 class RLBundleTest(unittest.TestCase):
+    def test_default_scene_contains_ground_mesh(self):
+        stage = Usd.Stage.Open(str(DEFAULT_SCENE_USD))
+        self.assertIsNotNone(stage)
+        ground = stage.GetPrimAtPath("/World/Ground")
+        self.assertTrue(ground.IsValid(), str(DEFAULT_SCENE_USD))
+        self.assertTrue(ground.IsA(UsdGeom.Mesh))
+
     def test_ensure_render_bundle_creates_expected_outputs(self):
         bundle = ensure_render_bundle(ROBOT_USD, DEFAULT_SCENE_USD)
         for path in bundle.outputs():

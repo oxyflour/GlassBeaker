@@ -25,6 +25,7 @@ import {
 import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
 import { SurfacePivotControls } from "../../../components/zapdos/SurfacePivotControls"
+import { SpaceMouseModeSelect } from "../../../components/zapdos/SpaceMouseModeSelect"
 
 const PIVOT_PICK_ROOT = "surface-pivot-content"
 
@@ -108,16 +109,17 @@ function getMaterial(item: RobotVisual & { image?: Texture }) {
 class Counter {
     frame = 0
     start = Date.now()
-    constructor(private callback: (fps: number) => void) {
+    constructor() {
+    }
+    flush() {
+        const now = Date.now(),
+            fps = this.frame / (now - this.start) * 1000
+        this.frame = 0
+        this.start = now
+        return fps
     }
     record() {
         this.frame += 1
-        const now = Date.now()
-        if (now - this.start > 1000 || this.frame > 100) {
-            this.callback(this.frame / (now - this.start) * 1000)
-            this.frame = 0
-            this.start = now
-        }
     }
 }
 
@@ -128,21 +130,26 @@ function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: numb
         const ping = setInterval(() => void call(sess, "ping").catch(() => null), 30000)
         const added: Record<string, Object3D> = {}
         const root = scene.getObjectByName(PIVOT_PICK_ROOT) ?? scene
-        const counter = new Counter(sse => setStats({ sse }))
+        const counter = new Counter()
         let disposed = false
 
         sse.onmessage = event => {
-            counter.record()
-            const { pose = {}, topic, msg } = JSON.parse(event.data) as {
+            const { pose, topic, msg } = JSON.parse(event.data) as {
                 pose?: Record<string, number[]>
                 topic?: string
                 msg?: unknown
             }
-            for (const [name, matrix] of Object.entries(pose)) {
-                const object = added[name]
-                if (!object) continue
-                object.matrix.fromArray(matrix)
-                object.matrixWorldNeedsUpdate = true
+            if (pose) {
+                for (const [name, matrix] of Object.entries(pose)) {
+                    const object = added[name]
+                    if (!object) continue
+                    object.matrix.fromArray(matrix)
+                    object.matrixWorldNeedsUpdate = true
+                }
+                counter.record()
+                if (counter.frame > 100 || Date.now() - counter.start > 1000) {
+                    setStats({ sse: counter.flush() })
+                }
             }
             if (topic) {
                 console.log("got topic", topic, msg)
@@ -252,8 +259,11 @@ function Zapdos({ sess }: { sess: string }) {
             { sess && <Models sess={ sess } setStats={ setStats } /> }
         </Canvas>
         { sess && <Cameras sess={ sess } /> }
-        <div className="absolute left-8 top-8">
-            SSE { stats.sse.toFixed(2) } Hz
+        <div className="absolute left-8 top-8 flex gap-3">
+            <div className="rounded-md bg-black/60 px-3 py-2 text-white backdrop-blur-sm">
+                SSE { stats.sse.toFixed(2) } Hz
+            </div>
+            <SpaceMouseModeSelect />
         </div>
     </div>
 }

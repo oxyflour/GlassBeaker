@@ -17,7 +17,12 @@ from rosidl_runtime_py.utilities import get_message      # type: ignore
 from rosidl_runtime_py import message_to_ordereddict     # type: ignore
 from rosidl_runtime_py.set_message import set_message_fields  # type: ignore
 
-import sys
+import sys, threading
+def wait_for_stdin():
+    sys.stdin.readline()
+    os._exit(0)
+threading.Thread(target=wait_for_stdin, daemon=True).start()
+
 sys.path.append(os.path.normpath(f'{__file__}/../../'))
 from python.utils.session import Session
 

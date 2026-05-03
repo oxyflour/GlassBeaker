@@ -16,8 +16,10 @@ class _FakeDevice:
     def __init__(self, samples: list[SpaceMouseSample], connected: bool = True) -> None:
         self.samples = list(samples)
         self.connected = connected
+        self.poll_count = 0
 
     def poll(self) -> SpaceMouseSample | None:
+        self.poll_count += 1
         if self.samples:
             return self.samples.pop(0)
         return None
@@ -111,6 +113,19 @@ class SpaceMouseManagerTest(unittest.TestCase):
         self.assertEqual(started["running"], True)
         self.assertEqual(stopped["running"], False)
 
+    def test_off_mode_keeps_thread_alive_but_suppresses_publish(self):
+        manager = SpaceMouseManager(
+            device=_FakeDevice([self.sample()]),
+            ros_client=_FakeRosClient({"name": [], "position": []}),
+            ik_controller=_FakeIKController(),
+        )
+
+        status = self.call_with_timeout(manager.set_mode, "off")
+        manager.step_once()
+
+        self.assertEqual(status["mode"], "off")
+        self.assertEqual(manager.ros_client.published, [])
+
     def test_switching_arm_snaps_target_to_new_pose(self):
         manager = SpaceMouseManager(
             device=_FakeDevice([self.sample()]),
@@ -133,6 +148,7 @@ class SpaceMouseManagerTest(unittest.TestCase):
             ik_controller=_FakeIKController(),
         )
 
+        manager.set_mode("right")
         manager.step_once()
 
         _, target, _ = manager.ik_controller.solve_calls[-1]
@@ -150,6 +166,18 @@ class SpaceMouseManagerTest(unittest.TestCase):
         self.assertEqual(manager.status()["ros_connected"], False)
         self.assertEqual(manager.status()["device_connected"], False)
         self.assertEqual(manager.ros_client.published, [])
+
+    def test_device_is_polled_before_first_joint_state_arrives(self):
+        device = _FakeDevice([])
+        manager = SpaceMouseManager(
+            device=device,
+            ros_client=_FakeRosClient(None),
+            ik_controller=_FakeIKController(),
+        )
+
+        manager.step_once()
+
+        self.assertEqual(device.poll_count, 1)
 
 
 if __name__ == "__main__":

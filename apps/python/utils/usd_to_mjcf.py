@@ -512,6 +512,19 @@ class USDToMJCFConverter:
             self.add_contact_exclude(child_path, current)
             current = self.nodes[current].parent
 
+    def exclude_gripper_finger_siblings(self):
+        for node in self.nodes.values():
+            finger_children = [
+                child_path
+                for child_path in node.children
+                if "gripper_finger_link" in child_path.lower()
+            ]
+            if len(finger_children) < 2:
+                continue
+            for index, body_a in enumerate(finger_children):
+                for body_b in finger_children[index + 1:]:
+                    self.add_contact_exclude(body_a, body_b)
+
     def get_world_matrix(self, prim) -> np.ndarray:
         return gf_matrix_to_np(self.xform_cache.GetLocalToWorldTransform(prim))
 
@@ -1172,6 +1185,7 @@ class USDToMJCFConverter:
 
         self.parse_and_apply_joints()
         self.rebuild_children()
+        self.exclude_gripper_finger_siblings()
         self.recompute_local_poses()
         self.collect_cameras()
 

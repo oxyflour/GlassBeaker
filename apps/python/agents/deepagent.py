@@ -9,7 +9,7 @@ agent = create_deep_agent(
     middleware=[CopilotKitMiddleware()], #type: ignore
     system_prompt="You are a helpful research assistant.",
     checkpointer=MemorySaver()
-)
+).with_config({ "recursion_limit": 100 })
 
 agent = LangGraphAGUIAgent(
     name="sample_agent",

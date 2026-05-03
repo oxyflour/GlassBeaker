@@ -21,7 +21,7 @@ class Timer:
             self.last_run += self.interval
 
 class Session:
-    def __init__(self, timeout=120) -> None:
+    def __init__(self, timeout=300) -> None:
         self.loop = asyncio.get_event_loop()
 
         self.msgs: queue.Queue[dict] = queue.Queue(maxsize=64)
@@ -81,6 +81,8 @@ class Session:
                 yield f"data: {json.dumps(msg)}\n\n"
             except queue.Empty:
                 await asyncio.sleep(0.1)
+        msg = { 'inactive': True }
+        yield f"data: {json.dumps(msg)}\n\n"
     
     def destroy(self):
         pass
