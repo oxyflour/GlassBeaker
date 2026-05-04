@@ -244,7 +244,13 @@ export function ZapdosScene({ sess, onRuntimeError }: { sess: string; onRuntimeE
   const [sse, setSse] = useState(0);
   const [transformDragging, setTransformDragging] = useState(false);
   return <div className="relative h-full w-full">
-    <Canvas camera={ { position: [2.5, -2.5, 1.8], fov: 45, near: 0.01, far: 100 } } className="h-full w-full">
+    <Canvas camera={ {
+        position: [2.5, -2.5, 1.8],
+        up: [0, 0, 1],
+        fov: 45,
+        near: 0.01,
+        far: 100,
+    } } className="h-full w-full">
       <Perf />
       <SparkRendererBridge />
       <ambientLight intensity={ 1.2 } />

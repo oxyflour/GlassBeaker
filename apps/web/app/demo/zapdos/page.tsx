@@ -13,14 +13,19 @@ import {
 import { useLocalUUID } from "../../../utils/hooks";
 
 function ZapdosStatus({ message }: { message: string }) {
-  return <div className="h-full w-full text-center">{message}</div>;
+  return <div className="h-full w-full flex justify-center items-center">
+    <div>
+      {message}
+    </div>
+  </div>;
 }
 
 function ZapdosInitContent() {
   const searchParams = useSearchParams();
   const sceneUsd = searchParams.get("scene_usd");
   const robotUsd = searchParams.get("robot_usd");
-  const sess = useLocalUUID(buildZapdosSessionStorageKey(sceneUsd, robotUsd));
+  const storageKey = buildZapdosSessionStorageKey(sceneUsd, robotUsd)
+  const sess = useLocalUUID(storageKey);
   const [state, setState] = useState<{ phase: ZapdosInitPhase; message: string }>({
     phase: "loading",
     message: "loading",
@@ -45,5 +50,7 @@ function ZapdosInitContent() {
 }
 
 export default function ZapdosInit() {
-  return <Suspense fallback={ <ZapdosStatus message="loading" /> }><ZapdosInitContent /></Suspense>;
+  return <Suspense fallback={ <ZapdosStatus message="loading" /> }>
+    <ZapdosInitContent />
+  </Suspense>;
 }
