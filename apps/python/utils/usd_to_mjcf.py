@@ -552,16 +552,57 @@ class USDToMJCFConverter:
         return None
 
     def get_shader_opacity(self, shader) -> float:
-        opacity_input = shader.GetInput("opacity")
-        if not opacity_input:
-            return 1.0
-        opacity_sources, _ = opacity_input.GetConnectedSources()
-        if opacity_sources:
-            return 1.0
-        opacity_value = opacity_input.Get()
-        if opacity_value is None:
-            return 1.0
-        return float(opacity_value)
+        for input_name in ("opacity", "opacity_constant"):
+            opacity_input = shader.GetInput(input_name)
+            if not opacity_input:
+                continue
+            opacity_sources, _ = opacity_input.GetConnectedSources()
+            if opacity_sources:
+                continue
+            opacity_value = opacity_input.Get()
+            if opacity_value is not None:
+                return float(opacity_value)
+        return 1.0
+
+    def get_shader_constant_rgb(self, shader, *input_names) -> Optional[np.ndarray]:
+        for input_name in input_names:
+            color_input = shader.GetInput(input_name)
+            if not color_input:
+                continue
+            color_sources, _ = color_input.GetConnectedSources()
+            if color_sources:
+                continue
+            color_value = color_input.Get()
+            if color_value is not None:
+                return np.array(
+                    [float(color_value[0]), float(color_value[1]), float(color_value[2])],
+                    dtype=float,
+                )
+        return None
+
+    def get_shader_diffuse_texture_path(self, shader) -> Optional[Path]:
+        for input_name in ("diffuse_texture", "base_color_texture", "albedo_texture"):
+            texture_input = shader.GetInput(input_name)
+            if not texture_input:
+                continue
+            texture_path = self.resolve_asset_path(texture_input.Get())
+            if texture_path is not None and texture_path.exists():
+                return texture_path
+
+        for input_name in ("diffuseColor", "baseColor"):
+            diffuse_input = shader.GetInput(input_name)
+            if not diffuse_input:
+                continue
+            diffuse_sources, _ = diffuse_input.GetConnectedSources()
+            for source in diffuse_sources:
+                texture_shader = UsdShade.Shader(source.source.GetPrim()) # type: ignore
+                texture_file_input = texture_shader.GetInput("file")
+                if not texture_file_input:
+                    continue
+                texture_path = self.resolve_asset_path(texture_file_input.Get())
+                if texture_path is not None and texture_path.exists():
+                    return texture_path
+        return None
 
     def get_material_diffuse_rgba(self, prim) -> Optional[np.ndarray]:
         material_path = self.get_bound_material_path(prim)
@@ -576,19 +617,15 @@ class USDToMJCFConverter:
         if not shader:
             return None
 
-        diffuse_input = shader.GetInput("diffuseColor")
-        if diffuse_input:
-            diffuse_sources, _ = diffuse_input.GetConnectedSources()
-            if not diffuse_sources:
-                diffuse = diffuse_input.Get()
-                if diffuse is not None:
-                    return self.rgba_from_rgb(diffuse, self.get_shader_opacity(shader))
-
-        diffuse_constant = shader.GetInput("diffuse_color_constant")
-        if diffuse_constant:
-            diffuse = diffuse_constant.Get()
-            if diffuse is not None:
-                return self.rgba_from_rgb(diffuse, self.get_shader_opacity(shader))
+        diffuse = self.get_shader_constant_rgb(
+            shader,
+            "diffuseColor",
+            "baseColor",
+            "diffuse_color_constant",
+            "base_color_constant",
+        )
+        if diffuse is not None:
+            return self.rgba_from_rgb(diffuse, self.get_shader_opacity(shader))
         return None
 
     def resolve_asset_path(self, asset_path) -> Optional[Path]:
@@ -601,6 +638,16 @@ class USDToMJCFConverter:
         if not raw_path:
             return None
         return (self.usd_path.parent / raw_path).resolve()
+
+    def unique_asset_name(self, base_name: str, used_names: set[str]) -> str:
+        if base_name not in used_names:
+            return base_name
+        suffix = 2
+        while True:
+            candidate = sanitize_name(f"{base_name}_{suffix}")
+            if candidate not in used_names:
+                return candidate
+            suffix += 1
 
     def export_texture_asset(self, texture_path: Path) -> Tuple[str, str]:
         texture_path = texture_path.resolve()
@@ -615,7 +662,10 @@ class USDToMJCFConverter:
         except ValueError:
             name_source = texture_path.stem
 
-        texture_name = sanitize_name(name_source)
+        texture_name = self.unique_asset_name(
+            sanitize_name(name_source),
+            {asset.name for asset in self.texture_assets.values()},
+        )
         out_file = self.texture_dir / f"{texture_name}.png"
         if texture_path.suffix.lower() == ".png":
             if texture_path != out_file:
@@ -623,7 +673,7 @@ class USDToMJCFConverter:
         else:
             Image.open(texture_path).convert("RGB").save(out_file, format="PNG")
 
-        file_rel = str(Path("textures") / out_file.name)
+        file_rel = (Path("textures") / out_file.name).as_posix()
         self.texture_assets[cache_key] = TextureAssetData(name=texture_name, file_rel=file_rel)
         return texture_name, file_rel
 
@@ -642,20 +692,7 @@ class USDToMJCFConverter:
         if not shader:
             return None
 
-        diffuse_input = shader.GetInput("diffuseColor")
-        if not diffuse_input:
-            return None
-
-        diffuse_sources, _ = diffuse_input.GetConnectedSources()
-        if not diffuse_sources:
-            return None
-
-        texture_shader = UsdShade.Shader(diffuse_sources[0].source.GetPrim()) # type: ignore
-        texture_file_input = texture_shader.GetInput("file")
-        if not texture_file_input:
-            return None
-
-        texture_path = self.resolve_asset_path(texture_file_input.Get())
+        texture_path = self.get_shader_diffuse_texture_path(shader)
         if texture_path is None or not texture_path.exists():
             return None
 
@@ -944,7 +981,7 @@ class USDToMJCFConverter:
         texcoords, face_texcoords = self.get_mesh_texcoords(mesh, len(vertices), face_counts, face_indices)
         self.write_obj_mesh(out_file, vertices, faces, texcoords, face_texcoords)
 
-        file_rel = str(Path("meshes") / f"{mesh_name}.obj")
+        file_rel = (Path("meshes") / f"{mesh_name}.obj").as_posix()
         return mesh_name, file_rel
 
     def build_camera_for_prim(self, prim, parent_path: Optional[str]) -> Optional[CameraData]:
