@@ -8,6 +8,7 @@ from pathlib import Path
 import mujoco  # type: ignore
 import numpy as np
 
+from utils.camera_override import apply_camera_overrides
 from utils.rl_cameras import RenderCamera, build_render_cameras
 from utils.rl_bundle_stage import (
     build_render_scene,
@@ -17,6 +18,7 @@ from utils.rl_bundle_stage import (
     compose_stage_metadata,
     robot_source_map,
 )
+from utils.user_config import read_user_config
 from utils.usd_to_mjcf import USDToMJCFConverter
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -109,6 +111,7 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
     robot_bodies = _robot_body_names(model, source_map)
     body_poses = _body_pose_map(model, robot_bodies)
     cameras = build_render_cameras(model, {body: f"MyRobot/{body}" for body in robot_bodies})
+    cameras = apply_camera_overrides(cameras)
     body_map = build_robot_wrapper(
         robot_usd,
         robot_bodies,
@@ -157,6 +160,11 @@ def _robot_body_names(model, source_map: dict[str, str]) -> list[str]:
 def _bundle_key(robot_usd: Path, scene_usd: Path) -> str:
     digest = hashlib.sha1()
     digest.update(f"bundle-v{BUNDLE_VERSION}".encode("utf-8"))
+    try:
+        overrides = read_user_config().get("override", {})
+    except RuntimeError:
+        overrides = {}
+    digest.update(json.dumps(overrides, sort_keys=True).encode("utf-8"))
     for path in (robot_usd, scene_usd):
         stat = path.stat()
         digest.update(str(path).encode("utf-8"))

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import mujoco  # type: ignore
 from pxr import Usd, UsdGeom
 
+import utils.rl_bundle as MODULE
 from utils.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
 from utils.rl_cameras import build_render_cameras
 
@@ -56,6 +60,67 @@ class RLBundleTest(unittest.TestCase):
             [camera.topic for camera in cameras],
             [f"/env_0/{camera.name}/image_raw" for camera in cameras],
         )
+
+    def test_bundle_key_changes_when_camera_override_config_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".glass-beaker" / "config.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(json.dumps({"override": {"camera": {}}}, indent=2), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"USERPROFILE": tmp}, clear=False):
+                before = MODULE._bundle_key(ROBOT_USD.resolve(), DEFAULT_SCENE_USD.resolve())
+                config_path.write_text(json.dumps({
+                    "override": {
+                        "camera": {
+                            "/MyRobot/Root_r1_pro_with_gripper_zed_link": {
+                                "head_camera": {
+                                    "pos": [0.1, 0.2, 0.3],
+                                    "quat": [1.0, 0.0, 0.0, 0.0],
+                                    "fovy": 60.0,
+                                    "horizontal_aperture": 30.0,
+                                    "vertical_aperture": 20.0,
+                                    "clipping_range": [0.2, 80.0],
+                                }
+                            }
+                        }
+                    }
+                }, indent=2), encoding="utf-8")
+                after = MODULE._bundle_key(ROBOT_USD.resolve(), DEFAULT_SCENE_USD.resolve())
+
+        self.assertNotEqual(before, after)
+
+    def test_ensure_render_bundle_writes_overridden_camera_values_to_usd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".glass-beaker" / "config.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(json.dumps({
+                "override": {
+                    "camera": {
+                        "/MyRobot/Root_r1_pro_with_gripper_zed_link": {
+                            "head_camera": {
+                                "pos": [0.1, 0.2, 0.3],
+                                "quat": [1.0, 0.0, 0.0, 0.0],
+                                "fovy": 60.0,
+                                "horizontal_aperture": 30.0,
+                                "vertical_aperture": 20.0,
+                                "clipping_range": [0.2, 80.0],
+                            }
+                        }
+                    }
+                }
+            }, indent=2), encoding="utf-8")
+
+            with mock.patch.dict(os.environ, {"USERPROFILE": tmp}, clear=False):
+                bundle = MODULE.ensure_render_bundle(ROBOT_USD, DEFAULT_SCENE_USD)
+
+        stage = Usd.Stage.Open(str(bundle.robot_wrapper_usda))
+        camera_prim = stage.GetPrimAtPath("/MyRobot/Root_r1_pro_with_gripper_zed_link/head_camera")
+        camera = UsdGeom.Camera(camera_prim)
+        self.assertEqual(float(camera.GetHorizontalApertureAttr().Get()), 30.0)
+        self.assertEqual(float(camera.GetVerticalApertureAttr().Get()), 20.0)
+        clipping = tuple(camera.GetClippingRangeAttr().Get())
+        self.assertAlmostEqual(clipping[0], 0.2)
+        self.assertAlmostEqual(clipping[1], 80.0)
+        self.assertEqual(tuple(camera_prim.GetAttribute("xformOp:translate").Get()), (0.1, 0.2, 0.3))
 
 
 if __name__ == "__main__":

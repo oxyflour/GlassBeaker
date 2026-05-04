@@ -5,9 +5,6 @@ from pathlib import Path
 from pxr import Gf, Usd, UsdGeom
 
 from utils.rl_cameras import (
-    CAMERA_CLIPPING_RANGE,
-    CAMERA_HORIZONTAL_APERTURE,
-    CAMERA_VERTICAL_APERTURE,
     RenderCamera,
     SCENE_CAMERA_ROOT,
     focal_length_from_fovy,
@@ -163,7 +160,7 @@ def _define_camera(stage: Usd.Stage, path: str, spec: RenderCamera) -> None:
     xform = UsdGeom.Xformable(camera.GetPrim())
     xform.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*spec.pos))
     xform.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(Gf.Quatf(*spec.quat))
-    camera.CreateFocalLengthAttr(float(focal_length_from_fovy(spec.fovy)))
-    camera.CreateHorizontalApertureAttr(float(CAMERA_HORIZONTAL_APERTURE))
-    camera.CreateVerticalApertureAttr(float(CAMERA_VERTICAL_APERTURE))
-    camera.CreateClippingRangeAttr(Gf.Vec2f(*CAMERA_CLIPPING_RANGE))
+    camera.CreateFocalLengthAttr(float(focal_length_from_fovy(spec.fovy, spec.vertical_aperture)))
+    camera.CreateHorizontalApertureAttr(float(spec.horizontal_aperture))
+    camera.CreateVerticalApertureAttr(float(spec.vertical_aperture))
+    camera.CreateClippingRangeAttr(Gf.Vec2f(*spec.clipping_range))
