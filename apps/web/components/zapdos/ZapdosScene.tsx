@@ -14,6 +14,9 @@ import { applyObjectMatrix, getSceneMaterial, loadSceneGeometry, loadSceneTextur
 import { applySceneHotkey, isSelectionClick, pickEditableBodyFromHits, shouldApplyBodyPose, type ZapdosTransformMode } from "./zapdos-scene-state";
 import { getZapdosRuntimeErrorMessage, isZapdosInactivePayload, ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE } from "./zapdos-runtime";
 import { Perf } from "r3f-perf";
+import { Group, Panel } from "react-resizable-panels";
+import { CopilotChat } from "@copilotkit/react-core/v2";
+import { useGeineSimAssets } from "../../app/demo/agent-genie-sim/page";
 
 const PIVOT_PICK_ROOT = "surface-pivot-content";
 
@@ -243,7 +246,9 @@ export function ZapdosScene({ sess, onRuntimeError }: { sess: string; onRuntimeE
   const [selectedBody, setSelectedBody] = useState<string | null>(null);
   const [sse, setSse] = useState(0);
   const [transformDragging, setTransformDragging] = useState(false);
-  return <div className="relative h-full w-full">
+  useGeineSimAssets()
+  return <Group>
+    <Panel className="relative">
     <Canvas camera={ {
         position: [2.5, -2.5, 1.8],
         up: [0, 0, 1],
@@ -277,5 +282,9 @@ export function ZapdosScene({ sess, onRuntimeError }: { sess: string; onRuntimeE
     </Canvas>
     <Cameras onRuntimeError={ onRuntimeError } sess={ sess } />
     <ZapdosTopOverlay mode={ mode } selectedBody={ selectedBody } sess={ sess } sse={ sse } />
-  </div>;
+    </Panel>
+    <Panel maxSize="33%">
+      <CopilotChat />
+    </Panel>
+  </Group>
 }

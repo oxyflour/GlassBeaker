@@ -31,11 +31,9 @@ export default function AgentGenieSimPage() {
   );
 }
 
-function GenieSimWorkspace() {
-  const { hasScene, scene, setSceneData } = useSceneState();
-
-  useCopilotAdditionalInstructions({ instructions: SCENE_ADDITIONAL_INSTRUCTIONS }, []);
-
+export function useGeineSimAssets({ setSceneData }: {
+  setSceneData?: (data: SceneData) => void
+} = { }) {
   useFrontendTool({
     name: "search_assets",
     description: SEARCH_ASSETS_DESCRIPTION,
@@ -82,7 +80,7 @@ function GenieSimWorkspace() {
       if ("error" in data) {
         return data;
       }
-      setSceneData(data);
+      setSceneData?.(data);
       return {
         object_count: data.objects?.length || 0,
         ok: true,
@@ -95,6 +93,14 @@ function GenieSimWorkspace() {
       </div>
     ),
   }, [setSceneData]);
+}
+
+function GenieSimWorkspace() {
+  const { hasScene, scene, setSceneData } = useSceneState();
+
+  useCopilotAdditionalInstructions({ instructions: SCENE_ADDITIONAL_INSTRUCTIONS }, []);
+
+  useGeineSimTools({ setSceneData })
 
   return (
     <Group>
