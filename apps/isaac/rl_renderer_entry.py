@@ -16,8 +16,8 @@ os.environ.setdefault("SIM_REPO_ROOT", str(REPO_ROOT / "deps" / "genie_sim"))
 
 import geniesim.rl.renderer.rl_renderer as upstream  # type: ignore
 
+from utils.camera_math import fovy_from_focal_length
 from utils.renderer_ipc import request_path, response_path
-from utils.rl_cameras import fovy_from_focal_length
 
 
 def _noop_spin(self) -> None:

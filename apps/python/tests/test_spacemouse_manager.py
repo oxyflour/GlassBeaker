@@ -4,6 +4,7 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
@@ -112,6 +113,41 @@ class SpaceMouseManagerTest(unittest.TestCase):
 
         self.assertEqual(started["running"], True)
         self.assertEqual(stopped["running"], False)
+
+    def test_start_does_not_eagerly_build_ik_controller(self):
+        manager = SpaceMouseManager(
+            device=_FakeDevice([]),
+            ros_client=_FakeRosClient(None),
+        )
+
+        class _SlowIKController:
+            def __init__(self, *_args, **_kwargs) -> None:
+                raise AssertionError("start() should not construct IKController")
+
+        with mock.patch("teleop.manager.IKController", _SlowIKController):
+            started = self.call_with_timeout(manager.start)
+
+        self.assertEqual(started["running"], True)
+        self.assertIsNone(manager.ik_controller)
+
+    def test_step_once_builds_missing_ik_controller_on_demand(self):
+        manager = SpaceMouseManager(
+            device=_FakeDevice([self.sample()]),
+            ros_client=_FakeRosClient({"name": [], "position": []}),
+        )
+        manager.set_mode("right")
+        built: list[tuple[Path, Path]] = []
+
+        class _LazyIKController(_FakeIKController):
+            def __init__(self, robot_usd: Path, scene_usd: Path) -> None:
+                super().__init__()
+                built.append((robot_usd, scene_usd))
+
+        with mock.patch("teleop.manager.IKController", _LazyIKController):
+            manager.step_once()
+
+        self.assertEqual(len(built), 1)
+        self.assertEqual(len(manager.ik_controller.solve_calls), 1)
 
     def test_off_mode_keeps_thread_alive_but_suppresses_publish(self):
         manager = SpaceMouseManager(

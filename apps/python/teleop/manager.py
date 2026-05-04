@@ -24,6 +24,7 @@ class SpaceMouseManager:
         self._thread: threading.Thread | None = None
         self.device = device
         self.ros_client = ros_client
+        self._injected_ik_controller = ik_controller
         self.ik_controller = ik_controller
         self._running = False
         self._active_arm = "right"
@@ -43,10 +44,7 @@ class SpaceMouseManager:
             self._config = {**self._default_config(), **config}
             self.device = self.device or SpaceMouseDevice()
             self.ros_client = self.ros_client or RosBridgeClient()
-            self.ik_controller = self.ik_controller or IKController(
-                Path(self._config["robot_usd"]),
-                Path(self._config["scene_usd"]),
-            )
+            self.ik_controller = self._injected_ik_controller
             self._target_poses.clear()
             self._gripper_openings = {"left": 0.0, "right": 0.0}
             self._pending_reset = {"left", "right", self._active_arm}
@@ -89,7 +87,7 @@ class SpaceMouseManager:
             return self._status_unlocked()
 
     def step_once(self) -> None:
-        if self.device is None or self.ros_client is None or self.ik_controller is None:
+        if self.device is None or self.ros_client is None:
             return
         self.ros_client.poll_messages()
         self._ros_connected = bool(self.ros_client.status().get("connected"))
@@ -98,11 +96,12 @@ class SpaceMouseManager:
         joint_state = self.ros_client.latest_joint_state()
         if joint_state is None:
             return
-        self.ik_controller.sync_joint_state(joint_state)
         self._last_joint_state_at = time.time()
         self._sync_gripper_openings(joint_state)
         if self._mode == "off":
             return
+        ik_controller = self._ensure_ik_controller()
+        ik_controller.sync_joint_state(joint_state)
         active_arm = self._active_arm
         target = self._ensure_target_pose(active_arm)
         if sample is not None:
@@ -115,7 +114,7 @@ class SpaceMouseManager:
                 self._target_poses[active_arm] = target
         if not self._device_connected or not self._ros_connected:
             return
-        command = self.ik_controller.solve_step(active_arm, target, self._gripper_openings[active_arm])
+        command = ik_controller.solve_step(active_arm, target, self._gripper_openings[active_arm])
         self.ros_client.publish_joint_command(command)
 
     def _run_loop(self) -> None:
@@ -154,9 +153,18 @@ class SpaceMouseManager:
             if dependency is not None and hasattr(dependency, "close"):
                 dependency.close()
 
+    def _ensure_ik_controller(self) -> IKController:
+        if self.ik_controller is None:
+            self.ik_controller = IKController(
+                Path(self._config["robot_usd"]),
+                Path(self._config["scene_usd"]),
+            )
+        return self.ik_controller
+
     def _ensure_target_pose(self, arm: str, force: bool = False) -> dict[str, tuple[float, ...]]:
+        ik_controller = self._ensure_ik_controller()
         if force or arm in self._pending_reset or arm not in self._target_poses:
-            self._target_poses[arm] = self.ik_controller.get_end_effector_pose(arm)
+            self._target_poses[arm] = ik_controller.get_end_effector_pose(arm)
             self._pending_reset.discard(arm)
         return self._target_poses[arm]
 

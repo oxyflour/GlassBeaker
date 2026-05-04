@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import asdict, dataclass, field
 
 import mujoco  # type: ignore
+
+from utils.camera_math import focal_length_from_fovy, fovy_from_focal_length
 
 SCENE_CAMERA_ROOT = "/SceneRender"
 CAMERA_CLIPPING_RANGE = [0.01, 100.0]
@@ -62,17 +63,6 @@ def camera_name_to_index(cameras: list[RenderCamera]) -> dict[str, int]:
 def cameras_json(cameras: list[RenderCamera]) -> str:
     payload = [{"name": camera.name, "prim": camera.prim} for camera in cameras]
     return json.dumps(payload, separators=(",", ":"))
-
-
-def focal_length_from_fovy(fovy: float, vertical_aperture: float = CAMERA_VERTICAL_APERTURE) -> float:
-    radians = math.radians(float(fovy))
-    return 0.5 * float(vertical_aperture) / math.tan(radians * 0.5)
-
-
-def fovy_from_focal_length(focal_length: float, vertical_aperture: float) -> float:
-    return math.degrees(2.0 * math.atan(float(vertical_aperture) * 0.5 / float(focal_length)))
-
-
 def build_render_cameras(model, body_paths: dict[str, str]) -> list[RenderCamera]:
     cameras: list[RenderCamera] = []
     for cam_id in range(model.ncam):
