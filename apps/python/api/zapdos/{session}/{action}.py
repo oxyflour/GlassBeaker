@@ -165,6 +165,33 @@ class ZapdosSession(Session):
                 poses[name] = body_world_pose(self.data, body_id)
         return poses
 
+    def _body_freejoint_id(self, body_id: int) -> int | None:
+        joint_start = int(self.model.body_jntadr[body_id])
+        joint_count = int(self.model.body_jntnum[body_id])
+        for offset in range(joint_count):
+            joint_id = joint_start + offset
+            if self.model.jnt_type[joint_id] == mujoco.mjtJoint.mjJNT_FREE:  # type: ignore
+                return joint_id
+        return None
+
+    def _set_freejoint_pose(
+        self,
+        body_id: int,
+        pos: np.ndarray,
+        quat: np.ndarray,
+        zero_velocity: bool = True,
+    ) -> bool:
+        freejoint_id = self._body_freejoint_id(body_id)
+        if freejoint_id is None:
+            return False
+        qpos_adr = int(self.model.jnt_qposadr[freejoint_id])
+        self.data.qpos[qpos_adr:qpos_adr + 3] = np.asarray(pos, dtype=float)
+        self.data.qpos[qpos_adr + 3:qpos_adr + 7] = np.asarray(quat, dtype=float)
+        if zero_velocity:
+            qvel_adr = int(self.model.jnt_dofadr[freejoint_id])
+            self.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
+        return True
+
     def _mesh_anchor_body(self, body_name: str, body_matrices: dict[str, np.ndarray]) -> str | None:
         if body_name not in body_matrices:
             return None
@@ -242,8 +269,10 @@ class ZapdosSession(Session):
         quat_norm = np.linalg.norm(quat_vec)
         if quat_norm <= 1e-12:
             raise HTTPException(status_code=400, detail="Quaternion must be non-zero")
+        normalized_quat = quat_vec / quat_norm
+        self._set_freejoint_pose(body_id, np.array(pos, dtype=float), normalized_quat)
         self.model.body_pos[body_id] = np.array(pos, dtype=float)
-        self.model.body_quat[body_id] = quat_vec / quat_norm
+        self.model.body_quat[body_id] = normalized_quat
         mujoco.mj_forward(self.model, self.data)  # type: ignore
         return {"ok": True}
 

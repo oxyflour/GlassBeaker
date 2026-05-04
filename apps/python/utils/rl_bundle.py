@@ -114,7 +114,14 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
     source_map = robot_source_map(robot_usd)
     scene_objects = collect_scene_objects(scene_usd)
     up_axis, meters_per_unit = compose_stage_metadata(scene_usd, robot_usd)
-    build_sim_scene(robot_usd, scene_usd, bundle.sim_scene_usda, up_axis, meters_per_unit)
+    build_sim_scene(
+        robot_usd,
+        scene_usd,
+        bundle.sim_scene_usda,
+        up_axis,
+        meters_per_unit,
+        fallback_scene_usd=DEFAULT_SCENE_USD,
+    )
     USDToMJCFConverter(
         bundle.sim_scene_usda,
         bundle.mjcf,
@@ -147,7 +154,14 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
             "cameras": cameras,
         }
     )
-    build_scene_render(scene_usd, bundle.scene_render_usda, up_axis, meters_per_unit, cameras)
+    build_scene_render(
+        scene_usd,
+        bundle.scene_render_usda,
+        up_axis,
+        meters_per_unit,
+        cameras,
+        fallback_scene_usd=DEFAULT_SCENE_USD,
+    )
     build_render_scene(
         bundle.scene_render_usda,
         bundle.robot_wrapper_usda,

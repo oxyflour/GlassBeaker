@@ -107,6 +107,35 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             session.editable_body_names = {"Scene_Crate"}
             return session
 
+    def build_freejoint_pose_edit_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xml_path = root / "scene.xml"
+            xml_path.write_text(
+                """
+<mujoco>
+  <worldbody>
+    <body name="Scene_Crate" pos="1 2 3">
+      <freejoint name="Scene_Crate_freejoint"/>
+      <geom name="crate-box" type="box" size="0.2 0.2 0.2" rgba="1 0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+""".strip(),
+                encoding="utf-8",
+            )
+            session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+            session.sess = "sess-1"
+            session.model = mujoco.MjModel.from_xml_path(str(xml_path))  # type: ignore
+            session.data = mujoco.MjData(session.model)  # type: ignore
+            mujoco.mj_forward(session.model, session.data)  # type: ignore
+            session.assets = {}
+            session.geoms = MODULE.ZapdosSession._build_geometry(session, xml_path.parent)
+            session.body_map = {"Scene_Crate": "Crate"}
+            session.body_labels = {"Scene_Crate": "Crate"}
+            session.editable_body_names = {"Scene_Crate"}
+            return session
+
     def test_input_path_accepts_absolute_scene_usd(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene = Path(tmp) / "scene.usda"
@@ -278,6 +307,17 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(session.model.body_pos[body_id].tolist(), [4.0, 5.0, 6.0])
         self.assertEqual(session.data.xpos[body_id].tolist(), [4.0, 5.0, 6.0])
+
+    def test_set_body_pose_updates_editable_freejoint_scene_body(self):
+        session = self.build_freejoint_pose_edit_session()
+        body_id = mujoco.mj_name2id(session.model, mujoco.mjtObj.mjOBJ_BODY, "Scene_Crate")  # type: ignore
+        joint_id = mujoco.mj_name2id(session.model, mujoco.mjtObj.mjOBJ_JOINT, "Scene_Crate_freejoint")  # type: ignore
+        qpos_adr = int(session.model.jnt_qposadr[joint_id])
+
+        session.call_once("set_body_pose", ("Scene_Crate", [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]))
+
+        self.assertEqual(session.data.xpos[body_id].tolist(), [4.0, 5.0, 6.0])
+        self.assertEqual(session.data.qpos[qpos_adr:qpos_adr + 3].tolist(), [4.0, 5.0, 6.0])
 
     def test_set_body_pose_rejects_robot_and_unknown_bodies(self):
         session = self.build_pose_edit_session()

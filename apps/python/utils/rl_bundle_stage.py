@@ -12,6 +12,7 @@ from utils.rl_cameras import (
 from utils.usd_to_mjcf import sanitize_name
 
 SKIP_TYPES = {"Scope", "Material", "Shader", "NodeGraph", "Camera"}
+GROUND_PRIM_NAME = "Ground"
 
 
 def compose_stage_metadata(scene_usd: Path, robot_usd: Path | None = None) -> tuple[str, float]:
@@ -49,11 +50,13 @@ def build_sim_scene(
     output_path: Path,
     up_axis: str,
     meters_per_unit: float,
+    fallback_scene_usd: Path | None = None,
 ) -> None:
     stage = Usd.Stage.CreateNew(str(output_path))
     _configure_stage(stage, up_axis, meters_per_unit)
     UsdGeom.Xform.Define(stage, "/Root").GetPrim().GetReferences().AddReference(str(robot_usd.resolve()))
-    UsdGeom.Xform.Define(stage, "/Scene").GetPrim().GetReferences().AddReference(str(scene_usd.resolve()))
+    scene_root = UsdGeom.Xform.Define(stage, "/Scene").GetPrim()
+    _add_scene_references(scene_root, scene_usd, fallback_scene_usd)
     stage.GetRootLayer().Save()
 
 
@@ -104,12 +107,13 @@ def build_scene_render(
     up_axis: str,
     meters_per_unit: float,
     cameras: list[RenderCamera],
+    fallback_scene_usd: Path | None = None,
 ) -> None:
     stage = Usd.Stage.CreateNew(str(output_path))
     _configure_stage(stage, up_axis, meters_per_unit)
     root = UsdGeom.Xform.Define(stage, "/SceneRender")
     stage.SetDefaultPrim(root.GetPrim())
-    root.GetPrim().GetReferences().AddReference(str(scene_usd.resolve()))
+    _add_scene_references(root.GetPrim(), scene_usd, fallback_scene_usd)
     for camera in cameras:
         if camera.body is None:
             _define_camera(stage, f"{SCENE_CAMERA_ROOT}/{camera.name}", camera)
@@ -137,6 +141,22 @@ def _deactivate_embedded_cameras(root_prim) -> None:
     for prim in Usd.PrimRange(root_prim):
         if prim.IsA(UsdGeom.Camera):
             prim.SetActive(False)
+
+
+def _add_scene_references(target_prim, scene_usd: Path, fallback_scene_usd: Path | None) -> None:
+    if fallback_scene_usd is not None and not _scene_has_ground(scene_usd):
+        target_prim.GetReferences().AddReference(str(fallback_scene_usd.resolve()))
+    target_prim.GetReferences().AddReference(str(scene_usd.resolve()))
+
+
+def _scene_has_ground(scene_usd: Path) -> bool:
+    stage = Usd.Stage.Open(str(scene_usd))
+    if stage is None:
+        raise RuntimeError(f"Failed to open scene stage: {scene_usd}")
+    default_prim = stage.GetDefaultPrim()
+    if not default_prim or not default_prim.IsValid():
+        raise RuntimeError(f"Scene stage has no default prim: {scene_usd}")
+    return default_prim.GetChild(GROUND_PRIM_NAME).IsValid()
 
 
 def _configure_stage(stage: Usd.Stage, up_axis: str, meters_per_unit: float) -> None:
