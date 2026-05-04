@@ -204,7 +204,7 @@ class IsaacRenderer:
             "--cameras-json", cameras_json(self.bundle.cameras),
             "--shm-name", self.shm_name,
             "--ros-domain-id", str(self.ros_domain_id),
-            "--headless",
+            *([] if os.environ.get('DEBUG_ISAAC_SHOW') else ["--headless"])
         ]
         if not self.headless:
             cmd.pop()

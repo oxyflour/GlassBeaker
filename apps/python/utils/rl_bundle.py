@@ -58,9 +58,9 @@ class RenderBundle:
             "body_map_json",
             "body_map_jsona",
         }
-        kwargs = {key: (Path(value) if key in path_fields else value) for key, value in data.items() if key != "cameras"}
+        kwargs = {key: (Path(value) if key in path_fields else value) for key, value in data.items() if key != "cameras"} # type: ignore
         kwargs["cameras"] = [RenderCamera.from_json(item) for item in data.get("cameras", [])]  # type: ignore[arg-type]
-        return cls(**kwargs)
+        return cls(**kwargs) # type: ignore
 
     def camera_names(self) -> list[str]:
         return [camera.name for camera in self.cameras]

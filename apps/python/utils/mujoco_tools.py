@@ -13,7 +13,9 @@ def decode_mesh_path(model, mesh_id: int):
         end = len(model.paths)
     return Path(model.paths[start:end].decode('utf-8'))
 
-def decode_texture_path(model, tex_id: int):
+def decode_texture_path(model, tex_id: int) -> Path | None:
+    if tex_id < 0:
+        return None
     start = int(model.tex_pathadr[tex_id])
     end = model.paths.find(b'\x00', start)
     if end < 0:

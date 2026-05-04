@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import mujoco  # type: ignore
+from pxr import Usd, UsdGeom, UsdPhysics
 
 from utils.usd_to_mjcf import USDToMJCFConverter
 
@@ -88,6 +89,93 @@ def Xform "World"
                 ))),
             }
             self.assertTrue(expected.issubset(excludes))
+
+    def test_duplicate_joint_leaf_names_become_unique_mjcf_names(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "duplicate_joint_names.usda"
+            output_xml = Path(tmpdir) / "duplicate_joint_names.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            stage.SetMetadata("metersPerUnit", 1.0)
+            UsdGeom.SetStageUpAxis(stage, "Z")
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            base = UsdGeom.Xform.Define(stage, "/World/Base")
+            slider_a = UsdGeom.Xform.Define(stage, "/World/SliderA")
+            slider_b = UsdGeom.Xform.Define(stage, "/World/SliderB")
+            for prim in (base.GetPrim(), slider_a.GetPrim(), slider_b.GetPrim()):
+                UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(1.0)
+            for slider in (slider_a, slider_b):
+                joint = UsdPhysics.PrismaticJoint.Define(stage, f"{slider.GetPath()}/PrismaticJoint")
+                joint.CreateBody0Rel().SetTargets([base.GetPath()])
+                joint.CreateBody1Rel().SetTargets([slider.GetPath()])
+                joint.CreateAxisAttr("Y")
+                joint.CreateLowerLimitAttr(0.0)
+                joint.CreateUpperLimitAttr(0.25)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="duplicate_joint_names").convert()
+
+            joint_names = [node.attrib["name"] for node in ET.parse(output_xml).getroot().findall(".//joint")]
+            self.assertEqual(len(joint_names), 2)
+            self.assertEqual(len(set(joint_names)), 2)
+            self.assertTrue(all(name.startswith("PrismaticJoint") for name in joint_names))
+            mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
+
+    def test_invisible_cube_is_not_exported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "invisible_cube.usda"
+            output_xml = Path(tmpdir) / "invisible_cube.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            cube = UsdGeom.Cube.Define(stage, "/World/HiddenCube")
+            cube.CreateSizeAttr(1.0)
+            UsdGeom.Imageable(cube.GetPrim()).MakeInvisible()
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="invisible_cube").convert()
+
+            root = ET.parse(output_xml).getroot()
+            self.assertEqual(root.findall(".//geom"), [])
+
+    def test_cube_scale_changes_emitted_box_size(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "scaled_cube.usda"
+            output_xml = Path(tmpdir) / "scaled_cube.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            cube = UsdGeom.Cube.Define(stage, "/World/ScaledCube")
+            cube.CreateSizeAttr(1.0)
+            UsdGeom.Xformable(cube.GetPrim()).AddScaleOp().Set((2.0, 4.0, 6.0))
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="scaled_cube").convert()
+
+            geom = ET.parse(output_xml).getroot().find(".//geom")
+            self.assertIsNotNone(geom)
+            self.assertEqual(geom.attrib["type"], "box")
+            self.assertEqual(geom.attrib["size"], "1 2 3")
+
+    def test_parent_scale_changes_emitted_box_size(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "parent_scaled_cube.usda"
+            output_xml = Path(tmpdir) / "parent_scaled_cube.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            parent = UsdGeom.Xform.Define(stage, "/World/Parent")
+            UsdGeom.Xformable(parent.GetPrim()).AddScaleOp().Set((2.0, 4.0, 6.0))
+            cube = UsdGeom.Cube.Define(stage, "/World/Parent/ScaledCube")
+            cube.CreateSizeAttr(1.0)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="parent_scaled_cube").convert()
+
+            geom = ET.parse(output_xml).getroot().find(".//geom")
+            self.assertIsNotNone(geom)
+            self.assertEqual(geom.attrib["type"], "box")
+            self.assertEqual(geom.attrib["size"], "1 2 3")
 
 
 if __name__ == "__main__":

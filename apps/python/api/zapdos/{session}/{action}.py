@@ -36,6 +36,8 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 RENDER_SIZE = (640, 480)
 ROS_DT = 0.03
+INIT_STREAM_HEARTBEAT_SEC = 1.0
+RGB_TEXTURE_ROLE = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)  # type: ignore
 
 PRIMITIVE_TYPES = {
     int(mujoco.mjtGeom.mjGEOM_PLANE): "plane",  # type: ignore
@@ -63,7 +65,7 @@ class ZapdosGeometry:
 class ZapdosSession(Session):
     @staticmethod
     async def create(sess: str, robot_usd: Path, scene_usd: Path):
-        bundle = ensure_render_bundle(robot_usd, scene_usd)
+        bundle = await asyncio.to_thread(ensure_render_bundle, robot_usd, scene_usd)
         return ZapdosSession(sess, bundle)
 
     def __init__(self, sess: str, bundle) -> None:
@@ -102,10 +104,11 @@ class ZapdosSession(Session):
                 geom.mesh = mesh_rel.name
                 self.assets[geom.mesh] = (asset_root / mesh_rel).resolve()
                 mat_id = int(self.model.geom_matid[geom_id])
-                tex_id = int(self.model.mat_texid[mat_id, 0]) if mat_id >= 0 else -1
+                tex_id = int(self.model.mat_texid[mat_id, RGB_TEXTURE_ROLE]) if mat_id >= 0 else -1
                 tex_rel = decode_texture_path(self.model, tex_id)
-                geom.texture = tex_rel.name
-                self.assets[geom.texture] = (asset_root / tex_rel).resolve()
+                if tex_rel is not None:
+                    geom.texture = tex_rel.name
+                    self.assets[geom.texture] = (asset_root / tex_rel).resolve()
             elif geom.kind:
                 geom.size = geom_size(self.model, geom_id, geom.kind)
             else:
@@ -326,29 +329,113 @@ def _input_path(req: Request, key: str, default: Path) -> Path:
 sessions: dict[str, asyncio.Future[ZapdosSession]] = {}
 
 
+def _evict_session_future(sess: str, future: asyncio.Future[ZapdosSession]) -> None:
+    if sessions.get(sess) is future:
+        sessions.pop(sess, None)
+
+
+def _session_future_state(sess: str) -> tuple[asyncio.Future[ZapdosSession] | None, str | None]:
+    future = sessions.get(sess)
+    if future is None:
+        return None, None
+    if future.cancelled():
+        _evict_session_future(sess, future)
+        return None, "missing"
+    if not future.done():
+        return future, None
+    if future.exception() is not None:
+        _evict_session_future(sess, future)
+        return None, "missing"
+    if not future.result().is_active():
+        _evict_session_future(sess, future)
+        return None, "expired"
+    return future, None
+
+
+def _get_or_create_session_future(req: Request, sess: str) -> asyncio.Future[ZapdosSession]:
+    future, _ = _session_future_state(sess)
+    if future is not None:
+        return future
+
+    robot_usd = _input_path(req, "robot_usd", DEFAULT_ROBOT_USD)
+    scene_usd = _input_path(req, "scene_usd", DEFAULT_SCENE_USD)
+    future = asyncio.create_task(ZapdosSession.create(sess, robot_usd, scene_usd))
+    sessions[sess] = future
+    return future
+
+
+def _require_session_future(sess: str) -> asyncio.Future[ZapdosSession]:
+    future, reason = _session_future_state(sess)
+    if future is not None:
+        return future
+    detail = "Session expired" if reason == "expired" else "Session not initialized"
+    raise HTTPException(status_code=409, detail=detail)
+
+
+async def _await_session_future(sess: str, future: asyncio.Future[ZapdosSession]) -> ZapdosSession:
+    try:
+        return await future
+    except Exception:
+        _evict_session_future(sess, future)
+        raise
+
+
+def _bootstrap_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    return message or "Session bootstrap failed"
+
+
+async def _init_stream(sess: str, future: asyncio.Future[ZapdosSession]):
+    yield "data: loading\n\n"
+    while not future.done():
+        done, _ = await asyncio.wait({future}, timeout=INIT_STREAM_HEARTBEAT_SEC)
+        if done:
+            break
+        yield "data: loading: preparing render bundle\n\n"
+
+    try:
+        await _await_session_future(sess, future)
+    except Exception as exc:
+        yield f"data: error: {_bootstrap_error_message(exc)}\n\n"
+        return
+
+    yield "data: started\n\n"
+
+
 def _require_camera_name(session: ZapdosSession, camera_name: str) -> str:
     if camera_name not in session.camera_index:
         raise HTTPException(status_code=404, detail=f"Camera not found: {camera_name}")
     return camera_name
 
 
+def _require_active_session(sess: str, future: asyncio.Future[ZapdosSession], session: ZapdosSession) -> ZapdosSession:
+    if session.is_active():
+        return session
+    _evict_session_future(sess, future)
+    raise HTTPException(status_code=409, detail="Session expired")
+
+
 async def _name_(req: Request):
     sess = req.path_params["session"]
-    if sess not in sessions:
-        robot_usd = _input_path(req, "robot_usd", DEFAULT_ROBOT_USD)
-        scene_usd = _input_path(req, "scene_usd", DEFAULT_SCENE_USD)
-        sessions[sess] = asyncio.create_task(ZapdosSession.create(sess, robot_usd, scene_usd))
-
     action = req.path_params["action"]
     name = req.path_params["name"]
     if action == "init":
-        async def stream():
-            yield f"data: loading\n\n"
-            await sessions[sess]
-            yield f"data: started\n\n"
-        return StreamingResponse(stream(), media_type="text/event-stream; charset=utf-8")
+        future = _get_or_create_session_future(req, sess)
+        return StreamingResponse(
+            _init_stream(sess, future),
+            media_type="text/event-stream; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
-    session = await sessions[sess]
+    if action not in {"call", "render", "asset"}:
+        raise HTTPException(status_code=404, detail="Action not found")
+
+    future = _require_session_future(sess)
+    session = _require_active_session(sess, future, await _await_session_future(sess, future))
     if action == "call":
         if name == "start":
             return StreamingResponse(

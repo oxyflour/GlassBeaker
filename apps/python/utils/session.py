@@ -21,7 +21,7 @@ class Timer:
             self.last_run += self.interval
 
 class Session:
-    def __init__(self, timeout=300) -> None:
+    def __init__(self, timeout=120) -> None:
         self.loop = asyncio.get_event_loop()
 
         self.msgs: queue.Queue[dict] = queue.Queue(maxsize=64)

@@ -26,7 +26,7 @@ class IKController:
             )
             self._body_ids[arm] = mujoco.mj_name2id(  # type: ignore
                 self.model,
-                mujoco.mjtObj.mjOBJ_BODY,
+                mujoco.mjtObj.mjOBJ_BODY, # type: ignore
                 config.end_effector_body,
             )
             for name in (*config.joint_names, *config.gripper_joint_names):
@@ -82,7 +82,7 @@ class IKController:
             positions.append(next_pos)
         grip = float(np.clip(gripper_opening, 0.0, self._joint_limits[config.gripper_joint_names[0]][1]))
         return {
-            "name": [*config.joint_names, *config.gripper_joint_names],
+            "name": [*config.joint_names, *config.gripper_joint_names], # type: ignore
             "position": [*positions, grip, -grip],
         }
 

@@ -698,6 +698,29 @@ class USDToMJCFConverter:
             return 0, 0
         return None, None
 
+    def prim_visibility(self, prim) -> Optional[str]:
+        if not prim.IsA(UsdGeom.Imageable): # type: ignore
+            return None
+        visibility = UsdGeom.Imageable(prim).ComputeVisibility() # type: ignore
+        return str(visibility) if visibility is not None else None
+
+    def primitive_world_scale(self, prim) -> np.ndarray:
+        if not prim.IsA(UsdGeom.Xformable): # type: ignore
+            return np.ones(3, dtype=float)
+        world_matrix = self.get_world_matrix(prim)
+        scale = np.linalg.norm(world_matrix[:3, :3], axis=0)
+        scale[scale <= 1e-12] = 1.0
+        return scale
+
+    def primitive_axis_scales(self, prim, axis_token) -> Tuple[float, float]:
+        scale = self.primitive_world_scale(prim)
+        axis_name = str(axis_token).upper()
+        axis_index = {"X": 0, "Y": 1, "Z": 2}.get(axis_name, 2)
+        radial_indices = [idx for idx in range(3) if idx != axis_index]
+        radial_scale = max(float(scale[radial_indices[0]]), float(scale[radial_indices[1]]))
+        axial_scale = float(scale[axis_index])
+        return radial_scale, axial_scale
+
     def get_stage_up_vector(self) -> np.ndarray:
         if self.stage_up_axis.upper() == "Y":
             return np.array([0.0, 1.0, 0.0], dtype=float)
@@ -746,6 +769,8 @@ class USDToMJCFConverter:
         t = prim.GetTypeName()
         name = sanitize_name(str(prim.GetPath())) + "_geom"
         contype, conaffinity = self.get_collision_enabled(prim)
+        if self.prim_visibility(prim) == "invisible":
+            return None
 
         if prim.IsA(UsdGeom.Mesh): # type: ignore
             material_name = self.register_textured_material(prim)
@@ -765,6 +790,7 @@ class USDToMJCFConverter:
             )
 
         rgba = self.get_prim_rgba(prim)
+        local_scale = self.primitive_world_scale(prim)
 
         if t == "Cube":
             size = self.get_attr(prim, "size", default=2.0)
@@ -772,7 +798,7 @@ class USDToMJCFConverter:
             return GeomData(
                 name=name,
                 kind="box",
-                size=np.array([half, half, half], dtype=float),
+                size=np.array([half, half, half], dtype=float) * local_scale,
                 rgba=rgba,
                 contype=contype,
                 conaffinity=conaffinity,
@@ -780,7 +806,7 @@ class USDToMJCFConverter:
 
         if t == "Sphere":
             radius = self.get_attr(prim, "radius", default=1.0)
-            r = float(radius) * self.meters_per_unit # type: ignore
+            r = float(radius) * self.meters_per_unit * float(np.max(local_scale)) # type: ignore
             return GeomData(
                 name=name,
                 kind="sphere",
@@ -795,8 +821,9 @@ class USDToMJCFConverter:
             height = self.get_attr(prim, "height", default=2.0)
             axis = self.get_attr(prim, "axis", default="Z")
             # MuJoCo capsule size = radius half_length_of_cylindrical_part
-            r = float(radius) * self.meters_per_unit # type: ignore
-            half_len = 0.5 * float(height) * self.meters_per_unit # type: ignore
+            radial_scale, axial_scale = self.primitive_axis_scales(prim, axis)
+            r = float(radius) * self.meters_per_unit * radial_scale # type: ignore
+            half_len = 0.5 * float(height) * self.meters_per_unit * axial_scale # type: ignore
             q = capsule_or_cylinder_axis_quat(axis)
             return GeomData(
                 name=name,
@@ -812,8 +839,9 @@ class USDToMJCFConverter:
             radius = self.get_attr(prim, "radius", default=1.0)
             height = self.get_attr(prim, "height", default=2.0)
             axis = self.get_attr(prim, "axis", default="Z")
-            r = float(radius) * self.meters_per_unit              # type: ignore
-            half_len = 0.5 * float(height) * self.meters_per_unit # type: ignore
+            radial_scale, axial_scale = self.primitive_axis_scales(prim, axis)
+            r = float(radius) * self.meters_per_unit * radial_scale              # type: ignore
+            half_len = 0.5 * float(height) * self.meters_per_unit * axial_scale # type: ignore
             q = capsule_or_cylinder_axis_quat(axis)
             return GeomData(
                 name=name,
@@ -1048,11 +1076,62 @@ class USDToMJCFConverter:
             return v * self.meters_per_unit
         return v
 
+    def joint_leaf_name_counts(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for prim in self.stage.Traverse():
+            t = prim.GetTypeName()
+            if "Joint" not in t:
+                continue
+            kind = self.joint_kind_from_type(t)
+            if kind in (None, "fixed"):
+                continue
+            body1 = self.get_rel_target_path(prim, "physics:body1", "body1")
+            if not body1 or body1 not in self.nodes:
+                continue
+            leaf_name = sanitize_name(str(prim.GetPath()).split("/")[-1])
+            counts[leaf_name] = counts.get(leaf_name, 0) + 1
+        return counts
+
+    def unique_joint_name(
+        self,
+        prim_path: str,
+        body1: str,
+        leaf_name_counts: Dict[str, int],
+        used_names: set[str],
+    ) -> str:
+        leaf_name = sanitize_name(prim_path.split("/")[-1])
+        context_name = sanitize_name(body1)
+        if leaf_name_counts.get(leaf_name, 0) > 1:
+            candidates = [
+                sanitize_name(f"{leaf_name}_{context_name}"),
+                sanitize_name(prim_path),
+                leaf_name,
+            ]
+        else:
+            candidates = [
+                leaf_name,
+                sanitize_name(f"{leaf_name}_{context_name}"),
+                sanitize_name(prim_path),
+            ]
+
+        for candidate in candidates:
+            if candidate not in used_names:
+                return candidate
+
+        suffix = 2
+        while True:
+            candidate = sanitize_name(f"{candidates[-1]}_{suffix}")
+            if candidate not in used_names:
+                return candidate
+            suffix += 1
+
     def parse_and_apply_joints(self):
         """
         Parse USD joint prims and assign them to body1.
         If body0/body1 relation exists, reparent body1 under body0.
         """
+        leaf_name_counts = self.joint_leaf_name_counts()
+        used_names: set[str] = set()
         for prim in self.stage.Traverse():
             t = prim.GetTypeName()
             if "Joint" not in t:
@@ -1140,7 +1219,7 @@ class USDToMJCFConverter:
                         actuatorfrcrange = (-max_force, max_force)
 
             child.joint = JointData(
-                name=sanitize_name(str(prim.GetPath()).split('/')[-1]),
+                name=self.unique_joint_name(str(prim.GetPath()), body1, leaf_name_counts, used_names),
                 kind=kind,
                 axis=axis if kind in ("hinge", "slide") else None,
                 range=jrange,
@@ -1150,6 +1229,7 @@ class USDToMJCFConverter:
                 springref=springref,
                 actuatorfrcrange=actuatorfrcrange,
             )
+            used_names.add(child.joint.name)
 
     # ------------------------
     # Build node tree

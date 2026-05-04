@@ -33,6 +33,11 @@ import {
     parseZapdosInitEvent,
     type ZapdosInitPhase,
 } from "../../../components/zapdos/zapdos-import"
+import {
+    getZapdosRuntimeErrorMessage,
+    isZapdosInactivePayload,
+    ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE,
+} from "../../../components/zapdos/zapdos-runtime"
 
 const PIVOT_PICK_ROOT = "surface-pivot-content"
 
@@ -130,7 +135,15 @@ class Counter {
     }
 }
 
-function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: number }) => void }) {
+function Models({
+    sess,
+    setStats,
+    onRuntimeError,
+}: {
+    sess: string
+    setStats: (stat: { sse: number }) => void
+    onRuntimeError: (message: string) => void
+}) {
     const { scene } = useThree()
     useEffect(() => {
         const sse = new EventSource(`/python/zapdos/${sess}/call/start`)
@@ -139,13 +152,27 @@ function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: numb
         const root = scene.getObjectByName(PIVOT_PICK_ROOT) ?? scene
         const counter = new Counter()
         let disposed = false
+        let failed = false
+
+        function fail(error: unknown) {
+            if (disposed || failed) return
+            failed = true
+            onRuntimeError(getZapdosRuntimeErrorMessage(error))
+            sse.close()
+        }
 
         sse.onmessage = event => {
-            const { pose, topic, msg } = JSON.parse(event.data) as {
+            const payload = JSON.parse(event.data) as {
+                inactive?: boolean
                 pose?: Record<string, number[]>
                 topic?: string
                 msg?: unknown
             }
+            if (isZapdosInactivePayload(payload)) {
+                fail(ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE)
+                return
+            }
+            const { pose, topic, msg } = payload
             if (pose) {
                 for (const [name, matrix] of Object.entries(pose)) {
                     const object = added[name]
@@ -162,6 +189,7 @@ function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: numb
                 console.log("got topic", topic, msg)
             }
         }
+        sse.onerror = () => fail(ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE)
 
         async function loadVisuals() {
             const list = await call<RobotVisual[]>(sess, "get_visual")
@@ -184,7 +212,7 @@ function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: numb
             }
         }
 
-        loadVisuals().catch(console.error)
+        loadVisuals().catch(fail)
         return () => {
             disposed = true
             sse.close()
@@ -193,23 +221,23 @@ function Models({ sess, setStats }: { sess: string, setStats: (stat: { sse: numb
                 root.remove(item)
             }
         }
-    }, [scene, sess])
+    }, [onRuntimeError, scene, sess])
     return null
 }
 
-function Cameras({ sess }: { sess: string }) {
+function Cameras({ sess, onRuntimeError }: { sess: string, onRuntimeError: (message: string) => void }) {
     const [cameras, setCameras] = useState([] as string[])
     useEffect(() => {
         call<RobotVisual[]>(sess, "get_camera")
             .then(res => setCameras(Object.keys(res)))
-            .catch(console.error)
-    }, [sess])
+            .catch(error => onRuntimeError(getZapdosRuntimeErrorMessage(error)))
+    }, [onRuntimeError, sess])
     return <div className="absolute bottom-0 left-0 w-full">
     {
         cameras.map(camera => <img
             className="inline"
             key={ camera } alt={ camera }
-            style={{ width: 256, height: 256, marginLeft: 16, marginBottom: 16 }}
+            style={{ width: 320, height: 240, marginLeft: 8, marginBottom: 8 }}
             src={ `/python/zapdos/${sess}/render/${camera}` } >
         </img>)
     }
@@ -226,6 +254,7 @@ export default function ZapdosInit() {
         message: "loading",
     })
     useEffect(() => {
+        setState({ phase: "loading", message: "loading" })
         const sse = new EventSource(buildZapdosInitStreamUrl(sess, sceneUsd, robotUsd))
         sse.onmessage = event => {
             const next = parseZapdosInitEvent(event.data)
@@ -243,13 +272,13 @@ export default function ZapdosInit() {
         }
     }, [robotUsd, sceneUsd, sess])
     return state.phase === 'started' ?
-        <Zapdos sess={ sess } /> :
+        <Zapdos sess={ sess } onRuntimeError={ message => setState({ phase: "error", message }) } /> :
         <div className="w-full h-full text-center">
             { state.message }
         </div>
 }
 
-function Zapdos({ sess }: { sess: string }) {
+function Zapdos({ sess, onRuntimeError }: { sess: string, onRuntimeError: (message: string) => void }) {
     const [stats, setStats] = useState({ sse: 0 })
     return <div className="relative h-full w-full">
         <Canvas camera={ { position: [2.5, -2.5, 1.8], fov: 45, near: 0.01, far: 100 } } className="h-full w-full">
@@ -274,9 +303,9 @@ function Zapdos({ sess }: { sess: string }) {
                     <SparkSplat url="/tmp/butterfly.spz" />
                 </group>
             </group>
-            { sess && <Models sess={ sess } setStats={ setStats } /> }
+            { sess && <Models sess={ sess } setStats={ setStats } onRuntimeError={ onRuntimeError } /> }
         </Canvas>
-        { sess && <Cameras sess={ sess } /> }
+        { sess && <Cameras sess={ sess } onRuntimeError={ onRuntimeError } /> }
         <div className="absolute left-8 top-8 flex gap-3">
             <div className="rounded-md bg-black/60 px-3 py-2 text-white backdrop-blur-sm">
                 SSE { stats.sse.toFixed(2) } Hz
