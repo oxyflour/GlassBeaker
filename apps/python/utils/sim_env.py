@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from utils.rl_bundle import RenderBundle
 
 from utils.rl_cameras import camera_name_to_index, cameras_json
+from utils.renderer_ipc import request_path, response_path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ISAAC_PYTHON = REPO_ROOT / "apps" / "isaac" / ".venv" / "Scripts" / "python.exe"
@@ -141,6 +142,7 @@ class IsaacRenderer:
         self._running = False
         self.shm_name = f"glassbeaker_{tag}_frames"
         self.log_path = REPO_ROOT / "apps" / "python" / "tmp" / f"renderer_{tag}.log"
+        self.control_dir = REPO_ROOT / "apps" / "python" / "tmp" / f"renderer_{tag}_ipc"
         self.shm: shared_memory.SharedMemory | None = None
         self.frame_counter: np.ndarray | None = None
         self.frames: np.ndarray | None = None
@@ -188,8 +190,10 @@ class IsaacRenderer:
             raise FileNotFoundError(f"Renderer entry not found: {RENDERER_ENTRY}")
         self.close()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.control_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env["ROS_DOMAIN_ID"] = str(self.ros_domain_id)
+        env["GB_RENDERER_CONTROL_DIR"] = str(self.control_dir)
         _setup_env(env)
         cmd = [
             str(ISAAC_PYTHON),
@@ -282,6 +286,32 @@ class IsaacRenderer:
             "height": self.height,
             "log_path": str(self.log_path),
         }
+
+    def snapshot_cameras(self, timeout: float = 5.0) -> list[dict[str, Any]]:
+        req_path = request_path(self.control_dir)
+        res_path = response_path(self.control_dir)
+        req_id = str(time.time_ns())
+        res_path.unlink(missing_ok=True)
+        req_path.write_text(json.dumps({"id": req_id, "op": "snapshot_cameras"}), encoding="utf-8")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if res_path.exists():
+                payload = json.loads(res_path.read_text(encoding="utf-8"))
+                if payload.get("id") != req_id:
+                    time.sleep(0.02)
+                    continue
+                res_path.unlink(missing_ok=True)
+                req_path.unlink(missing_ok=True)
+                if not payload.get("ok"):
+                    raise RuntimeError(str(payload.get("error") or "renderer snapshot failed"))
+                cameras = payload.get("cameras")
+                if not isinstance(cameras, list):
+                    raise RuntimeError("renderer snapshot returned invalid cameras")
+                return cameras
+            if not self._refresh_process_state():
+                raise RuntimeError(_tail(self.log_path) or "renderer exited while waiting for snapshot")
+            time.sleep(0.02)
+        raise TimeoutError(f"renderer snapshot did not complete in {timeout:.1f}s")
 
     def close(self) -> None:
         if self.proc is not None:
