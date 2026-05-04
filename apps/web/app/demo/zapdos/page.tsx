@@ -25,6 +25,7 @@ import {
 
 import { useLocalUUID } from "../../../utils/hooks"
 import { SparkRendererBridge, SparkSplat } from "../../../utils/three/splat"
+import { CameraOverrideSaveButton } from "../../../components/zapdos/CameraOverrideSaveButton"
 import { SurfacePivotControls } from "../../../components/zapdos/SurfacePivotControls"
 import { SpaceMouseModeSelect } from "../../../components/zapdos/SpaceMouseModeSelect"
 import {
@@ -310,6 +311,7 @@ function Zapdos({ sess, onRuntimeError }: { sess: string, onRuntimeError: (messa
             <div className="rounded-md bg-black/60 px-3 py-2 text-white backdrop-blur-sm">
                 SSE { stats.sse.toFixed(2) } Hz
             </div>
+            <CameraOverrideSaveButton sess={ sess } />
             <SpaceMouseModeSelect />
         </div>
     </div>
