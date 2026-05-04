@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 import mujoco  # type: ignore
 
@@ -22,6 +22,9 @@ class RenderCamera:
     pos: list[float]
     quat: list[float]
     fovy: float
+    horizontal_aperture: float = CAMERA_HORIZONTAL_APERTURE
+    vertical_aperture: float = CAMERA_VERTICAL_APERTURE
+    clipping_range: list[float] = field(default_factory=lambda: list(CAMERA_CLIPPING_RANGE))
 
     def to_json(self) -> dict[str, object]:
         return asdict(self)
@@ -37,6 +40,9 @@ class RenderCamera:
             pos=[float(value) for value in data["pos"]],  # type: ignore[index]
             quat=[float(value) for value in data["quat"]],  # type: ignore[index]
             fovy=float(data["fovy"]),
+            horizontal_aperture=float(data.get("horizontal_aperture", CAMERA_HORIZONTAL_APERTURE)),
+            vertical_aperture=float(data.get("vertical_aperture", CAMERA_VERTICAL_APERTURE)),
+            clipping_range=[float(value) for value in data.get("clipping_range", CAMERA_CLIPPING_RANGE)],
         )
 
 
@@ -58,9 +64,13 @@ def cameras_json(cameras: list[RenderCamera]) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
-def focal_length_from_fovy(fovy: float) -> float:
+def focal_length_from_fovy(fovy: float, vertical_aperture: float = CAMERA_VERTICAL_APERTURE) -> float:
     radians = math.radians(float(fovy))
-    return 0.5 * CAMERA_VERTICAL_APERTURE / math.tan(radians * 0.5)
+    return 0.5 * float(vertical_aperture) / math.tan(radians * 0.5)
+
+
+def fovy_from_focal_length(focal_length: float, vertical_aperture: float) -> float:
+    return math.degrees(2.0 * math.atan(float(vertical_aperture) * 0.5 / float(focal_length)))
 
 
 def build_render_cameras(model, body_paths: dict[str, str]) -> list[RenderCamera]:
@@ -87,6 +97,9 @@ def build_render_cameras(model, body_paths: dict[str, str]) -> list[RenderCamera
             pos=[float(value) for value in model.cam_pos[cam_id]],
             quat=[float(value) for value in model.cam_quat[cam_id]],
             fovy=float(model.cam_fovy[cam_id]),
+            horizontal_aperture=float(CAMERA_HORIZONTAL_APERTURE),
+            vertical_aperture=float(CAMERA_VERTICAL_APERTURE),
+            clipping_range=[float(value) for value in CAMERA_CLIPPING_RANGE],
         ))
     if not cameras:
         raise RuntimeError("MuJoCo model has no cameras.")
