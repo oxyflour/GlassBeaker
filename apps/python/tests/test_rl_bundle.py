@@ -88,6 +88,17 @@ class RLBundleTest(unittest.TestCase):
 
         self.assertNotEqual(before, after)
 
+    def test_bundle_key_changes_when_converter_dependency_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dependency = Path(tmp) / "usd_to_mjcf.py"
+            dependency.write_text("alpha", encoding="utf-8")
+            with mock.patch.object(MODULE, "BUNDLE_DEPENDENCY_FILES", (dependency,)):
+                before = MODULE._bundle_key(ROBOT_USD.resolve(), DEFAULT_SCENE_USD.resolve())
+                dependency.write_text("beta gamma", encoding="utf-8")
+                after = MODULE._bundle_key(ROBOT_USD.resolve(), DEFAULT_SCENE_USD.resolve())
+
+        self.assertNotEqual(before, after)
+
     def test_ensure_render_bundle_writes_overridden_camera_values_to_usd(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".glass-beaker" / "config.json"

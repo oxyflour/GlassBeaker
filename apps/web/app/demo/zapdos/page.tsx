@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from "react"
+import { Suspense, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { Canvas, useThree } from "@react-three/fiber"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
@@ -38,6 +38,7 @@ import {
     isZapdosInactivePayload,
     ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE,
 } from "../../../components/zapdos/zapdos-runtime"
+import { Perf } from "r3f-perf"
 
 const PIVOT_PICK_ROOT = "surface-pivot-content"
 
@@ -244,7 +245,11 @@ function Cameras({ sess, onRuntimeError }: { sess: string, onRuntimeError: (mess
     </div>
 }
 
-export default function ZapdosInit() {
+function ZapdosStatus({ message }: { message: string }) {
+    return <div className="w-full h-full text-center">{message}</div>
+}
+
+function ZapdosInitContent() {
     const searchParams = useSearchParams()
     const sceneUsd = searchParams.get("scene_usd")
     const robotUsd = searchParams.get("robot_usd")
@@ -273,15 +278,20 @@ export default function ZapdosInit() {
     }, [robotUsd, sceneUsd, sess])
     return state.phase === 'started' ?
         <Zapdos sess={ sess } onRuntimeError={ message => setState({ phase: "error", message }) } /> :
-        <div className="w-full h-full text-center">
-            { state.message }
-        </div>
+        <ZapdosStatus message={ state.message } />
+}
+
+export default function ZapdosInit() {
+    return <Suspense fallback={ <ZapdosStatus message="loading" /> }>
+        <ZapdosInitContent />
+    </Suspense>
 }
 
 function Zapdos({ sess, onRuntimeError }: { sess: string, onRuntimeError: (message: string) => void }) {
     const [stats, setStats] = useState({ sse: 0 })
     return <div className="relative h-full w-full">
         <Canvas camera={ { position: [2.5, -2.5, 1.8], fov: 45, near: 0.01, far: 100 } } className="h-full w-full">
+            <Perf />
             <SparkRendererBridge />
             <ambientLight intensity={ 1.2 } />
             <directionalLight intensity={ 1.8 } position={ [6, -4, 8] } />

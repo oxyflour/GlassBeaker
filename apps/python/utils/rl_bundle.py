@@ -25,6 +25,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SCENE_USD = REPO_ROOT / "apps" / "python" / "assets" / "default_scene.usda"
 TMP_ROOT = REPO_ROOT / "apps" / "python" / "tmp" / "rl_bundles"
 BUNDLE_VERSION = 5
+BUNDLE_DEPENDENCY_FILES = (
+    Path(__file__).resolve(),
+    Path(__file__).with_name("rl_bundle_stage.py").resolve(),
+    Path(__file__).with_name("rl_cameras.py").resolve(),
+    Path(__file__).with_name("usd_to_mjcf.py").resolve(),
+)
 
 
 @dataclass(frozen=True)
@@ -166,6 +172,11 @@ def _bundle_key(robot_usd: Path, scene_usd: Path) -> str:
         overrides = {}
     digest.update(json.dumps(overrides, sort_keys=True).encode("utf-8"))
     for path in (robot_usd, scene_usd):
+        stat = path.stat()
+        digest.update(str(path).encode("utf-8"))
+        digest.update(str(stat.st_mtime_ns).encode("utf-8"))
+        digest.update(str(stat.st_size).encode("utf-8"))
+    for path in BUNDLE_DEPENDENCY_FILES:
         stat = path.stat()
         digest.update(str(path).encode("utf-8"))
         digest.update(str(stat.st_mtime_ns).encode("utf-8"))

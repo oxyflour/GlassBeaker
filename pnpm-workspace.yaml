@@ -1,10 +1,12 @@
 packages:
   - "apps/*"
-onlyBuiltDependencies:
-  - electron
-  - electron-winstaller
-  - sharp
 allowBuilds:
   electron: true
   electron-winstaller: true
   sharp: true
+onlyBuiltDependencies:
+  - electron
+  - electron-winstaller
+  - sharp
+patchedDependencies:
+  r3f-perf@7.2.3: patches/r3f-perf@7.2.3.patch

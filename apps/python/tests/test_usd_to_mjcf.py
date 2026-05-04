@@ -6,9 +6,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import mujoco  # type: ignore
-from pxr import Usd, UsdGeom, UsdPhysics
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
-from utils.usd_to_mjcf import USDToMJCFConverter
+from utils.usd_to_mjcf import USDToMJCFConverter, fmt_f
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
@@ -176,6 +176,50 @@ def Xform "World"
             self.assertIsNotNone(geom)
             self.assertEqual(geom.attrib["type"], "box")
             self.assertEqual(geom.attrib["size"], "1 2 3")
+
+    def test_slide_joint_force_servo_kp_is_capped_for_stability(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "slider.usda"
+            output_xml = Path(tmpdir) / "slider.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            base = UsdGeom.Xform.Define(stage, "/World/Base")
+            slider = UsdGeom.Xform.Define(stage, "/World/Slider")
+            for prim in (base.GetPrim(), slider.GetPrim()):
+                UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(1.0)
+
+            joint = UsdPhysics.PrismaticJoint.Define(stage, "/World/Slider/PrismaticJoint")
+            joint.CreateBody0Rel().SetTargets([base.GetPath()])
+            joint.CreateBody1Rel().SetTargets([slider.GetPath()])
+            joint.CreateAxisAttr("Y")
+            joint.CreateLowerLimitAttr(0.0)
+            joint.CreateUpperLimitAttr(0.05)
+            joint_prim = joint.GetPrim()
+            joint_prim.CreateAttribute(
+                "drive:linear:physics:damping",
+                Sdf.ValueTypeNames.Float,
+            ).Set(20.0)
+            joint_prim.CreateAttribute(
+                "drive:linear:physics:maxForce",
+                Sdf.ValueTypeNames.Float,
+            ).Set(100.0)
+            joint_prim.CreateAttribute(
+                "drive:linear:physics:stiffness",
+                Sdf.ValueTypeNames.Float,
+            ).Set(0.0)
+            joint_prim.CreateAttribute(
+                "drive:linear:physics:targetPosition",
+                Sdf.ValueTypeNames.Float,
+            ).Set(0.0)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="slider").convert()
+
+            actuator = ET.parse(output_xml).getroot().find("./actuator/position")
+            self.assertIsNotNone(actuator)
+            self.assertEqual(actuator.attrib["kp"], fmt_f(1e4))
+            mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
 
 
 if __name__ == "__main__":

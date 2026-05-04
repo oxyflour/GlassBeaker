@@ -372,6 +372,7 @@ class BodyNode:
 # ----------------------------
 
 class USDToMJCFConverter:
+    MAX_INFERRED_SLIDE_POSITION_KP = 1e4
     WHEEL_NAME_HINTS = ("wheel", "tire", "caster", "rim")
     SENSOR_CAMERA_SPECS = {
         "zed_link": {
@@ -1401,9 +1402,12 @@ class USDToMJCFConverter:
                     span = math.pi if joint.kind == "hinge" else 0.05
                 # Make the servo hit its force limit after a very small tracking
                 # error so zero-control models still hold their rest pose.
-                return max_force / max(span * 1e-3, 1e-6)
+                inferred_kp = max_force / max(span * 1e-3, 1e-6)
+                if joint.kind == "slide":
+                    return min(inferred_kp, self.MAX_INFERRED_SLIDE_POSITION_KP)
+                return inferred_kp
 
-        return 1e5 if joint.kind == "slide" else 1e3
+        return self.MAX_INFERRED_SLIDE_POSITION_KP if joint.kind == "slide" else 1e3
 
     def prefers_velocity_actuator(self, joint: JointData) -> bool:
         return (

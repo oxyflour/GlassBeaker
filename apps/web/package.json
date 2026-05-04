@@ -25,6 +25,7 @@
     "manifold-3d": "^3.4.1",
     "next": "16.2.1",
     "plotly.js": "^3.5.0",
+    "r3f-perf": "^7.2.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-plotly.js": "^2.6.0",
