@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from utils.mujoco_tools import decode_mesh_path, decode_texture_path
 from utils.mujoco_tools import flatten_matrix, geom_size, geom_world_pose, mesh_world_pose
+from utils.camera_override import save_camera_overrides
 from utils.rl_cameras import camera_name_to_index, image_topic
 from utils.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
 from utils.ros_bridge import bridge
@@ -180,6 +181,11 @@ class ZapdosSession(Session):
             cameras[name] = flatten_matrix(mat4)
         return cameras
 
+    def save_camera_override(self) -> dict[str, object]:
+        snapshot = self.renderer.snapshot_cameras()
+        path, saved = save_camera_overrides(snapshot)
+        return {"ok": True, "saved": saved, "path": str(path)}
+
     def call_once(self, method: str, args: tuple):
         if method == "ping":
             return "pong"
@@ -189,6 +195,8 @@ class ZapdosSession(Session):
             return self.get_pose()
         if method == "get_camera":
             return self.get_camera()
+        if method == "save_camera_override":
+            return self.save_camera_override()
         return super().call_once(method, args)
 
     def send_sse(self):

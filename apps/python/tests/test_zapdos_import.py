@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -147,6 +149,36 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(err.exception.status_code, 409)
         self.assertEqual(err.exception.detail, "Session expired")
         self.assertNotIn("sess-1", MODULE.sessions)
+
+    def test_call_once_dispatches_save_camera_override(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.save_camera_override = mock.Mock(return_value={"ok": True, "saved": 1, "path": "config.json"})
+
+        result = MODULE.ZapdosSession.call_once(session, "save_camera_override", ())
+
+        self.assertEqual(result["saved"], 1)
+        session.save_camera_override.assert_called_once_with()
+
+    def test_save_camera_override_persists_renderer_snapshot(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.renderer = SimpleNamespace(snapshot_cameras=mock.Mock(return_value=[{
+            "name": "head_camera",
+            "parent_prim": "/MyRobot/zed_link",
+            "pos": [0.1, 0.2, 0.3],
+            "quat": [1.0, 0.0, 0.0, 0.0],
+            "fovy": 60.0,
+            "horizontal_aperture": 30.0,
+            "vertical_aperture": 20.0,
+            "clipping_range": [0.2, 80.0],
+        }]))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"USERPROFILE": tmp}, clear=False):
+                result = MODULE.ZapdosSession.save_camera_override(session)
+                payload = json.loads((Path(tmp) / ".glass-beaker" / "config.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(payload["override"]["camera"]["/MyRobot/zed_link"]["head_camera"]["fovy"], 60.0)
 
 
 if __name__ == "__main__":
