@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import os
 import queue
 import traceback
@@ -14,7 +15,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from utils.mujoco_tools import decode_mesh_path, decode_texture_path
-from utils.mujoco_tools import flatten_matrix, geom_size, geom_world_pose, mesh_world_pose
+from utils.mujoco_tools import body_world_pose, flatten_matrix, geom_size, geom_world_pose, mesh_world_pose
 from utils.camera_override import save_camera_overrides
 from utils.rl_cameras import camera_name_to_index, image_topic
 from utils.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
@@ -32,6 +33,7 @@ from utils.sim_env import (
     placeholder_jpeg,
     tf_message,
 )
+from utils.zapdos_scene_visuals import SceneVisuals, serialize_body, serialize_mesh
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
@@ -78,6 +80,11 @@ class ZapdosSession(Session):
         self.viewer = mujoco.viewer.launch_passive(self.model, self.data) if os.environ.get("DEBUG_MUJOCO_VIEWER") else None
         self.assets: dict[str, Path] = {}
         self.geoms = self._build_geometry(asset_root)
+        self.body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
+        self.body_labels = {name: path.rsplit("/", 1)[-1] for name, path in self.body_map.items()}
+        self.editable_body_names = {
+            name for name, path in self.body_map.items() if not str(path).startswith("MyRobot/")
+        }
         self.command_msgs: queue.Queue[dict] = queue.Queue(maxsize=8)
         self.command_subscribed = False
         self.camera_index = camera_name_to_index(bundle.cameras)
@@ -150,24 +157,61 @@ class ZapdosSession(Session):
             qpos_adr = int(self.model.jnt_qposadr[joint_id])
             self.data.ctrl[actuator_id] = float(self.data.qpos[qpos_adr])
 
-    def get_visual(self) -> list[dict]:
-        poses = self.get_pose()
-        return [{
-            "name": name,
-            "kind": geom.kind,
-            "color": geom.color,
-            "matrix": poses[name],
-            **({"size": geom.size} if geom.size is not None else {}),
-            **({"mesh": f"/python/zapdos/{self.sess}/asset/{geom.mesh}"} if geom.mesh else {}),
-            **({"texture": f"/python/zapdos/{self.sess}/asset/{geom.texture}"} if geom.texture else {}),
-        } for name, geom in self.geoms.items()]
+    def _body_matrices(self) -> dict[str, np.ndarray]:
+        poses: dict[str, np.ndarray] = {}
+        for body_id in range(1, self.model.nbody):
+            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id)  # type: ignore
+            if name:
+                poses[name] = body_world_pose(self.data, body_id)
+        return poses
+
+    def _mesh_anchor_body(self, body_name: str, body_matrices: dict[str, np.ndarray]) -> str | None:
+        if body_name not in body_matrices:
+            return None
+        current_name: str | None = body_name
+        while current_name is not None:
+            if current_name in self.editable_body_names:
+                return current_name
+            body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, current_name)  # type: ignore
+            parent_id = int(self.model.body_parentid[body_id])
+            if parent_id <= 0:
+                break
+            current_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, parent_id)  # type: ignore
+        return body_name
+
+    def get_visual(self) -> SceneVisuals:
+        body_matrices = self._body_matrices()
+        bodies = [
+            serialize_body(
+                name,
+                self.body_map.get(name, name),
+                name in self.editable_body_names,
+                flatten_matrix(matrix),
+            )
+            for name, matrix in body_matrices.items()
+        ]
+        meshes = []
+        for name, geom in self.geoms.items():
+            world_matrix = mesh_world_pose(self.model, self.data, geom.geom_id) if geom.mesh else geom_world_pose(self.data, geom.geom_id)
+            body_name = self._mesh_anchor_body(geom.body, body_matrices)
+            meshes.append(serialize_mesh(
+                name,
+                body_name,
+                geom.kind,
+                geom.color,
+                matrix=None if body_name else flatten_matrix(world_matrix),
+                local_matrix=(flatten_matrix(np.linalg.inv(body_matrices[body_name]) @ world_matrix) if body_name else None),
+                size=geom.size,
+                mesh=(f"/python/zapdos/{self.sess}/asset/{geom.mesh}" if geom.mesh else ""),
+                texture=(f"/python/zapdos/{self.sess}/asset/{geom.texture}" if geom.texture else ""),
+            ))
+        return {"bodies": bodies, "meshes": meshes}
 
     def get_pose(self) -> dict[str, list[float]]:
-        poses: dict[str, list[float]] = {}
-        for name, geom in self.geoms.items():
-            pose = mesh_world_pose(self.model, self.data, geom.geom_id) if geom.mesh else geom_world_pose(self.data, geom.geom_id)
-            poses[name] = flatten_matrix(pose)
-        return poses
+        return {
+            name: flatten_matrix(matrix)
+            for name, matrix in self._body_matrices().items()
+        }
 
     def get_camera(self) -> dict[str, list[float]]:
         cameras: dict[str, list[float]] = {}
@@ -186,6 +230,23 @@ class ZapdosSession(Session):
         path, saved = save_camera_overrides(snapshot)
         return {"ok": True, "saved": saved, "path": str(path)}
 
+    def set_body_pose(self, body: str, pos: list[float], quat: list[float]) -> dict[str, object]:
+        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
+        if body_id < 0:
+            raise HTTPException(status_code=404, detail=f"Body not found: {body}")
+        if body not in self.editable_body_names:
+            raise HTTPException(status_code=403, detail=f"Body is not editable: {body}")
+        if len(pos) != 3 or len(quat) != 4:
+            raise HTTPException(status_code=400, detail="Expected pos[3] and quat[4]")
+        quat_vec = np.array(quat, dtype=float)
+        quat_norm = np.linalg.norm(quat_vec)
+        if quat_norm <= 1e-12:
+            raise HTTPException(status_code=400, detail="Quaternion must be non-zero")
+        self.model.body_pos[body_id] = np.array(pos, dtype=float)
+        self.model.body_quat[body_id] = quat_vec / quat_norm
+        mujoco.mj_forward(self.model, self.data)  # type: ignore
+        return {"ok": True}
+
     def call_once(self, method: str, args: tuple):
         if method == "ping":
             return "pong"
@@ -195,6 +256,8 @@ class ZapdosSession(Session):
             return self.get_pose()
         if method == "get_camera":
             return self.get_camera()
+        if method == "set_body_pose":
+            return self.set_body_pose(*args)
         if method == "save_camera_override":
             return self.save_camera_override()
         return super().call_once(method, args)

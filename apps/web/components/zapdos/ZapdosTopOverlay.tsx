@@ -7,10 +7,14 @@ import { SpaceMouseModeSelect } from "./SpaceMouseModeSelect";
 
 export function ZapdosTopOverlay({
   defaultSettingsOpen = false,
+  mode = "translate",
+  selectedBody = null,
   sess,
   sse,
 }: {
   defaultSettingsOpen?: boolean
+  mode?: "translate" | "rotate"
+  selectedBody?: string | null
   sess: string
   sse: number
 }) {
@@ -20,6 +24,8 @@ export function ZapdosTopOverlay({
     <div className="absolute left-8 top-8">
       <div className="rounded-md bg-black/60 px-3 py-2 text-white backdrop-blur-sm">
         SSE { sse.toFixed(2) } Hz
+        <div>Selected { selectedBody ?? "none" }</div>
+        <div>Mode { mode }</div>
       </div>
     </div>
     <div className="absolute right-8 top-8">

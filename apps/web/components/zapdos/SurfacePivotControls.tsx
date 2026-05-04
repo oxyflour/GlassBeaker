@@ -20,7 +20,7 @@ const DOLLY_SPEED = 0.002
 const MIN_DISTANCE = 0.25
 const MAX_DISTANCE = 100
 
-export function SurfacePivotControls({ pickRootName }: { pickRootName?: string }) {
+export function SurfacePivotControls({ enabled = true, pickRootName }: { enabled?: boolean; pickRootName?: string }) {
     const { camera, gl, invalidate, scene } = useThree()
     const rigRef = useRef<SurfacePivotRig | null>(null)
     const gestureRef = useRef<SurfacePivotGesture | null>(null)
@@ -97,6 +97,9 @@ export function SurfacePivotControls({ pickRootName }: { pickRootName?: string }
         }
 
         const onPointerDown = (event: PointerEvent) => {
+            if (!enabled) {
+                return
+            }
             if (event.pointerType !== "mouse" || (event.button !== 0 && event.button !== 1)) {
                 return
             }
@@ -166,6 +169,9 @@ export function SurfacePivotControls({ pickRootName }: { pickRootName?: string }
         }
 
         const onWheel = (event: WheelEvent) => {
+            if (!enabled) {
+                return
+            }
             const rig = rigRef.current ?? readRig()
             event.preventDefault()
             applyRig(dollyRigAnchoredToPivot(rig, event.deltaY, DOLLY_SPEED, MIN_DISTANCE, MAX_DISTANCE))
@@ -190,7 +196,7 @@ export function SurfacePivotControls({ pickRootName }: { pickRootName?: string }
             element.removeEventListener("lostpointercapture", onLostPointerCapture)
             element.removeEventListener("wheel", onWheel)
         }
-    }, [camera, gl, invalidate, pickRootName, scene])
+    }, [camera, enabled, gl, invalidate, pickRootName, scene])
 
     return null
 }

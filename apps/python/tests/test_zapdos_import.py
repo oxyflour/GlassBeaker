@@ -39,6 +39,74 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             }
         )
 
+    def build_pose_edit_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xml_path = root / "scene.xml"
+            xml_path.write_text(
+                """
+<mujoco>
+  <worldbody>
+    <geom name="floor" type="plane" size="1 1 0.1"/>
+    <body name="RobotLink" pos="0 0 0.2">
+      <geom name="robot-box" type="box" size="0.1 0.1 0.1" rgba="0 0 1 1"/>
+    </body>
+    <body name="Scene_Crate" pos="1 2 3">
+      <geom name="crate-box" type="box" size="0.2 0.2 0.2" rgba="1 0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+""".strip(),
+                encoding="utf-8",
+            )
+            session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+            session.sess = "sess-1"
+            session.model = mujoco.MjModel.from_xml_path(str(xml_path))  # type: ignore
+            session.data = mujoco.MjData(session.model)  # type: ignore
+            mujoco.mj_forward(session.model, session.data)  # type: ignore
+            session.assets = {}
+            session.geoms = MODULE.ZapdosSession._build_geometry(session, xml_path.parent)
+            session.body_map = {
+                "RobotLink": "MyRobot/RobotLink",
+                "Scene_Crate": "Crate",
+            }
+            session.body_labels = {
+                "RobotLink": "RobotLink",
+                "Scene_Crate": "Crate",
+            }
+            session.editable_body_names = {"Scene_Crate"}
+            return session
+
+    def build_nested_pose_edit_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xml_path = root / "scene.xml"
+            xml_path.write_text(
+                """
+<mujoco>
+  <worldbody>
+    <body name="Scene_Crate" pos="1 2 3">
+      <body name="Scene_Crate_payload" pos="0.5 0 0">
+        <geom name="crate-box" type="box" size="0.2 0.2 0.2" rgba="1 0 0 1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+""".strip(),
+                encoding="utf-8",
+            )
+            session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+            session.sess = "sess-1"
+            session.model = mujoco.MjModel.from_xml_path(str(xml_path))  # type: ignore
+            session.data = mujoco.MjData(session.model)  # type: ignore
+            mujoco.mj_forward(session.model, session.data)  # type: ignore
+            session.assets = {}
+            session.geoms = MODULE.ZapdosSession._build_geometry(session, xml_path.parent)
+            session.body_map = {"Scene_Crate": "Objects/Crate"}
+            session.body_labels = {"Scene_Crate": "Crate"}
+            session.editable_body_names = {"Scene_Crate"}
+            return session
+
     def test_input_path_accepts_absolute_scene_usd(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene = Path(tmp) / "scene.usda"
@@ -130,6 +198,97 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                 continue
             tex_id = int(session.model.mat_texid[mat_id, int(mujoco.mjtTextureRole.mjTEXROLE_RGB)])
             self.assertLess(tex_id, 0)
+
+    def test_session_init_reads_body_map_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xml_path = root / "scene.xml"
+            xml_path.write_text(
+                """
+<mujoco>
+  <worldbody>
+    <body name="Scene_Crate" pos="1 2 3">
+      <geom name="crate-box" type="box" size="0.2 0.2 0.2" rgba="1 0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+""".strip(),
+                encoding="utf-8",
+            )
+            body_map_path = root / "render_scene_body_map.json"
+            body_map_path.write_text(json.dumps({"Scene_Crate": "Crate"}), encoding="utf-8")
+            bundle = SimpleNamespace(
+                mjcf=xml_path,
+                body_map_json=body_map_path,
+                cameras=[],
+            )
+
+            def fake_session_init(instance, timeout=120):
+                instance.loop = asyncio.get_event_loop()
+                instance.timers = []
+                instance.msgs = None
+                instance.calls = None
+                instance.active = 0
+                instance.timeout = timeout
+
+            with mock.patch.object(MODULE.Session, "__init__", new=fake_session_init):
+                with mock.patch.object(MODULE, "IsaacRenderer", return_value=SimpleNamespace(wait_ready=mock.AsyncMock(), read=mock.Mock(return_value=None), close=mock.Mock())):
+                    with mock.patch.object(
+                        MODULE.asyncio,
+                        "run_coroutine_threadsafe",
+                        side_effect=lambda coro, loop: coro.close(),
+                    ):
+                        session = MODULE.ZapdosSession("sess-1", bundle)
+
+        self.assertEqual(session.body_map, {"Scene_Crate": "Crate"})
+        self.assertEqual(session.editable_body_names, {"Scene_Crate"})
+
+    def test_get_visual_returns_body_groups_and_meshes(self):
+        session = self.build_pose_edit_session()
+
+        payload = session.get_visual()
+
+        self.assertEqual(sorted(payload.keys()), ["bodies", "meshes"])
+        bodies = {body["name"]: body for body in payload["bodies"]}
+        self.assertTrue(bodies["Scene_Crate"]["editable"])
+        self.assertFalse(bodies["RobotLink"]["editable"])
+        self.assertEqual(bodies["Scene_Crate"]["label"], "Crate")
+        attached = [mesh for mesh in payload["meshes"] if mesh.get("body") == "Scene_Crate"]
+        self.assertTrue(attached)
+        self.assertIn("localMatrix", attached[0])
+        self.assertNotIn("matrix", attached[0])
+        static_mesh = next(mesh for mesh in payload["meshes"] if mesh.get("body") is None)
+        self.assertIn("matrix", static_mesh)
+        self.assertNotIn("localMatrix", static_mesh)
+
+    def test_get_visual_attaches_descendant_scene_mesh_to_editable_ancestor(self):
+        session = self.build_nested_pose_edit_session()
+
+        payload = session.get_visual()
+
+        mesh = next(item for item in payload["meshes"] if item["name"] == "geom-0")
+        self.assertEqual(mesh["body"], "Scene_Crate")
+        self.assertIn("localMatrix", mesh)
+
+    def test_set_body_pose_updates_editable_scene_body(self):
+        session = self.build_pose_edit_session()
+        body_id = mujoco.mj_name2id(session.model, mujoco.mjtObj.mjOBJ_BODY, "Scene_Crate")  # type: ignore
+
+        session.call_once("set_body_pose", ("Scene_Crate", [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]))
+
+        self.assertEqual(session.model.body_pos[body_id].tolist(), [4.0, 5.0, 6.0])
+        self.assertEqual(session.data.xpos[body_id].tolist(), [4.0, 5.0, 6.0])
+
+    def test_set_body_pose_rejects_robot_and_unknown_bodies(self):
+        session = self.build_pose_edit_session()
+
+        with self.assertRaises(MODULE.HTTPException) as robot_error:
+            session.call_once("set_body_pose", ("RobotLink", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))
+        self.assertEqual(robot_error.exception.status_code, 403)
+
+        with self.assertRaises(MODULE.HTTPException) as missing_error:
+            session.call_once("set_body_pose", ("MissingBody", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))
+        self.assertEqual(missing_error.exception.status_code, 404)
 
     def test_require_session_future_rejects_missing_runtime_session(self):
         with self.assertRaises(MODULE.HTTPException) as err:

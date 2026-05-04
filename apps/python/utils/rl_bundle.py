@@ -18,17 +18,19 @@ from utils.rl_bundle_stage import (
     compose_stage_metadata,
     robot_source_map,
 )
+from utils.scene_objects import collect_scene_objects
 from utils.user_config import read_user_config
 from utils.usd_to_mjcf import USDToMJCFConverter
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SCENE_USD = REPO_ROOT / "apps" / "python" / "assets" / "default_scene.usda"
 TMP_ROOT = REPO_ROOT / "apps" / "python" / "tmp" / "rl_bundles"
-BUNDLE_VERSION = 5
+BUNDLE_VERSION = 6
 BUNDLE_DEPENDENCY_FILES = (
     Path(__file__).resolve(),
     Path(__file__).with_name("rl_bundle_stage.py").resolve(),
     Path(__file__).with_name("rl_cameras.py").resolve(),
+    Path(__file__).with_name("scene_objects.py").resolve(),
     Path(__file__).with_name("usd_to_mjcf.py").resolve(),
 )
 
@@ -110,9 +112,15 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
         cameras=[],
     )
     source_map = robot_source_map(robot_usd)
+    scene_objects = collect_scene_objects(scene_usd)
     up_axis, meters_per_unit = compose_stage_metadata(scene_usd, robot_usd)
     build_sim_scene(robot_usd, scene_usd, bundle.sim_scene_usda, up_axis, meters_per_unit)
-    USDToMJCFConverter(bundle.sim_scene_usda, bundle.mjcf, "r1pro_bundle").convert()
+    USDToMJCFConverter(
+        bundle.sim_scene_usda,
+        bundle.mjcf,
+        "r1pro_bundle",
+        force_body_paths={spec.sim_path for spec in scene_objects},
+    ).convert()
     model = mujoco.MjModel.from_xml_path(str(bundle.mjcf))  # type: ignore
     robot_bodies = _robot_body_names(model, source_map)
     body_poses = _body_pose_map(model, robot_bodies)
@@ -131,6 +139,8 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
     missing = [name for name in robot_bodies if name not in body_map]
     if missing:
         raise RuntimeError(f"Missing robot wrapper prims: {missing}")
+    for scene_object in scene_objects:
+        body_map[scene_object.body_name] = scene_object.render_path
     bundle = RenderBundle(
         **{
             **bundle.__dict__,

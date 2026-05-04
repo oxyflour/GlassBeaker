@@ -8,13 +8,72 @@ from pathlib import Path
 import mujoco  # type: ignore
 from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
-from utils.usd_to_mjcf import USDToMJCFConverter, fmt_f
+from utils.usd_to_mjcf import USDToMJCFConverter, fmt_f, sanitize_name
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 
 
 class USDToMJCFTest(unittest.TestCase):
+    def test_force_body_paths_emit_scene_object_as_top_level_body(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "scene_object.usda"
+            output_xml = Path(tmpdir) / "scene_object.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            stage.SetMetadata("metersPerUnit", 1.0)
+            UsdGeom.SetStageUpAxis(stage, "Z")
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            crate = UsdGeom.Xform.Define(stage, "/World/Crate")
+            UsdGeom.Xformable(crate.GetPrim()).AddTranslateOp().Set((1.0, 2.0, 3.0))
+            visual = UsdGeom.Cube.Define(stage, "/World/Crate/Visual")
+            visual.CreateSizeAttr(0.5)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(
+                scene_path,
+                output_xml,
+                model_name="scene_object",
+                force_body_paths={"/World/Crate"},
+            ).convert()
+
+            body_name = sanitize_name("/World/Crate")
+            body = ET.parse(output_xml).getroot().find(f"./worldbody/body[@name='{body_name}']")
+            self.assertIsNotNone(body)
+            self.assertIsNotNone(body.find("./geom"))
+            model = mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
+            self.assertGreater(
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name),  # type: ignore
+                0,
+            )
+
+    def test_force_body_paths_keep_y_up_scene_objects_at_world_level(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "scene_object_y_up.usda"
+            output_xml = Path(tmpdir) / "scene_object_y_up.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            stage.SetMetadata("metersPerUnit", 1.0)
+            UsdGeom.SetStageUpAxis(stage, "Y")
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            crate = UsdGeom.Xform.Define(stage, "/World/Crate")
+            UsdGeom.Cube.Define(stage, "/World/Crate/Visual").CreateSizeAttr(0.5)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(
+                scene_path,
+                output_xml,
+                model_name="scene_object_y_up",
+                force_body_paths={"/World/Crate"},
+            ).convert()
+
+            root = ET.parse(output_xml).getroot()
+            body_name = sanitize_name("/World/Crate")
+            self.assertIsNotNone(root.find(f"./worldbody/body[@name='{body_name}']"))
+            wrapper = root.find("./worldbody/body[@name='usd_stage_root']")
+            self.assertIsNotNone(wrapper)
+            self.assertIsNone(wrapper.find(f"./body[@name='{body_name}']"))
+
     def test_mass_only_body_defaults_inertial_position(self):
         scene_usda = """#usda 1.0
 (

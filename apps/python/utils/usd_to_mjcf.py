@@ -404,7 +404,13 @@ class USDToMJCFConverter:
         "DistantLight",
     }
 
-    def __init__(self, usd_path: Path, output_xml: Path, model_name: str = "converted_from_usd"):
+    def __init__(
+        self,
+        usd_path: Path,
+        output_xml: Path,
+        model_name: str = "converted_from_usd",
+        force_body_paths: set[str] | None = None,
+    ):
         self.usd_path = Path(usd_path)
         self.output_xml = Path(output_xml)
         self.output_dir = self.output_xml.parent.resolve()
@@ -431,6 +437,7 @@ class USDToMJCFConverter:
 
         up = UsdGeom.GetStageUpAxis(self.stage) # type: ignore
         self.stage_up_axis = str(up) if up is not None else "Z"
+        self.force_body_paths = set(force_body_paths or ())
 
         self.nodes: Dict[str, BodyNode] = {}
         self.world_cameras: List[CameraData] = []
@@ -1370,7 +1377,7 @@ class USDToMJCFConverter:
         return roots
 
     def should_emit_body(self, node: BodyNode) -> bool:
-        return node.inertial is not None or node.joint is not None
+        return node.path in self.force_body_paths or node.inertial is not None or node.joint is not None
 
     def node_local_matrix(self, node: BodyNode) -> np.ndarray:
         return pose_to_matrix(node.local_pos, node.local_quat)
@@ -1488,11 +1495,14 @@ class USDToMJCFConverter:
                 })
 
         worldbody = ET.SubElement(mujoco, "worldbody")
+        self.worldbody_xml = worldbody
 
         # If USD stage is Y-up, wrap everything in a rotated root body to become Z-up.
         emit_parent = worldbody
+        forced_root_transform = np_identity()
         if self.stage_up_axis.upper() == "Y":
             q = quat_wxyz_from_axis_angle([1, 0, 0], math.pi / 2.0)
+            forced_root_transform = pose_to_matrix(quat=q)
             wrapper = ET.SubElement(worldbody, "body", attrib={
                 "name": "usd_stage_root",
                 "quat": fmt_vec(q),
@@ -1503,7 +1513,9 @@ class USDToMJCFConverter:
             self.emit_camera(camera, emit_parent)
 
         for root_path in self.root_paths():
-            self.emit_node_recursive(root_path, emit_parent, np_identity())
+            parent_xml = worldbody if root_path in self.force_body_paths else emit_parent
+            parent_transform = forced_root_transform if root_path in self.force_body_paths else np_identity()
+            self.emit_node_recursive(root_path, parent_xml, parent_transform)
 
         actuator = ET.SubElement(mujoco, "actuator")
         for node in self.nodes.values():
@@ -1627,7 +1639,15 @@ class USDToMJCFConverter:
         if np.linalg.norm(body_quat - np.array([1, 0, 0, 0], dtype=float)) > 1e-12:
             body_attr["quat"] = fmt_vec(body_quat)
 
-        body_xml = ET.SubElement(parent_xml, "body", attrib=body_attr)
+        body_parent = parent_xml
+        if (
+            node.path in self.force_body_paths
+            and self.stage_up_axis.upper() == "Y"
+            and (node.parent is None or not self.should_emit_body(self.nodes[node.parent]))
+        ):
+            body_parent = self.worldbody_xml
+
+        body_xml = ET.SubElement(body_parent, "body", attrib=body_attr)
 
         if node.inertial is not None:
             iner_attr = {

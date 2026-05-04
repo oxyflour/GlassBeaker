@@ -59,6 +59,12 @@ def geom_world_pose(data, geom_id: int) -> np.ndarray:
     matrix[:3, 3] = np.array(data.geom_xpos[geom_id], dtype=float)
     return matrix
 
+def body_world_pose(data, body_id: int) -> np.ndarray:
+    matrix = np.eye(4)
+    matrix[:3, :3] = np.array(data.xmat[body_id], dtype=float).reshape(3, 3)
+    matrix[:3, 3] = np.array(data.xpos[body_id], dtype=float)
+    return matrix
+
 def geom_size(model, geom_id: int, kind: str) -> list[float]:
     size = np.array(model.geom_size[geom_id], dtype=float)
     if kind == 'plane':

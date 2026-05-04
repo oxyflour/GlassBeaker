@@ -22,3 +22,17 @@ test("ZapdosTopOverlay renders SpaceMouse and camera save controls when settings
   assert.match(html, /Save camera override/);
   assert.match(html, /SpaceMouse/);
 });
+
+test("ZapdosTopOverlay shows the selected body and transform mode", () => {
+  const html = renderToStaticMarkup(
+    <ZapdosTopOverlay
+      defaultSettingsOpen={ false }
+      sess="sess-1"
+      sse={1}
+      selectedBody="Scene_Crate"
+      mode="rotate" />
+  );
+
+  assert.match(html, /Selected Scene_Crate/);
+  assert.match(html, /Mode rotate/);
+});

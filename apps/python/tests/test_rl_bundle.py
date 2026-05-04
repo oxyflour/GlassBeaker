@@ -13,12 +13,58 @@ from pxr import Usd, UsdGeom
 import utils.rl_bundle as MODULE
 from utils.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
 from utils.rl_cameras import build_render_cameras
+from utils.usd_to_mjcf import sanitize_name
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 
 
 class RLBundleTest(unittest.TestCase):
+    def test_ensure_render_bundle_promotes_scene_object_into_body_map(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "scene_object.usda"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            stage.SetMetadata("metersPerUnit", 1.0)
+            UsdGeom.SetStageUpAxis(stage, "Z")
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            UsdGeom.Cube.Define(stage, "/World/Ground").CreateSizeAttr(10.0)
+            crate = UsdGeom.Xform.Define(stage, "/World/Crate")
+            UsdGeom.Cube.Define(stage, "/World/Crate/Visual").CreateSizeAttr(0.5)
+            UsdGeom.Camera.Define(stage, "/World/EditorCamera")
+            stage.GetRootLayer().Save()
+
+            bundle = ensure_render_bundle(ROBOT_USD, scene_path)
+
+        body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
+        scene_body_name = sanitize_name("/Scene/Crate")
+        self.assertEqual(body_map.get(scene_body_name), "Crate")
+        self.assertNotIn(sanitize_name("/Scene/Ground"), body_map)
+        render_stage = Usd.Stage.Open(str(bundle.render_scene_usda))
+        self.assertTrue(render_stage.GetPrimAtPath("/RenderScene/Crate").IsValid())
+
+    def test_ensure_render_bundle_promotes_objects_container_children_individually(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "scene_objects_container.usda"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            stage.SetMetadata("metersPerUnit", 1.0)
+            UsdGeom.SetStageUpAxis(stage, "Z")
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            objects = UsdGeom.Xform.Define(stage, "/World/Objects")
+            crate = UsdGeom.Xform.Define(stage, "/World/Objects/Crate")
+            UsdGeom.Cube.Define(stage, "/World/Objects/Crate/Visual").CreateSizeAttr(0.5)
+            bowl = UsdGeom.Xform.Define(stage, "/World/Objects/Bowl")
+            UsdGeom.Sphere.Define(stage, "/World/Objects/Bowl/Visual").CreateRadiusAttr(0.25)
+            stage.GetRootLayer().Save()
+
+            bundle = ensure_render_bundle(ROBOT_USD, scene_path)
+
+        body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
+        self.assertEqual(body_map.get(sanitize_name("/Scene/Objects/Crate")), "Objects/Crate")
+        self.assertEqual(body_map.get(sanitize_name("/Scene/Objects/Bowl")), "Objects/Bowl")
+        self.assertNotIn(sanitize_name("/Scene/Objects"), body_map)
+
     def test_default_scene_contains_ground_mesh(self):
         stage = Usd.Stage.Open(str(DEFAULT_SCENE_USD))
         self.assertIsNotNone(stage)
