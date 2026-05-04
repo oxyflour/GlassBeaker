@@ -168,3 +168,87 @@ Progress update 2026-05-02 (staged-loss pole/residue revival started)
   - `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root tmp/antenna-dataset-2400-v2 --output-dir tmp/nijika-staged-loss-pole-6600-pilot50 --model-kind structured_pair_pole_residue_head --epochs 50 --batch-size 64 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10 --num-poles 12 --db-weight-final 0.1 --coupling-weight-final 1.5 --notch-weight-final 2.0 --notch-threshold-db -10 --loss-ramp-start-epoch 10 --loss-ramp-end-epoch 35`
 - 状态：
   - `started`
+
+Progress update 2026-05-04 (pair-specific pole offset pilot implemented and evaluated)
+
+- 先做了比直接开新大实验更便宜的一步：
+  - 基于前面的 slicing，判断 `structured_pair_pole_residue_head` 的主要问题更像是 “shared poles 不够灵活”，而不是整条 pole/residue 参数化方向错误
+  - 因此没有改成更重的 resonator 结构，而是先加一个零初始化的 `pair-specific pole offset`
+- 代码改动：
+  - `packages/nijika/baseline/structured_pole_model.py`
+    - 新增 `use_pair_pole_offsets`
+    - 新增 `pair_pole_offset_head`
+    - 默认零初始化，初始行为严格退化回 shared poles
+    - 每个 pair 只允许对 shared pole 的 damping / omega 做小幅受限偏移
+  - `packages/nijika/baseline/model.py`
+    - 新增 `model_kind=structured_pair_pole_offset_residue_head`
+  - `packages/nijika/baseline/train.py`
+    - train CLI 接受新的 `model_kind`
+  - `apps/python/tests/test_nijika_pole_model.py`
+    - 回归测试：
+      - 新 model kind 初始时等价于 shared poles
+      - 不同 pair latent 可以只移动对应 pair 的 poles，而不扰动未激活的 pair
+- 验证：
+  - unit tests:
+    - `uv run --project apps/python python -m unittest apps.python.tests.test_nijika_pole_model apps.python.tests.test_nijika_analyze`
+    - 结果：`OK`
+  - smoke train:
+    - `uv run --project apps/python python packages/nijika/run_baseline.py --dataset-root C:\Projects\GlassBeaker\tmp\antenna-dataset-smoke --output-dir tmp\nijika-pole-offset-smoke --model-kind structured_pair_pole_offset_residue_head --epochs 1 --batch-size 8 --hidden-dim 64 --num-poles 12`
+  - smoke predict:
+    - `uv run --project apps/python python packages/nijika/predict_baseline.py --dataset-root C:\Projects\GlassBeaker\tmp\antenna-dataset-smoke --model-path tmp\nijika-pole-offset-smoke\baseline_model.pt --sample-name antenna_000 --output-dir tmp\nijika-pole-offset-predict-smoke`
+- `6600` 样本上的 `50` epoch staged-loss pilot：
+  - command:
+    - `uv run --project apps/python python -u packages/nijika/run_baseline.py --dataset-root C:\Projects\GlassBeaker\tmp\antenna-dataset-2400-v2 --output-dir tmp\nijika-staged-loss-pole-offset-6600-pilot50 --model-kind structured_pair_pole_offset_residue_head --epochs 50 --batch-size 64 --hidden-dim 160 --lr 1e-3 --warmup-epochs 10 --num-poles 12 --db-weight-final 0.1 --coupling-weight-final 1.5 --notch-weight-final 2.0 --notch-threshold-db -10 --loss-ramp-start-epoch 10 --loss-ramp-end-epoch 35`
+  - best epoch: `49`
+  - validation RMSE: `0.12795`
+  - validation `dB MAE`: `5.21926 dB`
+  - validation `dB RMSE`: `8.17522 dB`
+- 和 staged-loss spectral baseline @ epoch `50`（`5.17867 dB`）对比：
+  - pair-pole-offset 更差 `0.04060 dB`
+  - 相对回退约 `0.78%`
+  - 结论：仍然没有正式过 gate，但已经把原始 pole/residue 的差距从 `0.05403 dB` 收窄到了 `0.04060 dB`
+- 和原始 staged-loss pole/residue pilot（`5.23270 dB`）对比：
+  - pair-pole-offset 改善 `0.01343 dB`
+  - 在 `1320` 个 validation 样本里，pair-pole-offset 有 `662` 个样本优于旧 pole 版本（`50.15%`）
+- 独立 analysis：
+  - command:
+    - `uv run --project apps/python python packages/nijika/analyze_baseline.py --dataset-root C:\Projects\GlassBeaker\tmp\antenna-dataset-2400-v2 --model-path tmp\nijika-staged-loss-pole-offset-6600-pilot50\baseline_model.pt --split val --batch-size 256 --output-dir tmp\nijika-staged-loss-pole-offset-6600-pilot50-analysis`
+  - 相对 staged-loss spectral baseline pilot 的关键对比：
+    - sample mean `dB MAE`: `5.17867` -> `5.21926 dB`
+    - sample median `dB MAE`: `4.79105` -> `4.80554 dB`
+    - sample p90 `dB MAE`: `6.66116` -> `6.68828 dB`
+    - worst sample `dB MAE`: `17.34091` -> `19.84004 dB`
+    - reflection `dB MAE`:
+      - `S11`: `1.0385` -> `1.0493 dB`
+      - `S22`: `1.0400` -> `1.0525 dB`
+      - `S33`: `1.0301` -> `1.0342 dB`
+    - coupling `dB MAE`:
+      - `S12`: `7.1797` -> `7.2612 dB`
+      - `S13`: `7.4090` -> `7.4094 dB`
+      - `S23`: `7.1609` -> `7.2481 dB`
+    - notch 区域：
+      - truth `< -10 dB`: `7.3443` -> `7.3933 dB`
+      - truth `< -20 dB`: `7.0736` -> `7.1191 dB`
+  - 相对原始 staged-loss pole/residue pilot：
+    - mean / median / p90 都有小幅改善
+    - 但 worst tail 明显变差，说明 pair offset 虽然提升了中位样本和多数样本的拟合灵活度，也更容易放大少数坏点
+  - 相对 baseline 的分桶观察：
+    - `1` cut: `+0.1264 dB`
+    - `2` cuts: `+0.0051 dB`
+    - `3` cuts: `+0.0211 dB`
+    - `4` cuts: `+0.0097 dB`
+    - 说明这次改动把旧 pole 版本的 gap 普遍收窄了，但还没有像最初预期那样在高 cut-count 桶里稳定翻正
+
+Current conclusion 2026-05-04 (pair-specific pole offset)
+
+- 这条线比“原样复活 pole/residue”又向前推了一小步，但还没有过 staged-loss spectral baseline 的公平 gate
+- `pair-specific pole offset` 这个方向本身不是坏信号：
+  - 它确实把总体 gap 从 `0.054 dB` 缩到 `0.041 dB`
+  - 并且相对旧 pole 版本，已经是 `50%+` 样本受益
+- 但当前最明显的新问题是 tail 变坏：
+  - worst sample 从 `16.77 dB` 放大到 `19.84 dB`
+  - 说明现在的 offset 自由度还缺少约束，不适合直接继续放大
+- 如果继续，这条线的下一步应该优先做“约束更强”的小改动，而不是更大的 decoder 改写：
+  - 优先候选 1：只允许 coupling pairs 使用 pole offset，reflection pairs 保持 shared poles
+  - 优先候选 2：给 pole offset 加显式 regularization / scale schedule，先压 tail 再看是否能过 gate
+  - 这两条都应该继续沿用当前 staged loss，并先做 `50` epoch pilot

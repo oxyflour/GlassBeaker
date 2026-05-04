@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("tmp/nijika-baseline"))
     parser.add_argument(
         "--model-kind",
-        choices=["graph_topology_spectral_head", "structured_pair_coupling_freq_head", "structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_pair_topology_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "legacy_global_head"],
+        choices=["graph_topology_spectral_head", "structured_pair_coupling_freq_head", "structured_pair_pole_offset_residue_head", "structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_pair_topology_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "legacy_global_head"],
         default="structured_pair_spectral_head",
     )
     parser.add_argument("--epochs", type=int, default=400)

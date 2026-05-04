@@ -217,6 +217,15 @@ def create_model(*, freq_grid: Sequence[float] | torch.Tensor, port_count: int, 
             dropout=dropout,
             num_poles=int(config.get("num_poles", 12)),
         )
+    if model_kind == "structured_pair_pole_offset_residue_head":
+        return StructuredPoleResiduePredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            num_poles=int(config.get("num_poles", 12)),
+            use_pair_pole_offsets=True,
+        )
     if model_kind == "graph_topology_spectral_head":
         return GraphTopologySpectralPredictor(
             freq_grid=freq_grid,
