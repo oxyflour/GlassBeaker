@@ -14,6 +14,7 @@ from utils.rl_cameras import camera_name_to_index, image_topic
 from utils.rl_bundle import DEFAULT_SCENE_USD, RenderBundle, ensure_render_bundle
 from utils.ros_bridge import bridge
 from utils.session import Session, Timer
+from utils.session_registry import AsyncSessionRegistry
 from utils.sim_env import (
     IMAGE_TYPE,
     JOINT_COMMAND_TOPIC,
@@ -182,46 +183,21 @@ def _input_path(req: Request, key: str, default: Path) -> Path:
     return path
 
 
-sessions: dict[str, asyncio.Future[ZapdosSession]] = {}
-
-
-def _evict_session_future(sess: str, future: asyncio.Future[ZapdosSession]) -> None:
-    if sessions.get(sess) is future:
-        sessions.pop(sess, None)
-
-
-def _session_future_state(sess: str) -> tuple[asyncio.Future[ZapdosSession] | None, str | None]:
-    future = sessions.get(sess)
-    if future is None:
-        return None, None
-    if future.cancelled():
-        _evict_session_future(sess, future)
-        return None, "missing"
-    if not future.done():
-        return future, None
-    if future.exception() is not None:
-        _evict_session_future(sess, future)
-        return None, "missing"
-    if not future.result().is_active():
-        _evict_session_future(sess, future)
-        return None, "expired"
-    return future, None
+session_registry = AsyncSessionRegistry[ZapdosSession]()
+sessions = session_registry.sessions
 
 
 def _get_or_create_session_future(req: Request, sess: str) -> asyncio.Future[ZapdosSession]:
-    future, _ = _session_future_state(sess)
-    if future is not None:
-        return future
-
     robot_usd = _input_path(req, "robot_usd", DEFAULT_ROBOT_USD)
     scene_usd = _input_path(req, "scene_usd", DEFAULT_SCENE_USD)
-    future = asyncio.create_task(ZapdosSession.create(sess, robot_usd, scene_usd))
-    sessions[sess] = future
-    return future
+    return session_registry.get_or_create(
+        sess,
+        lambda: ZapdosSession.create(sess, robot_usd, scene_usd),
+    )
 
 
 def _require_session_future(sess: str) -> asyncio.Future[ZapdosSession]:
-    future, reason = _session_future_state(sess)
+    future, reason = session_registry.resolve(sess)
     if future is not None:
         return future
     detail = "Session expired" if reason == "expired" else "Session not initialized"
@@ -229,11 +205,7 @@ def _require_session_future(sess: str) -> asyncio.Future[ZapdosSession]:
 
 
 async def _await_session_future(sess: str, future: asyncio.Future[ZapdosSession]) -> ZapdosSession:
-    try:
-        return await future
-    except Exception:
-        _evict_session_future(sess, future)
-        raise
+    return await session_registry.await_ready(sess, future)
 
 
 def _bootstrap_error_message(exc: Exception) -> str:
@@ -267,7 +239,7 @@ def _require_camera_name(session: ZapdosSession, camera_name: str) -> str:
 def _require_active_session(sess: str, future: asyncio.Future[ZapdosSession], session: ZapdosSession) -> ZapdosSession:
     if session.is_active():
         return session
-    _evict_session_future(sess, future)
+    session_registry.discard(sess, future)
     raise HTTPException(status_code=409, detail="Session expired")
 
 
