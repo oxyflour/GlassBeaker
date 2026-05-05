@@ -1,11 +1,16 @@
-import { createSceneToolRequest } from "./zapdos-tool-api";
+import { createAddAssetToSceneRequest } from "./zapdos-tool-api";
 
 export function createAddBenchmarkTableRequest(): RequestInit {
-  return createSceneToolRequest([
-    "benchmark_table_000",
-    "static",
-    { position: [0, 0, 0] },
-  ]);
+  return createAddAssetToSceneRequest({
+    asset_id: "benchmark_table_000",
+    motion: "static",
+    placement: {
+      kind: "floor_at_xy",
+      xy: [0, 0],
+      z_offset: 0,
+      yaw: 0,
+    },
+  });
 }
 
 export async function addBenchmarkTable(sess: string) {

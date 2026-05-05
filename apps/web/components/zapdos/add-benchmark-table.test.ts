@@ -12,7 +12,12 @@ test("createAddBenchmarkTableRequest posts the benchmark table shortcut payload"
     body: JSON.stringify([
       "benchmark_table_000",
       "static",
-      { position: [0, 0, 0] },
+      {
+        kind: "floor_at_xy",
+        xy: [0, 0],
+        z_offset: 0,
+        yaw: 0,
+      },
     ]),
   });
 });

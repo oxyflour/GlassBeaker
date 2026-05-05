@@ -65,7 +65,10 @@ class ZapdosSession(Session):
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.overlay_path = self.session_dir / "overlay.json"
         self.composed_scene_usd = self.session_dir / "scene-overlay.usda"
-        self.overlay_state = load_overlay_state(self.overlay_path)
+        loaded_overlay = load_overlay_state(self.overlay_path)
+        self.overlay_state = default_overlay_state(loaded_overlay.get("assets_root"))
+        if loaded_overlay["instances"] or loaded_overlay["pose_overrides"]:
+            save_overlay_state(self.overlay_path, self.overlay_state)
         self.scene_revision = scene_revision(self.base_scene_usd, self.overlay_state)
         self.rebuilding_scene = False
         self.physics = ZapdosPhysics(

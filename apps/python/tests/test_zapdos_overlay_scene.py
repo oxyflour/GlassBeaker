@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 import tempfile
 import unittest
@@ -73,6 +74,29 @@ class ZapdosOverlaySceneTest(unittest.TestCase):
 
         self.assertEqual(pose["pos"], [0.1, 0.2, 0.75])
 
+    def test_resolve_instance_pose_supports_floor_quaternion_alignment(self):
+        pose = resolve_instance_pose(
+            {
+                "id": "benchmark_table_000_01",
+                "asset_id": "benchmark_table_000",
+                "url": "objects/benchmark/table/benchmark_table_000/Aligned.usda",
+                "motion": "static",
+                "placement": {
+                    "kind": "floor_at_xy",
+                    "xy": [0.0, 0.0],
+                    "z_offset": 0.0,
+                    "payload_quat": [math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0],
+                },
+            },
+            asset_bounds={"min": [-0.3, -0.6, -0.37], "max": [0.3, 0.6, 0.37]},
+            support_infos={},
+            pose_overrides={},
+        )
+
+        self.assertEqual(pose["quat"], [1.0, 0.0, 0.0, 0.0])
+        self.assertEqual(pose["payload_quat"], [math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0])
+        self.assertAlmostEqual(pose["pos"][2], 0.6, places=6)
+
     def test_normalize_placement_infers_floor_kind_from_xy_payload(self):
         placement = normalize_placement({"xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0})
 
@@ -96,6 +120,8 @@ class ZapdosOverlaySceneTest(unittest.TestCase):
             assets_root = self.make_assets_root(tmp)
             base_scene = Path(tmp) / "scene.usda"
             stage = Usd.Stage.CreateNew(base_scene.as_posix())
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
             world = UsdGeom.Xform.Define(stage, "/World")
             stage.SetDefaultPrim(world.GetPrim())
             stage.GetRootLayer().Save()
@@ -121,9 +147,51 @@ class ZapdosOverlaySceneTest(unittest.TestCase):
             stage = Usd.Stage.Open(scene_path.as_posix())
             table = stage.GetPrimAtPath("/World/table_000_01")
             self.assertTrue(table.IsValid())
+            self.assertEqual(UsdGeom.GetStageUpAxis(stage), UsdGeom.Tokens.z)
+            self.assertEqual(UsdGeom.GetStageMetersPerUnit(stage), 1.0)
             kinematic = table.GetAttribute("physics:kinematicEnabled")
             self.assertTrue(kinematic.IsValid())
             self.assertTrue(kinematic.HasAuthoredValueOpinion())
+
+    def test_write_overlay_scene_authors_payload_local_correction_without_tilting_root_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_root = self.make_assets_root(tmp)
+            base_scene = Path(tmp) / "scene.usda"
+            stage = Usd.Stage.CreateNew(base_scene.as_posix())
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            stage.GetRootLayer().Save()
+
+            overlay = default_overlay_state(str(assets_root))
+            overlay["instances"].append({
+                "id": "table_000_01",
+                "asset_id": "table_000",
+                "url": "objects/table_000/Aligned.usda",
+                "motion": "static",
+                "placement": {
+                    "kind": "floor_at_xy",
+                    "xy": [0.0, 0.0],
+                    "z_offset": 0.0,
+                    "payload_quat": [math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0],
+                },
+            })
+
+            scene_path = write_overlay_scene(
+                Path(tmp) / "overlay_scene.usda",
+                base_scene,
+                assets_root,
+                overlay,
+                support_infos={},
+                asset_bounds_by_instance={"table_000_01": {"min": [-0.375, -0.375, 0.0], "max": [0.375, 0.375, 0.75]}},
+            )
+
+            stage = Usd.Stage.Open(scene_path.as_posix())
+            table = stage.GetPrimAtPath("/World/table_000_01")
+            payload = stage.GetPrimAtPath("/World/table_000_01/Payload")
+            self.assertEqual(table.GetAttribute("xformOp:orient").Get().GetReal(), 1.0)
+            self.assertAlmostEqual(payload.GetAttribute("xformOp:orient").Get().GetReal(), math.sqrt(0.5), places=6)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ class OverlayPlacement(TypedDict, total=False):
     gap: float
     pos: list[float]
     quat: list[float]
+    payload_quat: list[float]
 
 
 class OverlayInstance(TypedDict):

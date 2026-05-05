@@ -21,39 +21,52 @@ import type { MeshVisual } from "./zapdos-scene-api";
 
 const stlLoader = new STLLoader();
 const objLoader = new OBJLoader();
+const meshes: Record<string, Promise<BufferGeometry>> = { }
+
+async function loadObj(url: string) {
+  const obj = await objLoader.loadAsync(url);
+  let geometry: BufferGeometry | null = null;
+  obj.traverse(child => {
+    if (child instanceof Mesh && child.geometry) {
+      geometry = child.geometry as BufferGeometry;
+    }
+  });
+  if (geometry) {
+    return geometry;
+  } else {
+    throw Error(`${url} has no mesh`)
+  }
+}
 
 export async function loadSceneGeometry(item: MeshVisual) {
   const { size = [1, 1, 1] } = item;
   if (item.kind === "mesh") {
-    if (item.mesh?.endsWith(".stl")) return await stlLoader.loadAsync(item.mesh);
-    if (item.mesh?.endsWith(".obj")) {
-      const obj = await objLoader.loadAsync(item.mesh);
-      let geometry: BufferGeometry | null = null;
-      obj.traverse(child => {
-        if (child instanceof Mesh && child.geometry) geometry = child.geometry as BufferGeometry;
-      });
-      if (geometry) return geometry;
+    if (item.mesh?.endsWith(".stl")) {
+      return await (meshes[item.mesh] || (meshes[item.mesh] = stlLoader.loadAsync(item.mesh)));
+    } else if (item.mesh?.endsWith(".obj")) {
+      return await (meshes[item.mesh] || (meshes[item.mesh] = loadObj(item.mesh)))
+    } else {
+      throw new Error(`unknown mesh type ${item.mesh}`);
     }
-    throw new Error(`unknown mesh type ${item.mesh}`);
-  }
-  if (item.kind === "box") return new BoxGeometry(size[0], size[1], size[2]);
-  if (item.kind === "capsule") {
+  } else if (item.kind === "box") {
+    return new BoxGeometry(size[0], size[1], size[2]);
+  } else if (item.kind === "capsule") {
     const geometry = new CapsuleGeometry(size[0], size[1], 12, 24);
     geometry.rotateX(Math.PI / 2);
     return geometry;
-  }
-  if (item.kind === "cylinder") {
+  } else if (item.kind === "cylinder") {
     const geometry = new CylinderGeometry(size[0], size[0], size[1], 24);
     geometry.rotateX(Math.PI / 2);
     return geometry;
-  }
-  if (item.kind === "ellipsoid") {
+  } else if (item.kind === "ellipsoid") {
     const geometry = new SphereGeometry(1, 24, 16);
     geometry.scale(size[0] / 2, size[1] / 2, size[2] / 2);
     return geometry;
+  } else if (item.kind === "plane") {
+    return new PlaneGeometry(size[0], size[1]);
+  } else if (item.kind === "sphere") {
+    return new SphereGeometry(size[0], 24, 16);
   }
-  if (item.kind === "plane") return new PlaneGeometry(size[0], size[1]);
-  if (item.kind === "sphere") return new SphereGeometry(size[0], 24, 16);
   throw new Error(`Unsupported geometry type for ${item.name}`);
 }
 

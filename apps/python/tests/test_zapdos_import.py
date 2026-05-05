@@ -240,6 +240,68 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.physics.body_map, {"Scene_Crate": "Crate"})
         self.assertEqual(session.physics.editable_body_names, {"Scene_Crate"})
 
+    def test_session_init_discards_stale_overlay_instances(self):
+        rewritten_overlay = None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xml_path = root / "scene.xml"
+            xml_path.write_text(
+                """
+<mujoco>
+  <worldbody>
+    <body name="Scene_Crate" pos="1 2 3">
+      <geom name="crate-box" type="box" size="0.2 0.2 0.2" rgba="1 0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+""".strip(),
+                encoding="utf-8",
+            )
+            body_map_path = root / "render_scene_body_map.json"
+            body_map_path.write_text(json.dumps({"Scene_Crate": "Crate"}), encoding="utf-8")
+            bundle = SimpleNamespace(
+                mjcf=xml_path,
+                body_map_json=body_map_path,
+                cameras=[],
+            )
+            overlay_path = root / "apps" / "python" / "tmp" / "zapdos" / "sess-1" / "overlay.json"
+            overlay_path.parent.mkdir(parents=True)
+            overlay_path.write_text(json.dumps({
+                "version": 1,
+                "assets_root": "C:/assets",
+                "instances": [{
+                    "id": "benchmark_table_000_01",
+                    "asset_id": "benchmark_table_000",
+                    "url": "objects/benchmark/table/benchmark_table_000/Aligned.usda",
+                    "motion": "static",
+                    "placement": {"kind": "floor_at_xy", "xy": [0, 0], "z_offset": 0, "yaw": 0},
+                }],
+                "pose_overrides": {"Scene_benchmark_table_000_01": {"pos": [0, 0, 0], "quat": [1, 0, 0, 0]}},
+            }), encoding="utf-8")
+
+            def fake_session_init(instance, timeout=120):
+                instance.loop = asyncio.get_event_loop()
+                instance.timers = []
+                instance.msgs = None
+                instance.calls = None
+                instance.active = 0
+                instance.timeout = timeout
+
+            with mock.patch.object(MODULE, "REPO_ROOT", root):
+                with mock.patch.object(MODULE.Session, "__init__", new=fake_session_init):
+                    with mock.patch.object(MODULE, "IsaacRenderer", return_value=SimpleNamespace(wait_ready=mock.AsyncMock(), read=mock.Mock(return_value=None), close=mock.Mock())):
+                        with mock.patch.object(
+                            MODULE.asyncio,
+                            "run_coroutine_threadsafe",
+                            side_effect=lambda coro, loop: coro.close(),
+                        ):
+                            session = MODULE.ZapdosSession("sess-1", bundle)
+            rewritten_overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(session.overlay_state["instances"], [])
+        self.assertEqual(session.overlay_state["pose_overrides"], {})
+        self.assertEqual(rewritten_overlay["instances"], [])
+
     def test_session_does_not_keep_read_only_physics_passthrough_helpers(self):
         self.assertFalse(hasattr(MODULE.ZapdosSession, "_bind_physics"))
         self.assertNotIn("get_visual", MODULE.ZapdosSession.__dict__)
