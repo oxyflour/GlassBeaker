@@ -100,7 +100,7 @@ function GenieSimWorkspace() {
 
   useCopilotAdditionalInstructions({ instructions: SCENE_ADDITIONAL_INSTRUCTIONS }, []);
 
-  useGeineSimTools({ setSceneData })
+  useGeineSimAssets({ setSceneData })
 
   return (
     <Group>
