@@ -775,12 +775,14 @@ class USDToMJCFConverter:
         return np.array([0.7, 0.7, 0.7, 1.0], dtype=float)
 
     def get_collision_enabled(self, prim) -> Tuple[Optional[int], Optional[int]]:
-        path_tokens = {tok.lower() for tok in str(prim.GetPath()).strip("/").split("/")}
-        if "visuals" in path_tokens or "visual" in path_tokens:
+        enabled = self.get_attr(prim, "physics:collisionEnabled", default=None)
+        if enabled is not None:
+            if bool(enabled):
+                return None, None
             return 0, 0
 
-        enabled = self.get_attr(prim, "physics:collisionEnabled", default=None)
-        if enabled is False:
+        path_tokens = {tok.lower() for tok in str(prim.GetPath()).strip("/").split("/")}
+        if "visuals" in path_tokens or "visual" in path_tokens:
             return 0, 0
         return None, None
 

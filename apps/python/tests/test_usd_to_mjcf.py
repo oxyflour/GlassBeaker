@@ -280,6 +280,74 @@ def Xform "World"
             self.assertEqual(actuator.attrib["kp"], fmt_f(1e4))
             mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
 
+    def test_explicit_collision_enabled_visual_geom_keeps_contact_bits(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "visual_collision.usda"
+            output_xml = Path(tmpdir) / "visual_collision.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            stage.SetMetadata("metersPerUnit", 1.0)
+            UsdGeom.SetStageUpAxis(stage, "Z")
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            crate = UsdGeom.Xform.Define(stage, "/World/Crate")
+            UsdPhysics.MassAPI.Apply(crate.GetPrim()).CreateMassAttr(1.0)
+            body = UsdGeom.Xform.Define(stage, "/World/Crate/body")
+            visual = UsdGeom.Cube.Define(stage, "/World/Crate/body/visual")
+            visual.CreateSizeAttr(0.5)
+            UsdPhysics.CollisionAPI.Apply(visual.GetPrim()).CreateCollisionEnabledAttr(True)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(
+                scene_path,
+                output_xml,
+                model_name="visual_collision",
+                force_body_paths={"/World/Crate"},
+            ).convert()
+
+            model = mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
+            geom_name = sanitize_name("/World/Crate/body/visual") + "_geom"
+            geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)  # type: ignore
+            self.assertGreaterEqual(geom_id, 0)
+            self.assertGreater(int(model.geom_contype[geom_id]), 0)
+            self.assertGreater(int(model.geom_conaffinity[geom_id]), 0)
+
+    def test_dynamic_body_with_explicit_visual_collision_stops_on_floor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "visual_collision_gravity.usda"
+            output_xml = Path(tmpdir) / "visual_collision_gravity.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            stage.SetMetadata("metersPerUnit", 1.0)
+            UsdGeom.SetStageUpAxis(stage, "Z")
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            ground = UsdGeom.Cube.Define(stage, "/World/Ground")
+            ground.CreateSizeAttr(2.0)
+            UsdGeom.Xformable(ground.GetPrim()).AddTranslateOp().Set((0.0, 0.0, -1.0))
+            crate = UsdGeom.Xform.Define(stage, "/World/Crate")
+            UsdGeom.Xformable(crate.GetPrim()).AddTranslateOp().Set((0.0, 0.0, 1.0))
+            UsdPhysics.MassAPI.Apply(crate.GetPrim()).CreateMassAttr(1.0)
+            body = UsdGeom.Xform.Define(stage, "/World/Crate/body")
+            visual = UsdGeom.Cube.Define(stage, "/World/Crate/body/visual")
+            visual.CreateSizeAttr(0.5)
+            UsdPhysics.CollisionAPI.Apply(visual.GetPrim()).CreateCollisionEnabledAttr(True)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(
+                scene_path,
+                output_xml,
+                model_name="visual_collision_gravity",
+                force_body_paths={"/World/Crate"},
+            ).convert()
+
+            model = mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
+            data = mujoco.MjData(model)  # type: ignore
+            body_name = sanitize_name("/World/Crate")
+            body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)  # type: ignore
+            mujoco.mj_forward(model, data)  # type: ignore
+            for _ in range(300):
+                mujoco.mj_step(model, data)  # type: ignore
+            self.assertGreater(float(data.xpos[body_id][2]), 0.2)
+
 
 if __name__ == "__main__":
     unittest.main()
