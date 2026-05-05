@@ -145,6 +145,55 @@ class RLBundleTest(unittest.TestCase):
 
         self.assertNotEqual(before, after)
 
+    def test_ensure_render_bundle_opens_robot_stage_once_per_build(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir) / "bundles"
+            scene_path = Path(tmpdir) / "scene.usda"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            stage.SetMetadata("metersPerUnit", 1.0)
+            UsdGeom.SetStageUpAxis(stage, "Z")
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            UsdGeom.Cube.Define(stage, "/World/Ground").CreateSizeAttr(10.0)
+            stage.GetRootLayer().Save()
+
+            with mock.patch.object(MODULE, "TMP_ROOT", tmp_root):
+                with mock.patch("pxr.Usd.Stage.Open", wraps=Usd.Stage.Open) as stage_open:
+                    bundle = MODULE.ensure_render_bundle(ROBOT_USD, scene_path)
+                    self.assertTrue(bundle.mjcf.exists())
+
+        robot_opens = [
+            call
+            for call in stage_open.call_args_list
+            if call.args and Path(call.args[0]).resolve() == ROBOT_USD.resolve()
+        ]
+        self.assertEqual(len(robot_opens), 1)
+
+    def test_ensure_render_bundle_reuses_written_sim_stage_without_reopen(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir) / "bundles"
+            scene_path = Path(tmpdir) / "scene.usda"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            stage.SetMetadata("metersPerUnit", 1.0)
+            UsdGeom.SetStageUpAxis(stage, "Z")
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            UsdGeom.Cube.Define(stage, "/World/Ground").CreateSizeAttr(10.0)
+            stage.GetRootLayer().Save()
+
+            with mock.patch.object(MODULE, "TMP_ROOT", tmp_root):
+                with mock.patch("pxr.Usd.Stage.Open", wraps=Usd.Stage.Open) as stage_open:
+                    bundle = MODULE.ensure_render_bundle(ROBOT_USD, scene_path)
+                    self.assertTrue(bundle.sim_scene_usda.exists())
+                    self.assertTrue(bundle.mjcf.exists())
+
+        sim_scene_opens = [
+            call
+            for call in stage_open.call_args_list
+            if call.args and Path(call.args[0]).resolve() == bundle.sim_scene_usda.resolve()
+        ]
+        self.assertEqual(len(sim_scene_opens), 0)
+
     def test_ensure_render_bundle_writes_overridden_camera_values_to_usd(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".glass-beaker" / "config.json"

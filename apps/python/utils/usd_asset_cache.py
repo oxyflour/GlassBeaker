@@ -21,6 +21,10 @@ def mesh_cache_path(signature: str) -> Path:
     return cache_root() / CACHE_VERSION / "meshes" / f"{signature}.obj"
 
 
+def mesh_source_cache_path(signature: str) -> Path:
+    return cache_root() / CACHE_VERSION / "mesh_sources" / f"{signature}.txt"
+
+
 def texture_cache_path(signature: str) -> Path:
     return cache_root() / CACHE_VERSION / "textures" / f"{signature}.png"
 

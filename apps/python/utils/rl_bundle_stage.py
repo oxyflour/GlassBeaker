@@ -30,8 +30,8 @@ def compose_stage_metadata(scene_usd: Path, robot_usd: Path | None = None) -> tu
     return "Z", 1.0
 
 
-def robot_source_map(robot_usd: Path) -> dict[str, str]:
-    stage = Usd.Stage.Open(str(robot_usd))
+def robot_source_map(robot_usd: Path, source_stage: Usd.Stage | None = None) -> dict[str, str]:
+    stage = source_stage if source_stage is not None else Usd.Stage.Open(str(robot_usd))
     if stage is None:
         raise RuntimeError(f"Failed to open robot stage: {robot_usd}")
     source_map: dict[str, str] = {}
@@ -51,13 +51,14 @@ def build_sim_scene(
     up_axis: str,
     meters_per_unit: float,
     fallback_scene_usd: Path | None = None,
-) -> None:
+) -> Usd.Stage:
     stage = Usd.Stage.CreateNew(str(output_path))
     _configure_stage(stage, up_axis, meters_per_unit)
     UsdGeom.Xform.Define(stage, "/Root").GetPrim().GetReferences().AddReference(str(robot_usd.resolve()))
     scene_root = UsdGeom.Xform.Define(stage, "/Scene").GetPrim()
     _add_scene_references(scene_root, scene_usd, fallback_scene_usd)
     stage.GetRootLayer().Save()
+    return stage
 
 
 def build_robot_wrapper(
@@ -69,8 +70,9 @@ def build_robot_wrapper(
     output_path: Path,
     up_axis: str,
     meters_per_unit: float,
+    source_stage: Usd.Stage | None = None,
 ) -> dict[str, str]:
-    source_stage = Usd.Stage.Open(str(robot_usd))
+    source_stage = source_stage if source_stage is not None else Usd.Stage.Open(str(robot_usd))
     if source_stage is None:
         raise RuntimeError(f"Failed to open robot stage: {robot_usd}")
     stage = Usd.Stage.CreateNew(str(output_path))

@@ -80,10 +80,16 @@ class USDToMJCFCachingTest(unittest.TestCase):
                     "write_obj_mesh",
                     wraps=converter.write_obj_mesh,
                 ) as write_obj_mesh:
-                    with mock.patch("utils.usd_to_mjcf.Image.open", wraps=Image.open) as image_open:
-                        converter.convert()
+                    with mock.patch.object(
+                        converter,
+                        "mesh_signature",
+                        wraps=converter.mesh_signature,
+                    ) as mesh_signature:
+                        with mock.patch("utils.usd_to_mjcf.Image.open", wraps=Image.open) as image_open:
+                            converter.convert()
 
                 self.assertEqual(write_obj_mesh.call_count, 0)
+                self.assertEqual(mesh_signature.call_count, 0)
                 self.assertEqual(image_open.call_count, 0)
 
 

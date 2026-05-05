@@ -39,6 +39,7 @@ from utils.usd_asset_cache import (
     file_digest,
     materialize_cached_file,
     mesh_cache_path,
+    mesh_source_cache_path,
     texture_cache_path,
 )
 
@@ -424,6 +425,7 @@ class USDToMJCFConverter:
         output_xml: Path,
         model_name: str = "converted_from_usd",
         force_body_paths: set[str] | None = None,
+        stage=None,
     ):
         self.usd_path = Path(usd_path)
         self.output_xml = Path(output_xml)
@@ -434,7 +436,7 @@ class USDToMJCFConverter:
         self.texture_dir.mkdir(parents=True, exist_ok=True)
 
         self.model_name = model_name
-        self.stage = Usd.Stage.Open(str(self.usd_path)) # type: ignore
+        self.stage = stage if stage is not None else Usd.Stage.Open(str(self.usd_path)) # type: ignore
         if self.stage is None:
             raise RuntimeError(f"Failed to open USD stage: {self.usd_path}")
 
@@ -456,6 +458,7 @@ class USDToMJCFConverter:
         self.nodes: Dict[str, BodyNode] = {}
         self.world_cameras: List[CameraData] = []
         self.mesh_assets: Dict[str, MeshAssetData] = {}
+        self.mesh_source_signatures: Dict[str, str] = {}
         self.texture_assets: Dict[str, TextureAssetData] = {}
         self.material_assets: Dict[str, MaterialAssetData] = {}
         self.contact_excludes: set[Tuple[str, str]] = set()
@@ -1034,6 +1037,23 @@ class USDToMJCFConverter:
         return digest.hexdigest()
 
     def export_mesh_prim(self, prim) -> Tuple[Optional[str], Optional[str]]:
+        mesh_name = sanitize_name(str(prim.GetPath()))
+        out_file = self.mesh_dir / f"{mesh_name}.obj"
+        file_rel = (Path("meshes") / f"{mesh_name}.obj").as_posix()
+        source_cache_key = self.mesh_source_cache_key(prim)
+        fast_signature = self.lookup_mesh_source_signature(source_cache_key)
+        if fast_signature is not None:
+            cached_asset = self.mesh_assets.get(fast_signature)
+            if cached_asset is not None:
+                return cached_asset.name, cached_asset.file_rel
+
+            cache_file = mesh_cache_path(fast_signature)
+            if cache_file.exists():
+                materialize_cached_file(cache_file, out_file)
+                asset = MeshAssetData(name=mesh_name, file_rel=file_rel)
+                self.mesh_assets[fast_signature] = asset
+                return asset.name, asset.file_rel
+
         mesh = UsdGeom.Mesh(prim) # type: ignore
         pts = mesh.GetPointsAttr().Get()
         fvc = mesh.GetFaceVertexCountsAttr().Get()
@@ -1051,13 +1071,11 @@ class USDToMJCFConverter:
         if len(vertices) == 0 or len(faces) == 0:
             return None, None
 
-        mesh_name = sanitize_name(str(prim.GetPath()))
-        out_file = self.mesh_dir / f"{mesh_name}.obj"
         texcoords, face_texcoords = self.get_mesh_texcoords(mesh, len(vertices), face_counts, face_indices)
-        file_rel = (Path("meshes") / f"{mesh_name}.obj").as_posix()
         signature = self.mesh_signature(vertices, face_counts, face_indices, texcoords, face_texcoords)
         cached_asset = self.mesh_assets.get(signature)
         if cached_asset is not None:
+            self.store_mesh_source_signature(source_cache_key, signature)
             return cached_asset.name, cached_asset.file_rel
 
         cache_file = mesh_cache_path(signature)
@@ -1067,7 +1085,71 @@ class USDToMJCFConverter:
 
         asset = MeshAssetData(name=mesh_name, file_rel=file_rel)
         self.mesh_assets[signature] = asset
+        self.store_mesh_source_signature(source_cache_key, signature)
         return asset.name, asset.file_rel
+
+    def mesh_source_cache_key(self, prim) -> Optional[str]:
+        source = self.prim_source_spec(prim)
+        if source is None:
+            return None
+
+        source_layer, source_prim_path = source
+        try:
+            stat = source_layer.stat()
+        except OSError:
+            return None
+
+        digest = hashlib.sha1()
+        digest.update(str(source_layer).encode("utf-8"))
+        digest.update(source_prim_path.encode("utf-8"))
+        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(fmt_f(self.meters_per_unit).encode("ascii"))
+        return digest.hexdigest()
+
+    def prim_source_spec(self, prim) -> Optional[Tuple[Path, str]]:
+        try:
+            prim_stack = prim.GetPrimStack()
+        except Exception:
+            return None
+
+        for spec in prim_stack:
+            layer = getattr(spec, "layer", None)
+            if layer is None:
+                continue
+            layer_path = getattr(layer, "realPath", "") or getattr(layer, "identifier", "")
+            if not layer_path:
+                continue
+            return Path(layer_path).resolve(), str(spec.path)
+        return None
+
+    def lookup_mesh_source_signature(self, source_cache_key: Optional[str]) -> Optional[str]:
+        if source_cache_key is None:
+            return None
+        if source_cache_key in self.mesh_source_signatures:
+            return self.mesh_source_signatures[source_cache_key]
+
+        cache_file = mesh_source_cache_path(source_cache_key)
+        if not cache_file.exists():
+            return None
+
+        try:
+            signature = cache_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+
+        if len(signature) != 40 or any(ch not in "0123456789abcdef" for ch in signature):
+            return None
+        self.mesh_source_signatures[source_cache_key] = signature
+        return signature
+
+    def store_mesh_source_signature(self, source_cache_key: Optional[str], signature: str) -> None:
+        if source_cache_key is None:
+            return
+        self.mesh_source_signatures[source_cache_key] = signature
+        cache_file = mesh_source_cache_path(source_cache_key)
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(signature, encoding="utf-8")
 
     def build_camera_for_prim(self, prim, parent_path: Optional[str]) -> Optional[CameraData]:
         if not self.should_export_camera_prim(prim):

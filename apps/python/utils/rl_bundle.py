@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import mujoco  # type: ignore
 import numpy as np
+from pxr import Usd
 
 from utils.camera_override import apply_camera_overrides
 from utils.rl_cameras import RenderCamera, build_render_cameras
@@ -111,38 +113,52 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
         body_map_jsona=bundle_dir / "render_scene_body_map.jsona",
         cameras=[],
     )
-    source_map = robot_source_map(robot_usd)
     scene_objects = collect_scene_objects(scene_usd)
     up_axis, meters_per_unit = compose_stage_metadata(scene_usd, robot_usd)
-    build_sim_scene(
-        robot_usd,
-        scene_usd,
-        bundle.sim_scene_usda,
-        up_axis,
-        meters_per_unit,
-        fallback_scene_usd=DEFAULT_SCENE_USD,
-    )
-    USDToMJCFConverter(
-        bundle.sim_scene_usda,
-        bundle.mjcf,
-        "r1pro_bundle",
-        force_body_paths={spec.sim_path for spec in scene_objects},
-    ).convert()
+    robot_stage = Usd.Stage.Open(str(robot_usd))
+    if robot_stage is None:
+        raise RuntimeError(f"Failed to open robot stage: {robot_usd}")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        sim_scene_future = executor.submit(
+            _build_sim_scene_mjcf,
+            robot_usd,
+            scene_usd,
+            bundle.sim_scene_usda,
+            bundle.mjcf,
+            up_axis,
+            meters_per_unit,
+            DEFAULT_SCENE_USD,
+            {spec.sim_path for spec in scene_objects},
+        )
+        source_map = robot_source_map(robot_usd, source_stage=robot_stage)
+        sim_scene_future.result()
     model = mujoco.MjModel.from_xml_path(str(bundle.mjcf))  # type: ignore
     robot_bodies = _robot_body_names(model, source_map)
     body_poses = _body_pose_map(model, robot_bodies)
     cameras = build_render_cameras(model, {body: f"MyRobot/{body}" for body in robot_bodies})
     cameras = apply_camera_overrides(cameras)
-    body_map = build_robot_wrapper(
-        robot_usd,
-        robot_bodies,
-        source_map,
-        body_poses,
-        cameras,
-        bundle.robot_wrapper_usda,
-        up_axis,
-        meters_per_unit,
-    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        scene_render_future = executor.submit(
+            build_scene_render,
+            scene_usd,
+            bundle.scene_render_usda,
+            up_axis,
+            meters_per_unit,
+            cameras,
+            DEFAULT_SCENE_USD,
+        )
+        body_map = build_robot_wrapper(
+            robot_usd,
+            robot_bodies,
+            source_map,
+            body_poses,
+            cameras,
+            bundle.robot_wrapper_usda,
+            up_axis,
+            meters_per_unit,
+            source_stage=robot_stage,
+        )
+        scene_render_future.result()
     missing = [name for name in robot_bodies if name not in body_map]
     if missing:
         raise RuntimeError(f"Missing robot wrapper prims: {missing}")
@@ -153,14 +169,6 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
             **bundle.__dict__,
             "cameras": cameras,
         }
-    )
-    build_scene_render(
-        scene_usd,
-        bundle.scene_render_usda,
-        up_axis,
-        meters_per_unit,
-        cameras,
-        fallback_scene_usd=DEFAULT_SCENE_USD,
     )
     build_render_scene(
         bundle.scene_render_usda,
@@ -174,6 +182,33 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
     bundle.body_map_jsona.write_text(payload, encoding="utf-8")
     manifest_path.write_text(json.dumps(bundle.to_json(), indent=2, sort_keys=True), encoding="utf-8")
     return bundle
+
+
+def _build_sim_scene_mjcf(
+    robot_usd: Path,
+    scene_usd: Path,
+    sim_scene_usda: Path,
+    mjcf: Path,
+    up_axis: str,
+    meters_per_unit: float,
+    fallback_scene_usd: Path | None,
+    force_body_paths: set[str],
+) -> None:
+    sim_stage = build_sim_scene(
+        robot_usd,
+        scene_usd,
+        sim_scene_usda,
+        up_axis,
+        meters_per_unit,
+        fallback_scene_usd,
+    )
+    USDToMJCFConverter(
+        sim_scene_usda,
+        mjcf,
+        "r1pro_bundle",
+        force_body_paths=force_body_paths,
+        stage=sim_stage,
+    ).convert()
 
 
 def _robot_body_names(model, source_map: dict[str, str]) -> list[str]:
