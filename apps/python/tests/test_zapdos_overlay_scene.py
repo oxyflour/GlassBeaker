@@ -97,6 +97,34 @@ class ZapdosOverlaySceneTest(unittest.TestCase):
         self.assertEqual(pose["payload_quat"], [math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0])
         self.assertAlmostEqual(pose["pos"][2], 0.6, places=6)
 
+    def test_resolve_instance_pose_keeps_payload_quat_when_pose_override_exists(self):
+        pose = resolve_instance_pose(
+            {
+                "id": "benchmark_table_000_01",
+                "asset_id": "benchmark_table_000",
+                "url": "objects/benchmark/table/benchmark_table_000/Aligned.usda",
+                "motion": "static",
+                "placement": {
+                    "kind": "floor_at_xy",
+                    "xy": [0.0, 0.0],
+                    "z_offset": 0.0,
+                    "payload_quat": [math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0],
+                },
+            },
+            asset_bounds={"min": [-0.3, -0.6, -0.37], "max": [0.3, 0.6, 0.37]},
+            support_infos={},
+            pose_overrides={
+                "Scene_benchmark_table_000_01": {
+                    "pos": [1.0, 2.0, 3.0],
+                    "quat": [1.0, 0.0, 0.0, 0.0],
+                },
+            },
+        )
+
+        self.assertEqual(pose["pos"], [1.0, 2.0, 3.0])
+        self.assertEqual(pose["quat"], [1.0, 0.0, 0.0, 0.0])
+        self.assertEqual(pose["payload_quat"], [math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0])
+
     def test_normalize_placement_infers_floor_kind_from_xy_payload(self):
         placement = normalize_placement({"xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0})
 

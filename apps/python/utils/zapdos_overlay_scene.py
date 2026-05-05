@@ -66,9 +66,14 @@ def resolve_instance_pose(
     pose_overrides: dict[str, OverlayPoseOverride],
 ) -> dict[str, list[float]]:
     body_name = overlay_body_name(instance["id"])
-    if body_name in pose_overrides:
-        return pose_overrides[body_name]
     placement = normalize_placement(instance["placement"])
+    if body_name in pose_overrides:
+        override = pose_overrides[body_name]
+        return {
+            "pos": list(override["pos"]),
+            "quat": list(override["quat"]),
+            "payload_quat": _payload_quat(placement),
+        }
     if placement["kind"] == "world_pose":
         return {
             "pos": list(placement["pos"]),

@@ -1,0 +1,58 @@
+import { z } from "zod";
+
+const xySchema = z.tuple([z.number(), z.number()]);
+const posSchema = z.tuple([z.number(), z.number(), z.number()]);
+const quatSchema = z.tuple([z.number(), z.number(), z.number(), z.number()]);
+
+export const floorAtXyPlacementSchema = z.object({
+  kind: z.literal("floor_at_xy").describe("Place the asset on the floor at an x/y location."),
+  xy: xySchema.describe("Floor x/y position as [x, y]."),
+  z_offset: z.number().optional().describe("Optional vertical offset from the floor."),
+  yaw: z.number().optional().describe("Optional yaw in radians when quat is not provided."),
+  quat: quatSchema.optional().describe("Optional world quaternion [w, x, y, z]."),
+  payload_quat: quatSchema.optional().describe("Optional payload-local quaternion [w, x, y, z]."),
+}).strict();
+
+export const onTopOfBodyPlacementSchema = z.object({
+  kind: z.literal("on_top_of_body").describe("Place the asset on top of an editable scene body."),
+  body: z.string().trim().min(1).describe("Editable scene body name from list_scene_bodies."),
+  xy: xySchema.describe("Target x/y position in world coordinates as [x, y]."),
+  gap: z.number().optional().describe("Optional vertical gap above the support surface."),
+  yaw: z.number().optional().describe("Optional yaw in radians when quat is not provided."),
+  quat: quatSchema.optional().describe("Optional world quaternion [w, x, y, z]."),
+  payload_quat: quatSchema.optional().describe("Optional payload-local quaternion [w, x, y, z]."),
+}).strict();
+
+export const worldPosePlacementSchema = z.object({
+  kind: z.literal("world_pose").describe("Place the asset at an explicit world pose."),
+  pos: posSchema.describe("World position as [x, y, z]."),
+  quat: quatSchema.describe("World quaternion as [w, x, y, z]."),
+  payload_quat: quatSchema.optional().describe("Optional payload-local quaternion [w, x, y, z]."),
+}).strict();
+
+export const placementSchema = z.discriminatedUnion("kind", [
+  floorAtXyPlacementSchema,
+  onTopOfBodyPlacementSchema,
+  worldPosePlacementSchema,
+]).describe("Placement payload using floor_at_xy, on_top_of_body, or world_pose.");
+
+export const searchAssetsToolArgsSchema = z.object({
+  query: z.string().trim().min(1).describe("English asset query or exact asset id."),
+  top_k: z.number().optional().describe("Maximum number of asset candidates to return."),
+}).strict();
+
+export const listSceneBodiesToolArgsSchema = z.object({}).strict();
+
+export const addAssetToSceneToolArgsSchema = z.object({
+  asset_id: z.string().trim().min(1).describe("Exact asset id from search_assets."),
+  motion: z.enum(["static", "dynamic"]).describe("Use static or dynamic."),
+  placement: placementSchema,
+}).strict();
+
+export const removeAssetFromSceneToolArgsSchema = z.object({
+  instance_id: z.string().trim().min(1).describe("Overlay instance id to remove."),
+}).strict();
+
+export type SearchAssetsToolArgs = z.infer<typeof searchAssetsToolArgsSchema>;
+export type AddAssetToSceneToolArgs = z.infer<typeof addAssetToSceneToolArgsSchema>;
+export type RemoveAssetFromSceneToolArgs = z.infer<typeof removeAssetFromSceneToolArgsSchema>;

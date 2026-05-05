@@ -16,9 +16,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import mujoco  # type: ignore
-import mujoco.viewer  # type: ignore
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 import os, sys
 sys.path.append(f'{__file__}/../../')
@@ -75,8 +74,8 @@ def _isaac_request(method: str, payload: dict[str, Any] | None = None, query: di
 def placeholder_jpeg(width: int, height: int, text: str) -> bytes:
     image = Image.new("RGB", (width, height), (20, 24, 32))
     draw = ImageDraw.Draw(image)
-    draw.rectangle((0, height - 56, width, height), fill=(10, 12, 18))
-    draw.text((16, height - 38), text, fill=(236, 239, 244))
+    font = ImageFont.truetype("arial.ttf", size=int(height * 0.2))
+    draw.text((16, int(height * 0.4)), text, font=font, fill=(236, 239, 244))
     data = io.BytesIO()
     image.save(data, format="JPEG", quality=80)
     return data.getvalue()

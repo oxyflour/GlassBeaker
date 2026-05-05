@@ -115,25 +115,33 @@ class ZapdosSession(Session):
         snapshot_qpos = np.copy(self.physics.data.qpos)
         snapshot_ctrl = np.copy(self.physics.data.ctrl)
         body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
-        new_physics = ZapdosPhysics(self.sess, bundle, body_map)
-        count = min(len(snapshot_qpos), len(new_physics.data.qpos))
-        if count:
-            new_physics.data.qpos[:count] = snapshot_qpos[:count]
-        ctrl_count = min(len(snapshot_ctrl), len(new_physics.data.ctrl))
-        if ctrl_count:
-            new_physics.data.ctrl[:ctrl_count] = snapshot_ctrl[:ctrl_count]
-        mujoco.mj_forward(new_physics.model, new_physics.data)  # type: ignore
-        for body, pose in overlay_state["pose_overrides"].items():
-            if body in new_physics.editable_body_names:
-                new_physics.set_body_pose(body, pose["pos"], pose["quat"])
-        new_renderer = IsaacRenderer(self.sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
+        old_physics = self.physics
         old_renderer = self.renderer
+        new_physics = None
+        try:
+            new_physics = ZapdosPhysics(self.sess, bundle, body_map)
+            count = min(len(snapshot_qpos), len(new_physics.data.qpos))
+            if count:
+                new_physics.data.qpos[:count] = snapshot_qpos[:count]
+            ctrl_count = min(len(snapshot_ctrl), len(new_physics.data.ctrl))
+            if ctrl_count:
+                new_physics.data.ctrl[:ctrl_count] = snapshot_ctrl[:ctrl_count]
+            mujoco.mj_forward(new_physics.model, new_physics.data)  # type: ignore
+            for body, pose in overlay_state["pose_overrides"].items():
+                if body in new_physics.editable_body_names:
+                    new_physics.set_body_pose(body, pose["pos"], pose["quat"])
+            new_renderer = IsaacRenderer(self.sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
+        except Exception:
+            if new_physics is not None:
+                new_physics.close()
+            raise
         self.bundle = bundle
         self.physics = new_physics
         self.camera_index = camera_name_to_index(bundle.cameras)
         self.last_frame_index = {camera.name: -1 for camera in bundle.cameras}
         self.renderer = new_renderer
         old_renderer.close()
+        old_physics.close()
 
     def list_scene_bodies(self) -> dict[str, object]:
         support_infos = self._build_support_infos()
@@ -351,6 +359,7 @@ class ZapdosSession(Session):
             except Exception:
                 traceback.print_exc()
                 await asyncio.sleep(1)
+        yield mjpeg_chunk(placeholder_jpeg(RENDER_SIZE[0], RENDER_SIZE[1], "Cosed"))
 
     def destroy(self):
         for topic in list(bridge.subs):

@@ -213,3 +213,4 @@ class ZapdosPhysics:
     def close(self) -> None:
         if self.viewer:
             self.viewer.close()
+            self.viewer = None

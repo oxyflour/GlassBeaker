@@ -457,6 +457,85 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.overlay_state["instances"], [])
         self.assertEqual(session.scene_revision, "rev-1")
 
+    def test_swap_runtime_bundle_closes_previous_physics_after_successful_swap(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.sess = "sess-1"
+        old_physics = SimpleNamespace(
+            data=SimpleNamespace(qpos=[1.0, 2.0], ctrl=[3.0]),
+            close=mock.Mock(),
+        )
+        old_renderer = SimpleNamespace(close=mock.Mock())
+        session.physics = old_physics
+        session.renderer = old_renderer
+        session.bundle = SimpleNamespace(cameras=[])
+        session.camera_index = {}
+        session.last_frame_index = {}
+
+        new_physics = SimpleNamespace(
+            model=object(),
+            data=SimpleNamespace(qpos=[0.0, 0.0, 0.0], ctrl=[0.0, 0.0]),
+            editable_body_names=set(),
+            set_body_pose=mock.Mock(),
+            close=mock.Mock(),
+        )
+        new_renderer = SimpleNamespace(close=mock.Mock())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            body_map_path = Path(tmp) / "render_scene_body_map.json"
+            body_map_path.write_text("{}", encoding="utf-8")
+            bundle = SimpleNamespace(body_map_json=body_map_path, cameras=[])
+
+            with mock.patch.object(MODULE, "ZapdosPhysics", return_value=new_physics):
+                    with mock.patch.object(MODULE, "IsaacRenderer", return_value=new_renderer):
+                        with mock.patch.object(MODULE.mujoco, "mj_forward"):
+                            session._swap_runtime_bundle(bundle, {"pose_overrides": {}})
+
+        old_renderer.close.assert_called_once_with()
+        old_physics.close.assert_called_once_with()
+        self.assertIs(session.physics, new_physics)
+        self.assertIs(session.renderer, new_renderer)
+        self.assertEqual(new_physics.data.qpos[:2], [1.0, 2.0])
+        self.assertEqual(new_physics.data.ctrl[:1], [3.0])
+
+    def test_swap_runtime_bundle_closes_new_physics_when_renderer_creation_fails(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        old_physics = SimpleNamespace(
+            data=SimpleNamespace(qpos=[1.0], ctrl=[2.0]),
+            close=mock.Mock(),
+        )
+        old_renderer = SimpleNamespace(close=mock.Mock())
+        session.sess = "sess-1"
+        session.physics = old_physics
+        session.renderer = old_renderer
+        session.bundle = SimpleNamespace(cameras=[])
+        session.camera_index = {}
+        session.last_frame_index = {}
+
+        new_physics = SimpleNamespace(
+            model=object(),
+            data=SimpleNamespace(qpos=[0.0], ctrl=[0.0]),
+            editable_body_names=set(),
+            set_body_pose=mock.Mock(),
+            close=mock.Mock(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            body_map_path = Path(tmp) / "render_scene_body_map.json"
+            body_map_path.write_text("{}", encoding="utf-8")
+            bundle = SimpleNamespace(body_map_json=body_map_path, cameras=[])
+
+            with mock.patch.object(MODULE, "ZapdosPhysics", return_value=new_physics):
+                with mock.patch.object(MODULE, "IsaacRenderer", side_effect=RuntimeError("renderer failed")):
+                    with mock.patch.object(MODULE.mujoco, "mj_forward"):
+                        with self.assertRaises(RuntimeError):
+                            session._swap_runtime_bundle(bundle, {"pose_overrides": {}})
+
+        old_physics.close.assert_not_called()
+        old_renderer.close.assert_not_called()
+        new_physics.close.assert_called_once_with()
+        self.assertIs(session.physics, old_physics)
+        self.assertIs(session.renderer, old_renderer)
+
     def test_require_session_future_rejects_missing_runtime_session(self):
         with self.assertRaises(MODULE.HTTPException) as err:
             MODULE._require_session_future("sess-1")

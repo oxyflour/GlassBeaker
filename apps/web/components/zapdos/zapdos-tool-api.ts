@@ -1,8 +1,6 @@
-export type AddAssetToSceneInput = {
-  asset_id: string;
-  motion: "dynamic" | "static";
-  placement: Record<string, unknown>;
-};
+import type { AddAssetToSceneToolArgs } from "./zapdos-agent-tool-schemas";
+
+export type AddAssetToSceneInput = AddAssetToSceneToolArgs;
 
 export function createSceneToolRequest(args: unknown[]): RequestInit {
   return {
