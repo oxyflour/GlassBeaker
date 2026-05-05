@@ -130,6 +130,19 @@ class ZapdosSession(Session):
             for body, pose in overlay_state["pose_overrides"].items():
                 if body in new_physics.editable_body_names:
                     new_physics.set_body_pose(body, pose["pos"], pose["quat"])
+            reload_scene = getattr(old_renderer, "reload_scene", None)
+            if callable(reload_scene):
+                try:
+                    reload_scene(bundle)
+                except Exception:
+                    pass
+                else:
+                    self.bundle = bundle
+                    self.physics = new_physics
+                    self.camera_index = camera_name_to_index(bundle.cameras)
+                    self.last_frame_index = {camera.name: -1 for camera in bundle.cameras}
+                    old_physics.close()
+                    return
             new_renderer = IsaacRenderer(self.sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
         except Exception:
             if new_physics is not None:
@@ -140,7 +153,7 @@ class ZapdosSession(Session):
         self.camera_index = camera_name_to_index(bundle.cameras)
         self.last_frame_index = {camera.name: -1 for camera in bundle.cameras}
         self.renderer = new_renderer
-        old_renderer.close()
+        old_renderer.close(stop_remote=False)
         old_physics.close()
 
     def list_scene_bodies(self) -> dict[str, object]:

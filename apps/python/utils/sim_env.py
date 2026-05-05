@@ -6,14 +6,15 @@ import json
 import os
 import queue
 import subprocess
+import threading
 import time
 from functools import lru_cache
 from multiprocessing import shared_memory
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urlparse
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 import mujoco  # type: ignore
 import numpy as np
@@ -60,7 +61,12 @@ def _isaac_request(method: str, payload: dict[str, Any] | None = None, query: di
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = Request(url, data=body, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=timeout) as response:
+        if (urlparse(url).hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}:
+            opener = build_opener(ProxyHandler({}))
+            response_ctx = opener.open(request, timeout=timeout)
+        else:
+            response_ctx = urlopen(request, timeout=timeout)
+        with response_ctx as response:
             data = response.read()
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
@@ -146,6 +152,7 @@ class IsaacRenderer:
         self.frame_counter: np.ndarray | None = None
         self.frames: np.ndarray | None = None
         self.camera_index = camera_name_to_index(bundle.cameras)
+        self._control_lock = threading.Lock()
         self._spawn()
 
     @property
@@ -286,33 +293,62 @@ class IsaacRenderer:
             "log_path": str(self.log_path),
         }
 
-    def snapshot_cameras(self, timeout: float = 5.0) -> list[dict[str, Any]]:
+    def _control_request(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        if not hasattr(self, "_control_lock"):
+            self._control_lock = threading.Lock()
         req_path = request_path(self.control_dir)
         res_path = response_path(self.control_dir)
         req_id = str(time.time_ns())
-        res_path.unlink(missing_ok=True)
-        req_path.write_text(json.dumps({"id": req_id, "op": "snapshot_cameras"}), encoding="utf-8")
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if res_path.exists():
-                payload = json.loads(res_path.read_text(encoding="utf-8"))
-                if payload.get("id") != req_id:
+        operation = str(payload.get("op") or "control request")
+        with self._control_lock:
+            req_path.parent.mkdir(parents=True, exist_ok=True)
+            res_path.unlink(missing_ok=True)
+            req_path.unlink(missing_ok=True)
+            req_path.write_text(json.dumps({"id": req_id, **payload}), encoding="utf-8")
+            deadline = time.time() + timeout
+            try:
+                while time.time() < deadline:
+                    if res_path.exists():
+                        response = json.loads(res_path.read_text(encoding="utf-8"))
+                        if response.get("id") != req_id:
+                            time.sleep(0.02)
+                            continue
+                        if not response.get("ok"):
+                            raise RuntimeError(
+                                str(response.get("error") or f"renderer {operation} failed")
+                            )
+                        return response
+                    if not self._refresh_process_state():
+                        raise RuntimeError(
+                            _tail(self.log_path)
+                            or f"renderer exited while waiting for {operation}"
+                        )
                     time.sleep(0.02)
-                    continue
+            finally:
                 res_path.unlink(missing_ok=True)
                 req_path.unlink(missing_ok=True)
-                if not payload.get("ok"):
-                    raise RuntimeError(str(payload.get("error") or "renderer snapshot failed"))
-                cameras = payload.get("cameras")
-                if not isinstance(cameras, list):
-                    raise RuntimeError("renderer snapshot returned invalid cameras")
-                return cameras
-            if not self._refresh_process_state():
-                raise RuntimeError(_tail(self.log_path) or "renderer exited while waiting for snapshot")
-            time.sleep(0.02)
-        raise TimeoutError(f"renderer snapshot did not complete in {timeout:.1f}s")
+        raise TimeoutError(f"renderer {operation} did not complete in {timeout:.1f}s")
 
-    def close(self) -> None:
+    def snapshot_cameras(self, timeout: float = 5.0) -> list[dict[str, Any]]:
+        response = self._control_request({"op": "snapshot_cameras"}, timeout)
+        cameras = response.get("cameras")
+        if not isinstance(cameras, list):
+            raise RuntimeError("renderer snapshot returned invalid cameras")
+        return cameras
+
+    def reload_scene(self, bundle: "RenderBundle", timeout: float = 30.0) -> None:
+        self._control_request({
+            "op": "reload_scene",
+            "scene_usd": str(bundle.render_scene_usda),
+            "cameras": [
+                {"name": camera.name, "prim": camera.prim}
+                for camera in bundle.cameras
+            ],
+        }, timeout)
+        self.bundle = bundle
+        self.camera_index = camera_name_to_index(bundle.cameras)
+
+    def close(self, stop_remote: bool = True) -> None:
         if self.proc is not None:
             if self.proc.poll() is None:
                 try:
@@ -335,11 +371,12 @@ class IsaacRenderer:
         if self._proc_log is not None:
             self._proc_log.close()
             self._proc_log = None
-        if self.proc_id is not None:
+        if self.proc_id is not None and stop_remote:
             try:
                 _isaac_request("DELETE", {"id": self.proc_id}, timeout=10.0)
             except Exception:
                 pass
+        if self.proc_id is not None:
             self.proc_id = None
             self.proc_pid = None
             self._running = False
