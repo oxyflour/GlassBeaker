@@ -1,6 +1,6 @@
 "use client";
 
-import { useCopilotAdditionalInstructions, useCopilotReadable, useFrontendTool } from "@copilotkit/react-core";
+import { useCopilotAdditionalInstructions, useCopilotReadable } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-core/v2";
 
 import {
@@ -15,6 +15,7 @@ import {
   useAgentPreviewState,
 } from "../../../components/preview";
 import { Group, Panel, Separator } from "react-resizable-panels";
+import { useTool } from "../../../utils/agent/tool";
 
 export default function HomePage() {
   const preview = useAgentPreviewState();
@@ -30,7 +31,7 @@ export default function HomePage() {
     value: getPreviewLibraryReadableCatalog(),
   }, []);
 
-  useFrontendTool({
+  useTool({
     name: "set_app_code",
     description: PREVIEW_SET_APP_CODE_DESCRIPTION,
     followUp: true,
@@ -39,7 +40,7 @@ export default function HomePage() {
     render: ({ status }) => (status === "inProgress" ? <div className="tool-badge">Building preview...</div> : <div className="tool-badge">Preview updated</div>),
   }, [preview.setAppCode]);
 
-  useFrontendTool({
+  useTool({
     name: "set_app_props",
     description: PREVIEW_SET_APP_PROPS_DESCRIPTION,
     followUp: true,

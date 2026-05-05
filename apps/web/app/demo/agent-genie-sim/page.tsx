@@ -1,6 +1,6 @@
 "use client";
 
-import { CopilotKit, useCopilotAdditionalInstructions, useFrontendTool } from "@copilotkit/react-core";
+import { CopilotKit, useCopilotAdditionalInstructions } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-core/v2";
 import { Group, Panel, Separator } from "react-resizable-panels";
 
@@ -18,6 +18,7 @@ import {
 } from "../../../components/genie-sim";
 import { postToolJson } from "../../../components/genie-sim/tool-client";
 import type { AssetSearchHit, SceneData } from "../../../components/genie-sim";
+import { useTool } from "../../../utils/agent/tool";
 
 export default function AgentGenieSimPage() {
   return (
@@ -34,7 +35,7 @@ export default function AgentGenieSimPage() {
 export function useGeineSimAssets({ setSceneData }: {
   setSceneData?: (data: SceneData) => void
 } = { }) {
-  useFrontendTool({
+  useTool({
     name: "search_assets",
     description: SEARCH_ASSETS_DESCRIPTION,
     followUp: true,
@@ -65,7 +66,7 @@ export function useGeineSimAssets({ setSceneData }: {
     ),
   }, []);
 
-  useFrontendTool({
+  useTool({
     name: "generate_scene",
     description: SET_SCENE_DESCRIPTION,
     followUp: true,
