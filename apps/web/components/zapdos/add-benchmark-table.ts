@@ -6,7 +6,7 @@ export function createAddBenchmarkTableRequest(): RequestInit {
     motion: "static",
     placement: {
       kind: "floor_at_xy",
-      xy: [0, 0],
+      xy: [0.5, 0],
       z_offset: 0,
       yaw: 0,
     },

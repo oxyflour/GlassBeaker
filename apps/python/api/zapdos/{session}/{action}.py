@@ -46,7 +46,7 @@ from utils.zapdos_physics import ZapdosPhysics
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 RENDER_SIZE = (640, 480)
-ROS_DT = 0.03
+ROS_DT = 0.03333
 INIT_STREAM_HEARTBEAT_SEC = 1.0
 
 

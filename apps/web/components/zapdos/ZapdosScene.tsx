@@ -279,17 +279,14 @@ export function ZapdosScene({ sess, onRuntimeError }: { sess: string; onRuntimeE
       <Perf />
       <SparkRendererBridge />
       <ambientLight intensity={ 1.2 } />
-      <directionalLight intensity={ 1.8 } position={ [6, -4, 8] } />
-      <directionalLight intensity={ 0.8 } position={ [-4, 6, 4] } />
       <SurfacePivotControls enabled={ !transformDragging } pickRootName={ PIVOT_PICK_ROOT } />
       <EffectComposer multisampling={ 8 }><N8AO aoRadius={ 1 } distanceFalloff={ 1 } intensity={ 4 } /></EffectComposer>
-      <Environment resolution={ 256 }><group rotation={ [-Math.PI / 3, 0, 1] }>
-        <Lightformer form="circle" intensity={ 4 } position={ [0, 5, -9] } rotation-x={ Math.PI / 2 } scale={ 2 } />
-        <Lightformer form="circle" intensity={ 2 } position={ [-5, 1, -1] } rotation-y={ Math.PI / 2 } scale={ 2 } />
-        <Lightformer form="circle" intensity={ 2 } position={ [-5, -1, -1] } rotation-y={ Math.PI / 2 } scale={ 2 } />
-        <Lightformer form="circle" intensity={ 2 } position={ [10, 1, 0] } rotation-y={ -Math.PI / 2 } scale={ 8 } />
-      </group></Environment>
-      <group name={ PIVOT_PICK_ROOT }><group position={ [0, 0, 2] }><SparkSplat url="/tmp/butterfly.spz" /></group></group>
+      <Environment preset="studio" />
+      <group name={ PIVOT_PICK_ROOT }>
+        <group position={ [0, 0, 2] }>
+          <SparkSplat url="/tmp/butterfly.spz" />
+        </group>
+      </group>
       <SceneRuntime
         mode={ mode }
         onRuntimeError={ onRuntimeError }
