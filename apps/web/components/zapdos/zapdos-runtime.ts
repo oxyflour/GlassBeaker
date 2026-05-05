@@ -34,3 +34,11 @@ export function isZapdosInactivePayload(payload: unknown) {
     && "inactive" in payload
     && (payload as { inactive?: unknown }).inactive === true;
 }
+
+export function getZapdosSceneRevision(payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const revision = (payload as { scene_revision?: unknown }).scene_revision;
+  return typeof revision === "string" && revision.trim() ? revision : null;
+}

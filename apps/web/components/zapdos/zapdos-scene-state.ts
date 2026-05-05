@@ -32,6 +32,17 @@ export function shouldApplyBodyPose(body: string, draggingBody: string | null): 
   return body !== draggingBody;
 }
 
+export function shouldReloadSceneRevision(current: string | null, next: string | null): boolean {
+  return !!next && next !== current;
+}
+
+export function clearMissingSelection(selectedBody: string | null, nextBodies: Set<string>): string | null {
+  if (!selectedBody) {
+    return null;
+  }
+  return nextBodies.has(selectedBody) ? selectedBody : null;
+}
+
 export function pickEditableBodyFromHits(hits: ZapdosPickHit[]): string | null {
   for (const hit of hits) {
     if (hit.editable && hit.body) {

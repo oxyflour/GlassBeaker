@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   applySceneHotkey,
+  clearMissingSelection,
   isSelectionClick,
   pickEditableBodyFromHits,
+  shouldReloadSceneRevision,
   shouldApplyBodyPose,
   type ZapdosSceneState,
 } from "./zapdos-scene-state";
@@ -48,4 +50,14 @@ test("isSelectionClick stays true for small pointer movement", () => {
 
 test("isSelectionClick rejects drag-sized movement", () => {
   assert.equal(isSelectionClick({ x: 10, y: 20 }, { x: 20, y: 20 }), false);
+});
+
+test("shouldReloadSceneRevision ignores duplicate revisions", () => {
+  assert.equal(shouldReloadSceneRevision("rev-1", "rev-1"), false);
+  assert.equal(shouldReloadSceneRevision("rev-1", "rev-2"), true);
+});
+
+test("clearMissingSelection drops a body that is no longer present", () => {
+  assert.equal(clearMissingSelection("Scene_table_000_01", new Set(["Scene_crate_000_01"])), null);
+  assert.equal(clearMissingSelection("Scene_table_000_01", new Set(["Scene_table_000_01"])), "Scene_table_000_01");
 });

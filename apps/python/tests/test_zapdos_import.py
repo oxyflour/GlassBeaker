@@ -4,6 +4,8 @@ import asyncio
 import importlib.util
 import json
 import os
+import queue
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,9 +15,11 @@ from urllib.parse import urlencode
 
 import mujoco  # type: ignore
 from fastapi import Request
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
+
 from utils.rl_bundle import ensure_render_bundle
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = REPO_ROOT / "apps" / "python" / "api" / "zapdos" / "{session}" / "{action}.py"
 SPEC = importlib.util.spec_from_file_location("zapdos_session_action_import", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -48,6 +52,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             session.sess = "sess-1"
             session.physics = physics
             session.bundle = SimpleNamespace(cameras=[])
+            session.msgs = queue.Queue(maxsize=64)
             return session
 
     def build_pose_edit_session(self):
@@ -235,12 +240,11 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.physics.body_map, {"Scene_Crate": "Crate"})
         self.assertEqual(session.physics.editable_body_names, {"Scene_Crate"})
 
-    def test_session_does_not_keep_physics_passthrough_helpers(self):
+    def test_session_does_not_keep_read_only_physics_passthrough_helpers(self):
         self.assertFalse(hasattr(MODULE.ZapdosSession, "_bind_physics"))
         self.assertNotIn("get_visual", MODULE.ZapdosSession.__dict__)
         self.assertNotIn("get_pose", MODULE.ZapdosSession.__dict__)
         self.assertNotIn("get_camera", MODULE.ZapdosSession.__dict__)
-        self.assertNotIn("set_body_pose", MODULE.ZapdosSession.__dict__)
 
     def test_get_visual_returns_body_groups_and_meshes(self):
         session = self.build_pose_edit_session()
@@ -299,6 +303,97 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(MODULE.HTTPException) as missing_error:
             session.call_once("set_body_pose", ("MissingBody", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))
         self.assertEqual(missing_error.exception.status_code, 404)
+
+    def test_add_asset_to_scene_returns_body_and_revision(self):
+        session = self.build_pose_edit_session()
+        session.base_scene_usd = Path("scene.usda")
+        session.robot_usd = Path("robot.usda")
+        session.overlay_state = MODULE.default_overlay_state("C:/assets")
+        session.scene_revision = "rev-1"
+        session.overlay_path = Path("overlay.json")
+        session.composed_scene_usd = Path("overlay_scene.usda")
+        session.rebuilding_scene = False
+
+        with mock.patch.object(
+            MODULE,
+            "resolve_asset_record",
+            return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
+        ):
+            with mock.patch.object(session, "_rebuild_overlay_runtime", return_value="rev-2"):
+                result = MODULE.ZapdosSession.add_asset_to_scene(
+                    session,
+                    "table_000",
+                    "static",
+                    {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
+                )
+
+        self.assertEqual(result["scene_revision"], "rev-2")
+        self.assertEqual(result["body"], "Scene_table_000_01")
+
+    def test_add_asset_to_scene_rejects_ambiguous_placement(self):
+        session = self.build_pose_edit_session()
+        session.base_scene_usd = Path("scene.usda")
+        session.robot_usd = Path("robot.usda")
+        session.overlay_state = MODULE.default_overlay_state("C:/assets")
+        session.scene_revision = "rev-1"
+        session.overlay_path = Path("overlay.json")
+        session.composed_scene_usd = Path("overlay_scene.usda")
+        session.rebuilding_scene = False
+
+        with mock.patch.object(
+            MODULE,
+            "resolve_asset_record",
+            return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
+        ):
+            with self.assertRaises(MODULE.HTTPException) as err:
+                MODULE.ZapdosSession.add_asset_to_scene(session, "table_000", "static", {})
+
+        self.assertEqual(err.exception.status_code, 400)
+        self.assertIn("placement.kind", err.exception.detail)
+
+    def test_set_body_pose_persists_pose_override_without_changing_scene_revision(self):
+        session = self.build_freejoint_pose_edit_session()
+        session.overlay_state = MODULE.default_overlay_state("C:/assets")
+        session.overlay_path = Path("overlay.json")
+        session.scene_revision = "rev-1"
+
+        with mock.patch.object(MODULE, "save_overlay_state") as save_overlay:
+            session.call_once("set_body_pose", ("Scene_Crate", [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]))
+
+        self.assertEqual(session.scene_revision, "rev-1")
+        self.assertEqual(session.overlay_state["pose_overrides"]["Scene_Crate"]["pos"], [4.0, 5.0, 6.0])
+        save_overlay.assert_called_once()
+
+    def test_failed_rebuild_restores_previous_overlay_state(self):
+        session = self.build_pose_edit_session()
+        session.base_scene_usd = Path("scene.usda")
+        session.robot_usd = Path("robot.usda")
+        session.overlay_state = MODULE.default_overlay_state("C:/assets")
+        session.overlay_path = Path("overlay.json")
+        session.scene_revision = "rev-1"
+        session.rebuilding_scene = False
+
+        with mock.patch.object(MODULE, "save_overlay_state"):
+            with mock.patch.object(session, "_build_support_infos", return_value={}):
+                with mock.patch.object(MODULE, "write_overlay_scene", side_effect=RuntimeError("bundle exploded")):
+                    with self.assertRaises(RuntimeError):
+                        session._rebuild_overlay_runtime(
+                            lambda state: state["instances"].append({
+                                "id": "table_000_01",
+                                "asset_id": "table_000",
+                                "url": "objects/table_000/Aligned.usda",
+                                "motion": "static",
+                                "placement": {
+                                    "kind": "floor_at_xy",
+                                    "xy": [0.0, 0.0],
+                                    "z_offset": 0.0,
+                                    "yaw": 0.0,
+                                },
+                            })
+                        )
+
+        self.assertEqual(session.overlay_state["instances"], [])
+        self.assertEqual(session.scene_revision, "rev-1")
 
     def test_require_session_future_rejects_missing_runtime_session(self):
         with self.assertRaises(MODULE.HTTPException) as err:

@@ -1,15 +1,20 @@
 import asyncio
+from copy import deepcopy
 import io
 import json
 import queue
 import traceback
 from pathlib import Path
 
+import mujoco  # type: ignore
+import numpy as np
 from PIL import Image
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from utils.camera_override import save_camera_overrides
+from utils.genie_sim_runtime import resolve_assets_root
+from utils.mujoco_tools import body_world_pose, flatten_matrix
 from utils.rl_cameras import camera_name_to_index, image_topic
 from utils.rl_bundle import DEFAULT_SCENE_USD, RenderBundle, ensure_render_bundle
 from utils.ros_bridge import bridge
@@ -27,6 +32,15 @@ from utils.sim_env import (
     placeholder_jpeg,
     tf_message,
 )
+from utils.zapdos_asset_library import asset_local_bounds, resolve_asset_record
+from utils.zapdos_overlay import (
+    default_overlay_state,
+    load_overlay_state,
+    overlay_body_name,
+    save_overlay_state,
+    scene_revision,
+)
+from utils.zapdos_overlay_scene import normalize_placement, write_overlay_scene
 from utils.zapdos_physics import ZapdosPhysics
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -45,6 +59,15 @@ class ZapdosSession(Session):
     def __init__(self, sess: str, bundle: RenderBundle) -> None:
         self.sess = sess
         self.bundle = bundle
+        self.robot_usd = getattr(bundle, "robot_usd", DEFAULT_ROBOT_USD)
+        self.base_scene_usd = getattr(bundle, "scene_usd", DEFAULT_SCENE_USD)
+        self.session_dir = REPO_ROOT / "apps" / "python" / "tmp" / "zapdos" / sess
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.overlay_path = self.session_dir / "overlay.json"
+        self.composed_scene_usd = self.session_dir / "scene-overlay.usda"
+        self.overlay_state = load_overlay_state(self.overlay_path)
+        self.scene_revision = scene_revision(self.base_scene_usd, self.overlay_state)
+        self.rebuilding_scene = False
         self.physics = ZapdosPhysics(
             sess,
             bundle,
@@ -58,6 +81,158 @@ class ZapdosSession(Session):
         self.timers.append(Timer(ROS_DT, self.send_sse))
         self.renderer = IsaacRenderer(sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
         asyncio.run_coroutine_threadsafe(self.send_ros(), self.loop)
+
+    def _next_instance_id(self, asset_id: str) -> str:
+        existing = {item["id"] for item in self.overlay_state["instances"]}
+        index = 1
+        while True:
+            instance_id = f"{asset_id}_{index:02d}"
+            if instance_id not in existing:
+                return instance_id
+            index += 1
+
+    def _build_support_infos(self) -> dict[str, dict[str, float]]:
+        infos: dict[str, dict[str, float]] = {}
+        assets_root = resolve_assets_root(self.overlay_state.get("assets_root"))
+        instance_by_body = {
+            overlay_body_name(item["id"]): item
+            for item in self.overlay_state["instances"]
+        }
+        for body in self.physics.editable_body_names:
+            body_id = mujoco.mj_name2id(self.physics.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
+            top_z = float(body_world_pose(self.physics.data, body_id)[2, 3])
+            instance = instance_by_body.get(body)
+            if instance is not None:
+                bounds = asset_local_bounds(assets_root / instance["url"])
+                top_z += float(bounds["max"][2])
+            infos[body] = {"top_z": top_z}
+        return infos
+
+    def _swap_runtime_bundle(self, bundle: RenderBundle, overlay_state) -> None:
+        snapshot_qpos = np.copy(self.physics.data.qpos)
+        snapshot_ctrl = np.copy(self.physics.data.ctrl)
+        body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
+        new_physics = ZapdosPhysics(self.sess, bundle, body_map)
+        count = min(len(snapshot_qpos), len(new_physics.data.qpos))
+        if count:
+            new_physics.data.qpos[:count] = snapshot_qpos[:count]
+        ctrl_count = min(len(snapshot_ctrl), len(new_physics.data.ctrl))
+        if ctrl_count:
+            new_physics.data.ctrl[:ctrl_count] = snapshot_ctrl[:ctrl_count]
+        mujoco.mj_forward(new_physics.model, new_physics.data)  # type: ignore
+        for body, pose in overlay_state["pose_overrides"].items():
+            if body in new_physics.editable_body_names:
+                new_physics.set_body_pose(body, pose["pos"], pose["quat"])
+        new_renderer = IsaacRenderer(self.sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
+        old_renderer = self.renderer
+        self.bundle = bundle
+        self.physics = new_physics
+        self.camera_index = camera_name_to_index(bundle.cameras)
+        self.last_frame_index = {camera.name: -1 for camera in bundle.cameras}
+        self.renderer = new_renderer
+        old_renderer.close()
+
+    def list_scene_bodies(self) -> dict[str, object]:
+        support_infos = self._build_support_infos()
+        items = []
+        for body in sorted(self.physics.editable_body_names):
+            body_id = mujoco.mj_name2id(self.physics.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
+            items.append({
+                "body": body,
+                "label": self.physics.body_labels.get(body, body),
+                "matrix": flatten_matrix(body_world_pose(self.physics.data, body_id)),
+                "support": support_infos.get(body),
+            })
+        return {"items": items, "scene_revision": self.scene_revision}
+
+    def set_body_pose(self, body: str, pos: list[float], quat: list[float]) -> dict[str, object]:
+        result = self.physics.set_body_pose(body, pos, quat)
+        if hasattr(self, "overlay_state") and hasattr(self, "overlay_path"):
+            quat_vec = np.array(quat, dtype=float)
+            quat_norm = np.linalg.norm(quat_vec)
+            self.overlay_state["pose_overrides"][body] = {
+                "pos": list(pos),
+                "quat": (quat_vec / quat_norm).tolist(),
+            }
+            save_overlay_state(self.overlay_path, self.overlay_state)
+        return result
+
+    def add_asset_to_scene(self, asset_id: str, motion: str, placement: dict[str, object]) -> dict[str, object]:
+        if self.rebuilding_scene:
+            raise HTTPException(status_code=409, detail="Scene rebuild already in progress")
+        if motion not in {"static", "dynamic"}:
+            raise HTTPException(status_code=400, detail=f"Unsupported motion: {motion}")
+        try:
+            normalized_placement = normalize_placement(placement)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        asset = resolve_asset_record(asset_id, self.overlay_state.get("assets_root"))
+        instance_id = self._next_instance_id(asset_id)
+        body = overlay_body_name(instance_id)
+
+        def mutate(state):
+            state["assets_root"] = state.get("assets_root") or str(resolve_assets_root(self.overlay_state.get("assets_root")))
+            state["instances"].append({
+                "id": instance_id,
+                "asset_id": asset["asset_id"],
+                "url": asset["url"],
+                "motion": motion,
+                "placement": normalized_placement,
+            })
+
+        revision = self._rebuild_overlay_runtime(mutate)
+        return {"ok": True, "instance_id": instance_id, "body": body, "scene_revision": revision}
+
+    def remove_asset_from_scene(self, instance_id: str) -> dict[str, object]:
+        if self.rebuilding_scene:
+            raise HTTPException(status_code=409, detail="Scene rebuild already in progress")
+        if not any(item["id"] == instance_id for item in self.overlay_state["instances"]):
+            raise HTTPException(status_code=404, detail=f"Overlay instance not found: {instance_id}")
+        body = overlay_body_name(instance_id)
+
+        def mutate(state):
+            state["instances"] = [item for item in state["instances"] if item["id"] != instance_id]
+            state["pose_overrides"].pop(body, None)
+
+        revision = self._rebuild_overlay_runtime(mutate)
+        return {"ok": True, "instance_id": instance_id, "scene_revision": revision}
+
+    def _rebuild_overlay_runtime(self, mutate_overlay) -> str:
+        previous_overlay = deepcopy(self.overlay_state)
+        previous_revision = self.scene_revision
+        self.rebuilding_scene = True
+        try:
+            next_overlay = deepcopy(previous_overlay)
+            mutate_overlay(next_overlay)
+            save_overlay_state(self.overlay_path, next_overlay)
+            support_infos = self._build_support_infos()
+            assets_root = resolve_assets_root(next_overlay.get("assets_root"))
+            bounds_by_instance = {
+                item["id"]: asset_local_bounds(assets_root / item["url"])
+                for item in next_overlay["instances"]
+            }
+            write_overlay_scene(
+                self.composed_scene_usd,
+                self.base_scene_usd,
+                assets_root,
+                next_overlay,
+                support_infos=support_infos,
+                asset_bounds_by_instance=bounds_by_instance,
+            )
+            bundle = ensure_render_bundle(self.robot_usd, self.composed_scene_usd)
+            self._swap_runtime_bundle(bundle, next_overlay)
+            self.overlay_state = next_overlay
+            self.scene_revision = scene_revision(self.base_scene_usd, next_overlay)
+            if not self.msgs.full():
+                self.msgs.put_nowait({"scene_revision": self.scene_revision})
+            return self.scene_revision
+        except Exception:
+            self.overlay_state = previous_overlay
+            self.scene_revision = previous_revision
+            save_overlay_state(self.overlay_path, previous_overlay)
+            raise
+        finally:
+            self.rebuilding_scene = False
 
     def save_camera_override(self) -> dict[str, object]:
         snapshot = self.renderer.snapshot_cameras()
@@ -73,13 +248,21 @@ class ZapdosSession(Session):
             return self.physics.get_pose()
         if method == "get_camera":
             return self.physics.get_camera()
+        if method == "list_scene_bodies":
+            return self.list_scene_bodies()
+        if method == "add_asset_to_scene":
+            return self.add_asset_to_scene(*args)
+        if method == "remove_asset_from_scene":
+            return self.remove_asset_from_scene(*args)
         if method == "set_body_pose":
-            return self.physics.set_body_pose(*args)
+            return self.set_body_pose(*args)
         if method == "save_camera_override":
             return self.save_camera_override()
         return super().call_once(method, args)
 
     def send_sse(self):
+        if self.rebuilding_scene:
+            return
         if not self.msgs.full():
             self.msgs.put_nowait({ "pose": self.physics.get_pose() })
 

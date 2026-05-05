@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { AddBenchmarkTableButton } from "./AddBenchmarkTableButton";
 import { CameraOverrideSaveButton } from "./CameraOverrideSaveButton";
 import { SpaceMouseModeSelect } from "./SpaceMouseModeSelect";
 
@@ -41,6 +42,7 @@ export function ZapdosTopOverlay({
         </button>
         { open ? <div className="absolute right-0 mt-3 flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-3">
           <SpaceMouseModeSelect />
+          <AddBenchmarkTableButton sess={ sess } />
           <CameraOverrideSaveButton sess={ sess } />
         </div> : null }
       </div>

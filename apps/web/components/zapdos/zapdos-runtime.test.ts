@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE,
   getZapdosRuntimeErrorMessage,
+  getZapdosSceneRevision,
   isZapdosInactivePayload,
 } from "./zapdos-runtime";
 
@@ -22,4 +23,9 @@ test("isZapdosInactivePayload detects inactive session events", () => {
   assert.equal(isZapdosInactivePayload({ inactive: true }), true);
   assert.equal(isZapdosInactivePayload({ inactive: false }), false);
   assert.equal(isZapdosInactivePayload(null), false);
+});
+
+test("getZapdosSceneRevision returns the revision string when present", () => {
+  assert.equal(getZapdosSceneRevision({ scene_revision: "rev-2" }), "rev-2");
+  assert.equal(getZapdosSceneRevision({ pose: {} }), null);
 });

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Environment, Lightformer, TransformControls } from "@react-three/drei";
 import { EffectComposer, N8AO } from "@react-three/postprocessing";
@@ -11,12 +11,12 @@ import { SurfacePivotControls } from "./SurfacePivotControls";
 import { ZapdosTopOverlay } from "./ZapdosTopOverlay";
 import { buildBodyPosePayload, getSceneVisual, setSceneBodyPose } from "./zapdos-scene-api";
 import { applyObjectMatrix, getSceneMaterial, loadSceneGeometry, loadSceneTexture } from "./zapdos-scene-assets";
-import { applySceneHotkey, isSelectionClick, pickEditableBodyFromHits, shouldApplyBodyPose, type ZapdosTransformMode } from "./zapdos-scene-state";
-import { getZapdosRuntimeErrorMessage, isZapdosInactivePayload, ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE } from "./zapdos-runtime";
+import { applySceneHotkey, clearMissingSelection, isSelectionClick, pickEditableBodyFromHits, shouldApplyBodyPose, shouldReloadSceneRevision, type ZapdosTransformMode } from "./zapdos-scene-state";
+import { getZapdosRuntimeErrorMessage, getZapdosSceneRevision, isZapdosInactivePayload, ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE } from "./zapdos-runtime";
+import { useZapdosAgentTools } from "./useZapdosAgentTools";
 import { Perf } from "r3f-perf";
 import { Group, Panel } from "react-resizable-panels";
 import { CopilotChat } from "@copilotkit/react-core/v2";
-import { useGeineSimAssets } from "../../app/demo/agent-genie-sim/page";
 
 const PIVOT_PICK_ROOT = "surface-pivot-content";
 
@@ -75,13 +75,14 @@ function SceneRuntime({
   sess: string;
   selectedBody: string | null;
   setMode: (mode: ZapdosTransformMode) => void;
-  setSelectedBody: (body: string | null) => void;
+  setSelectedBody: Dispatch<SetStateAction<string | null>>;
   setSse: (value: number) => void;
   setTransformDragging: (dragging: boolean) => void;
 }) {
   const { camera, gl, raycaster, scene } = useThree();
   const bodyObjectsRef = useRef<Record<string, Object3D>>({});
   const draggingBodyRef = useRef<string | null>(null);
+  const sceneRevisionRef = useRef<string | null>(null);
   const selectedBodyRef = useRef<string | null>(null);
   const selectionPointerRef = useRef<{ pointerId: number; start: Vector2 } | null>(null);
   selectedBodyRef.current = selectedBody;
@@ -164,20 +165,15 @@ function SceneRuntime({
       onRuntimeError(getZapdosRuntimeErrorMessage(error));
       sse.close();
     };
-    sse.onmessage = event => {
-      const payload = JSON.parse(event.data) as { inactive?: boolean; pose?: Record<string, number[]>; };
-      if (isZapdosInactivePayload(payload)) return fail(ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE);
-      if (!payload.pose) return;
-      for (const [name, matrix] of Object.entries(payload.pose)) {
-        if (!shouldApplyBodyPose(name, draggingBodyRef.current)) continue;
-        const object = bodyObjectsRef.current[name];
-        if (object) applyObjectMatrix(object, matrix);
+    const clearLoadedVisuals = () => {
+      bodyObjectsRef.current = {};
+      for (const object of topLevel) {
+        root.remove(object);
       }
-      counter.record();
-      if (counter.frame > 100 || Date.now() - counter.start > 1000) setSse(counter.flush());
+      topLevel.length = 0;
     };
-    sse.onerror = () => fail(ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE);
     const loadVisuals = async () => {
+      clearLoadedVisuals();
       const payload = await getSceneVisual(sess);
       for (const body of payload.bodies) {
         const group = new Object3D();
@@ -207,14 +203,38 @@ function SceneRuntime({
           root.add(mesh);
         }
       }
+      const nextBodies = new Set(Object.keys(bodyObjectsRef.current));
+      setSelectedBody(current => clearMissingSelection(current, nextBodies));
     };
+    sse.onmessage = event => {
+      const payload = JSON.parse(event.data) as {
+        inactive?: boolean;
+        pose?: Record<string, number[]>;
+        scene_revision?: string;
+      };
+      if (isZapdosInactivePayload(payload)) return fail(ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE);
+      const nextRevision = getZapdosSceneRevision(payload);
+      if (shouldReloadSceneRevision(sceneRevisionRef.current, nextRevision)) {
+        sceneRevisionRef.current = nextRevision;
+        void loadVisuals().catch(fail);
+        return;
+      }
+      if (!payload.pose) return;
+      for (const [name, matrix] of Object.entries(payload.pose)) {
+        if (!shouldApplyBodyPose(name, draggingBodyRef.current)) continue;
+        const object = bodyObjectsRef.current[name];
+        if (object) applyObjectMatrix(object, matrix);
+      }
+      counter.record();
+      if (counter.frame > 100 || Date.now() - counter.start > 1000) setSse(counter.flush());
+    };
+    sse.onerror = () => fail(ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE);
     void loadVisuals().catch(fail);
     return () => {
       disposed = true;
       sse.close();
       clearInterval(ping);
-      bodyObjectsRef.current = {};
-      for (const object of topLevel) root.remove(object);
+      clearLoadedVisuals();
     };
   }, [onRuntimeError, scene, sess, setSse]);
 
@@ -246,7 +266,7 @@ export function ZapdosScene({ sess, onRuntimeError }: { sess: string; onRuntimeE
   const [selectedBody, setSelectedBody] = useState<string | null>(null);
   const [sse, setSse] = useState(0);
   const [transformDragging, setTransformDragging] = useState(false);
-  useGeineSimAssets()
+  useZapdosAgentTools(sess);
   return <Group>
     <Panel className="relative">
     <Canvas camera={ {

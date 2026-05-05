@@ -19,6 +19,7 @@ test("ZapdosTopOverlay renders SpaceMouse and camera save controls when settings
   const html = renderToStaticMarkup(<ZapdosTopOverlay defaultSettingsOpen sess="sess-1" sse={1} />);
 
   assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /Add benchmark table/);
   assert.match(html, /Save camera override/);
   assert.match(html, /SpaceMouse/);
 });

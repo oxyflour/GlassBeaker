@@ -21,9 +21,6 @@ import type { MeshVisual } from "./zapdos-scene-api";
 
 const stlLoader = new STLLoader();
 const objLoader = new OBJLoader();
-const textureLoader = new TextureLoader();
-const materials: Record<string, MeshStandardMaterial> = {};
-const matrix = new Matrix4();
 
 export async function loadSceneGeometry(item: MeshVisual) {
   const { size = [1, 1, 1] } = item;
@@ -60,10 +57,16 @@ export async function loadSceneGeometry(item: MeshVisual) {
   throw new Error(`Unsupported geometry type for ${item.name}`);
 }
 
-export async function loadSceneTexture(texture?: string) {
-  return texture ? await textureLoader.loadAsync(texture) : undefined;
+const textureLoader = new TextureLoader();
+const textures: Record<string, Promise<Texture>> = { };
+export function loadSceneTexture(url = ""): Promise<Texture | undefined> {
+  if (!url) {
+    return Promise.resolve(undefined);
+  }
+  return textures[url] || (textures[url] = textureLoader.loadAsync(url));
 }
 
+const materials: Record<string, MeshStandardMaterial> = {};
 export function getSceneMaterial(item: MeshVisual, image?: Texture) {
   const [r, g, b, a] = item.color ?? [1, 1, 1, 1];
   const isPlane = item.name.endsWith(".plane");
@@ -79,6 +82,7 @@ export function getSceneMaterial(item: MeshVisual, image?: Texture) {
   }));
 }
 
+const matrix = new Matrix4();
 export function applyObjectMatrix(object: Object3D, elements: number[]) {
   matrix.fromArray(elements);
   matrix.decompose(object.position, object.quaternion, object.scale);
