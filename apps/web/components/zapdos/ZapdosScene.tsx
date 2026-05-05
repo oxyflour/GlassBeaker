@@ -147,7 +147,7 @@ function SceneRuntime({
   }, [camera, gl, mode, raycaster, scene, setMode, setSelectedBody]);
 
   useEffect(() => {
-    const sse = new EventSource(`/python/zapdos/${sess}/call/start`);
+    const sse = new EventSource(`/python/zapdos/${sess}/stream/start`);
     const ping = setInterval(() => void fetch(`/python/zapdos/${sess}/call/ping`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

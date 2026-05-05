@@ -39,12 +39,20 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-    def build_pose_edit_session(self):
+    def build_physics_session(self, xml: str, body_map: dict[str, str]):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            xml_path = root / "scene.xml"
-            xml_path.write_text(
-                """
+            xml_path = Path(tmp) / "scene.xml"
+            xml_path.write_text(xml.strip(), encoding="utf-8")
+            physics = MODULE.ZapdosPhysics("sess-1", SimpleNamespace(mjcf=xml_path), body_map)
+            session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+            session.sess = "sess-1"
+            session.physics = physics
+            session.bundle = SimpleNamespace(cameras=[])
+            return session
+
+    def build_pose_edit_session(self):
+        return self.build_physics_session(
+            """
 <mujoco>
   <worldbody>
     <geom name="floor" type="plane" size="1 1 0.1"/>
@@ -56,33 +64,16 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
     </body>
   </worldbody>
 </mujoco>
-""".strip(),
-                encoding="utf-8",
-            )
-            session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-            session.sess = "sess-1"
-            session.model = mujoco.MjModel.from_xml_path(str(xml_path))  # type: ignore
-            session.data = mujoco.MjData(session.model)  # type: ignore
-            mujoco.mj_forward(session.model, session.data)  # type: ignore
-            session.assets = {}
-            session.geoms = MODULE.ZapdosSession._build_geometry(session, xml_path.parent)
-            session.body_map = {
+""",
+            {
                 "RobotLink": "MyRobot/RobotLink",
                 "Scene_Crate": "Crate",
-            }
-            session.body_labels = {
-                "RobotLink": "RobotLink",
-                "Scene_Crate": "Crate",
-            }
-            session.editable_body_names = {"Scene_Crate"}
-            return session
+            },
+        )
 
     def build_nested_pose_edit_session(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            xml_path = root / "scene.xml"
-            xml_path.write_text(
-                """
+        return self.build_physics_session(
+            """
 <mujoco>
   <worldbody>
     <body name="Scene_Crate" pos="1 2 3">
@@ -92,27 +83,13 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
     </body>
   </worldbody>
 </mujoco>
-""".strip(),
-                encoding="utf-8",
-            )
-            session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-            session.sess = "sess-1"
-            session.model = mujoco.MjModel.from_xml_path(str(xml_path))  # type: ignore
-            session.data = mujoco.MjData(session.model)  # type: ignore
-            mujoco.mj_forward(session.model, session.data)  # type: ignore
-            session.assets = {}
-            session.geoms = MODULE.ZapdosSession._build_geometry(session, xml_path.parent)
-            session.body_map = {"Scene_Crate": "Objects/Crate"}
-            session.body_labels = {"Scene_Crate": "Crate"}
-            session.editable_body_names = {"Scene_Crate"}
-            return session
+""",
+            {"Scene_Crate": "Objects/Crate"},
+        )
 
     def build_freejoint_pose_edit_session(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            xml_path = root / "scene.xml"
-            xml_path.write_text(
-                """
+        return self.build_physics_session(
+            """
 <mujoco>
   <worldbody>
     <body name="Scene_Crate" pos="1 2 3">
@@ -121,20 +98,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
     </body>
   </worldbody>
 </mujoco>
-""".strip(),
-                encoding="utf-8",
-            )
-            session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-            session.sess = "sess-1"
-            session.model = mujoco.MjModel.from_xml_path(str(xml_path))  # type: ignore
-            session.data = mujoco.MjData(session.model)  # type: ignore
-            mujoco.mj_forward(session.model, session.data)  # type: ignore
-            session.assets = {}
-            session.geoms = MODULE.ZapdosSession._build_geometry(session, xml_path.parent)
-            session.body_map = {"Scene_Crate": "Crate"}
-            session.body_labels = {"Scene_Crate": "Crate"}
-            session.editable_body_names = {"Scene_Crate"}
-            return session
+""",
+            {"Scene_Crate": "Crate"},
+        )
 
     def test_input_path_accepts_absolute_scene_usd(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,22 +176,18 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_build_geometry_only_assigns_texture_when_material_has_rgb_texture(self):
         bundle = ensure_render_bundle(MODULE.DEFAULT_ROBOT_USD, MODULE.DEFAULT_SCENE_USD)
-        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.model = mujoco.MjModel.from_xml_path(str(bundle.mjcf))  # type: ignore
-        session.assets = {}
+        physics = MODULE.ZapdosPhysics("sess-1", bundle, {})
 
-        geoms = MODULE.ZapdosSession._build_geometry(session, bundle.mjcf.parent)
-
-        textured = [geom for geom in geoms.values() if geom.kind == "mesh" and geom.texture]
-        untextured = [geom for geom in geoms.values() if geom.kind == "mesh" and not geom.texture]
+        textured = [geom for geom in physics.geoms.values() if geom.kind == "mesh" and geom.texture]
+        untextured = [geom for geom in physics.geoms.values() if geom.kind == "mesh" and not geom.texture]
 
         self.assertTrue(textured)
         self.assertTrue(untextured)
         for geom in untextured:
-            mat_id = int(session.model.geom_matid[geom.geom_id])
+            mat_id = int(physics.model.geom_matid[geom.geom_id])
             if mat_id < 0:
                 continue
-            tex_id = int(session.model.mat_texid[mat_id, int(mujoco.mjtTextureRole.mjTEXROLE_RGB)])
+            tex_id = int(physics.model.mat_texid[mat_id, int(mujoco.mjtTextureRole.mjTEXROLE_RGB)])
             self.assertLess(tex_id, 0)
 
     def test_session_init_reads_body_map_json(self):
@@ -269,13 +231,21 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                     ):
                         session = MODULE.ZapdosSession("sess-1", bundle)
 
-        self.assertEqual(session.body_map, {"Scene_Crate": "Crate"})
-        self.assertEqual(session.editable_body_names, {"Scene_Crate"})
+        self.assertIsInstance(session.physics, MODULE.ZapdosPhysics)
+        self.assertEqual(session.physics.body_map, {"Scene_Crate": "Crate"})
+        self.assertEqual(session.physics.editable_body_names, {"Scene_Crate"})
+
+    def test_session_does_not_keep_physics_passthrough_helpers(self):
+        self.assertFalse(hasattr(MODULE.ZapdosSession, "_bind_physics"))
+        self.assertNotIn("get_visual", MODULE.ZapdosSession.__dict__)
+        self.assertNotIn("get_pose", MODULE.ZapdosSession.__dict__)
+        self.assertNotIn("get_camera", MODULE.ZapdosSession.__dict__)
+        self.assertNotIn("set_body_pose", MODULE.ZapdosSession.__dict__)
 
     def test_get_visual_returns_body_groups_and_meshes(self):
         session = self.build_pose_edit_session()
 
-        payload = session.get_visual()
+        payload = session.call_once("get_visual", ())
 
         self.assertEqual(sorted(payload.keys()), ["bodies", "meshes"])
         bodies = {body["name"]: body for body in payload["bodies"]}
@@ -293,7 +263,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
     def test_get_visual_attaches_descendant_scene_mesh_to_editable_ancestor(self):
         session = self.build_nested_pose_edit_session()
 
-        payload = session.get_visual()
+        payload = session.call_once("get_visual", ())
 
         mesh = next(item for item in payload["meshes"] if item["name"] == "geom-0")
         self.assertEqual(mesh["body"], "Scene_Crate")
@@ -301,23 +271,23 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_set_body_pose_updates_editable_scene_body(self):
         session = self.build_pose_edit_session()
-        body_id = mujoco.mj_name2id(session.model, mujoco.mjtObj.mjOBJ_BODY, "Scene_Crate")  # type: ignore
+        body_id = mujoco.mj_name2id(session.physics.model, mujoco.mjtObj.mjOBJ_BODY, "Scene_Crate")  # type: ignore
 
         session.call_once("set_body_pose", ("Scene_Crate", [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]))
 
-        self.assertEqual(session.model.body_pos[body_id].tolist(), [4.0, 5.0, 6.0])
-        self.assertEqual(session.data.xpos[body_id].tolist(), [4.0, 5.0, 6.0])
+        self.assertEqual(session.physics.model.body_pos[body_id].tolist(), [4.0, 5.0, 6.0])
+        self.assertEqual(session.physics.data.xpos[body_id].tolist(), [4.0, 5.0, 6.0])
 
     def test_set_body_pose_updates_editable_freejoint_scene_body(self):
         session = self.build_freejoint_pose_edit_session()
-        body_id = mujoco.mj_name2id(session.model, mujoco.mjtObj.mjOBJ_BODY, "Scene_Crate")  # type: ignore
-        joint_id = mujoco.mj_name2id(session.model, mujoco.mjtObj.mjOBJ_JOINT, "Scene_Crate_freejoint")  # type: ignore
-        qpos_adr = int(session.model.jnt_qposadr[joint_id])
+        body_id = mujoco.mj_name2id(session.physics.model, mujoco.mjtObj.mjOBJ_BODY, "Scene_Crate")  # type: ignore
+        joint_id = mujoco.mj_name2id(session.physics.model, mujoco.mjtObj.mjOBJ_JOINT, "Scene_Crate_freejoint")  # type: ignore
+        qpos_adr = int(session.physics.model.jnt_qposadr[joint_id])
 
         session.call_once("set_body_pose", ("Scene_Crate", [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]))
 
-        self.assertEqual(session.data.xpos[body_id].tolist(), [4.0, 5.0, 6.0])
-        self.assertEqual(session.data.qpos[qpos_adr:qpos_adr + 3].tolist(), [4.0, 5.0, 6.0])
+        self.assertEqual(session.physics.data.xpos[body_id].tolist(), [4.0, 5.0, 6.0])
+        self.assertEqual(session.physics.data.qpos[qpos_adr:qpos_adr + 3].tolist(), [4.0, 5.0, 6.0])
 
     def test_set_body_pose_rejects_robot_and_unknown_bodies(self):
         session = self.build_pose_edit_session()

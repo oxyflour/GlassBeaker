@@ -7,3 +7,4 @@
 
 # Coding styles
 - Try to limit content of each file in 200 lines
+- Try to limit public member of each class in 10
