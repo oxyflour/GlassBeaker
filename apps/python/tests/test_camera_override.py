@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from utils.camera_override import apply_camera_overrides, load_camera_overrides, save_camera_overrides
-from utils.rl_cameras import RenderCamera
+from utils.zapdos.rl_cameras import RenderCamera
 from utils.user_config import read_user_config
 
 
@@ -103,3 +103,4 @@ class CameraOverrideTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

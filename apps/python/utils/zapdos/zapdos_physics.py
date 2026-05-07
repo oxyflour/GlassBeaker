@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -8,9 +8,9 @@ import mujoco  # type: ignore
 import mujoco.viewer
 import numpy as np
 from fastapi import HTTPException
-from utils.mujoco_tools import body_world_pose, decode_mesh_path, decode_texture_path
-from utils.mujoco_tools import flatten_matrix, geom_size, geom_world_pose, mesh_world_pose
-from utils.zapdos_scene_visuals import SceneVisuals, serialize_body, serialize_mesh
+from utils.zapdos.mujoco_tools import body_world_pose, decode_mesh_path, decode_texture_path
+from utils.zapdos.mujoco_tools import flatten_matrix, geom_size, geom_world_pose, mesh_world_pose
+from utils.zapdos.zapdos_scene_visuals import SceneVisuals, serialize_body, serialize_mesh
 RGB_TEXTURE_ROLE = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)  # type: ignore
 PRIMITIVE_TYPES = {
     int(mujoco.mjtGeom.mjGEOM_PLANE): "plane",  # type: ignore
@@ -214,3 +214,4 @@ class ZapdosPhysics:
         if self.viewer:
             self.viewer.close()
             self.viewer = None
+

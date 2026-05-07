@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
@@ -35,7 +35,7 @@ import xml.etree.ElementTree as ET
 from PIL import Image
 
 from pxr import Usd, UsdGeom, UsdShade
-from utils.usd_asset_cache import (
+from utils.zapdos.usd_asset_cache import (
     file_digest,
     materialize_cached_file,
     mesh_cache_path,
@@ -1910,3 +1910,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

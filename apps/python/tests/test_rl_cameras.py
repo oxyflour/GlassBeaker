@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
 
-from utils.rl_cameras import RenderCamera, camera_name_to_index
+from utils.zapdos.rl_cameras import RenderCamera, camera_name_to_index
 
 
 class RLCamerasTest(unittest.TestCase):
@@ -56,3 +56,4 @@ class RLCamerasTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

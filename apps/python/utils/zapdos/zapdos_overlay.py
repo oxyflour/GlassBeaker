@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
 from pathlib import Path
 from typing import TypedDict
 
-from utils.usd_to_mjcf import sanitize_name
+from utils.zapdos.usd_to_mjcf import sanitize_name
 
 
 class OverlayPoseOverride(TypedDict):
@@ -95,3 +95,4 @@ def _fingerprint(path: Path) -> dict[str, object]:
 def _digest(parts: list[object]) -> str:
     payload = json.dumps(parts, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+

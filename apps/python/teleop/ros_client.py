@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from utils.ros_bridge import bridge as default_bridge
-from utils.sim_env import JOINT_COMMAND_TOPIC, JOINT_STATE_TYPE, JOINT_STATES_TOPIC
+from utils.zapdos.sim_env import JOINT_COMMAND_TOPIC, JOINT_STATE_TYPE, JOINT_STATES_TOPIC
 
 CoroutineRunner = Callable[[Awaitable[Any]], Any]
 
@@ -76,3 +76,4 @@ class RosBridgeClient:
             return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=self.timeout)
 
         return run
+

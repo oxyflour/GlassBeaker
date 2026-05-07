@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import os
@@ -7,7 +7,7 @@ from typing import TypedDict
 
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from utils.zapdos_overlay import OverlayInstance, OverlayPoseOverride, OverlayState, overlay_body_name
+from utils.zapdos.zapdos_overlay import OverlayInstance, OverlayPoseOverride, OverlayState, overlay_body_name
 
 
 class SupportInfo(TypedDict):
@@ -235,3 +235,4 @@ def _require_nonempty_string(placement: dict[str, object], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"placement.{key} must be a non-empty string")
     return value
+

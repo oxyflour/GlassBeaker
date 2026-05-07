@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import importlib.util
@@ -18,7 +18,7 @@ from fastapi import Request
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from utils.rl_bundle import ensure_render_bundle
+from utils.zapdos.rl_bundle import ensure_render_bundle
 
 MODULE_PATH = REPO_ROOT / "apps" / "python" / "api" / "zapdos" / "{session}" / "{action}.py"
 SPEC = importlib.util.spec_from_file_location("zapdos_session_action_import", MODULE_PATH)
@@ -726,3 +726,4 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

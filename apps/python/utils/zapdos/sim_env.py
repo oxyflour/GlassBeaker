@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import io
@@ -20,16 +20,13 @@ import mujoco  # type: ignore
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-import os, sys
-sys.path.append(f'{__file__}/../../')
-
 if TYPE_CHECKING:
-    from utils.rl_bundle import RenderBundle
+    from utils.zapdos.rl_bundle import RenderBundle
 
-from utils.rl_cameras import camera_name_to_index, cameras_json
-from utils.renderer_ipc import request_path, response_path
+from utils.zapdos.rl_cameras import camera_name_to_index, cameras_json
+from utils.zapdos.renderer_ipc import request_path, response_path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 ISAAC_PYTHON = REPO_ROOT / "apps" / "isaac" / ".venv" / "Scripts" / "python.exe"
 ISAAC_SITE = REPO_ROOT / "apps" / "isaac" / ".venv" / "Lib" / "site-packages" / "isaacsim" / "exts" / "isaacsim.ros2.bridge"
 RENDERER_ENTRY = REPO_ROOT / "apps" / "isaac" / "rl_renderer_entry.py"
@@ -389,3 +386,4 @@ class IsaacRenderer:
 
 if __name__ == '__main__':
     print(RENDERER_ENTRY)
+

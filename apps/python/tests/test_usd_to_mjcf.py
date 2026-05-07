@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import unittest
@@ -8,7 +8,7 @@ from pathlib import Path
 import mujoco  # type: ignore
 from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
-from utils.usd_to_mjcf import USDToMJCFConverter, fmt_f, sanitize_name
+from utils.zapdos.usd_to_mjcf import USDToMJCFConverter, fmt_f, sanitize_name
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
@@ -351,3 +351,4 @@ def Xform "World"
 
 if __name__ == "__main__":
     unittest.main()
+

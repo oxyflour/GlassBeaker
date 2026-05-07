@@ -14,7 +14,7 @@ def cache_root() -> Path:
     override = os.environ.get("USD_TO_MJCF_CACHE_DIR")
     if override:
         return Path(override).resolve()
-    return Path(__file__).resolve().parents[1] / "tmp" / "usd_to_mjcf_cache"
+    return Path(__file__).resolve().parents[2] / "tmp" / "usd_to_mjcf_cache"
 
 
 def mesh_cache_path(signature: str) -> Path:

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -11,8 +11,8 @@ import numpy as np
 from pxr import Usd
 
 from utils.camera_override import apply_camera_overrides
-from utils.rl_cameras import RenderCamera, build_render_cameras
-from utils.rl_bundle_stage import (
+from utils.zapdos.rl_cameras import RenderCamera, build_render_cameras
+from utils.zapdos.rl_bundle_stage import (
     build_render_scene,
     build_robot_wrapper,
     build_scene_render,
@@ -20,11 +20,11 @@ from utils.rl_bundle_stage import (
     compose_stage_metadata,
     robot_source_map,
 )
-from utils.scene_objects import collect_scene_objects
+from utils.zapdos.scene_objects import collect_scene_objects
 from utils.user_config import read_user_config
-from utils.usd_to_mjcf import USDToMJCFConverter
+from utils.zapdos.usd_to_mjcf import USDToMJCFConverter
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_SCENE_USD = REPO_ROOT / "apps" / "python" / "assets" / "default_scene.usda"
 TMP_ROOT = REPO_ROOT / "apps" / "python" / "tmp" / "rl_bundles"
 BUNDLE_VERSION = 6
@@ -254,3 +254,4 @@ def _body_pose_map(model, body_names: list[str]) -> dict[str, tuple[list[float],
         mujoco.mju_mat2Quat(quat, np.array(data.xmat[body_id], dtype=float).reshape(-1))  # type: ignore
         pose_map[body_name] = (pos.tolist(), quat.tolist())
     return pose_map
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import sys
@@ -11,9 +11,9 @@ from pxr import Gf, Usd, UsdGeom
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from utils.zapdos_asset_library import asset_local_bounds, resolve_asset_record
-from utils.zapdos_overlay import default_overlay_state
-from utils.zapdos_overlay_scene import normalize_placement, resolve_instance_pose, write_overlay_scene
+from utils.zapdos.zapdos_asset_library import asset_local_bounds, resolve_asset_record
+from utils.zapdos.zapdos_overlay import default_overlay_state
+from utils.zapdos.zapdos_overlay_scene import normalize_placement, resolve_instance_pose, write_overlay_scene
 
 
 class ZapdosOverlaySceneTest(unittest.TestCase):
@@ -224,3 +224,4 @@ class ZapdosOverlaySceneTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

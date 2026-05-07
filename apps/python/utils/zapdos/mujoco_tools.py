@@ -81,7 +81,7 @@ async def fix_urdf_path(urdf: Path) -> Path:
     xml = urdf.read_text(encoding='utf-8')
     converted = urdf.with_suffix('.converted.v5.urdf')
     if not os.path.exists(converted):
-        script = os.path.normpath(f"{__file__}/../../../../scripts/convert_usd.py")
+        script = str(Path(__file__).resolve().parents[2] / 'scripts' / 'convert_usd.py')
         blender = os.environ.get('BLENDER_BINARY', rf"C:\Program Files\Blender Foundation\Blender 5.1\blender.exe")
         cmd = [blender, '--background', '--python', script, '--', str(urdf.parent / 'usd')]
         print('RUN: ', ' '.join([f'"{item}"' for item in cmd]))
@@ -111,7 +111,7 @@ async def create_xml(input: str):
         abs_xml = Path(input).with_suffix('.xml').resolve()
         print(f'check {abs_xml} for {input}')
         if not abs_xml.exists():
-            script = os.path.normpath(f"{__file__}/../usd_to_mjcf.py")
+            script = str(Path(__file__).with_name('usd_to_mjcf.py').resolve())
             cmd = [sys.executable, '-u', script, input, str(abs_xml), '--model-name', 'r1pro']
             print('CMD: ' + ' '.join(cmd))
             process = await asyncio.create_subprocess_exec(

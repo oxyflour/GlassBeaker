@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import tempfile
@@ -10,7 +10,7 @@ from unittest import mock
 from PIL import Image
 from pxr import Sdf, Usd, UsdGeom, UsdShade
 
-from utils.usd_to_mjcf import USDToMJCFConverter
+from utils.zapdos.usd_to_mjcf import USDToMJCFConverter
 
 
 class USDToMJCFCachingTest(unittest.TestCase):
@@ -85,7 +85,7 @@ class USDToMJCFCachingTest(unittest.TestCase):
                         "mesh_signature",
                         wraps=converter.mesh_signature,
                     ) as mesh_signature:
-                        with mock.patch("utils.usd_to_mjcf.Image.open", wraps=Image.open) as image_open:
+                        with mock.patch("utils.zapdos.usd_to_mjcf.Image.open", wraps=Image.open) as image_open:
                             converter.convert()
 
                 self.assertEqual(write_obj_mesh.call_count, 0)
@@ -95,3 +95,4 @@ class USDToMJCFCachingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

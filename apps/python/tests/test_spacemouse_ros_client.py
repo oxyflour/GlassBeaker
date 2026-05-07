@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import sys
@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
 from teleop.ros_client import RosBridgeClient  # noqa: E402
-from utils.sim_env import JOINT_COMMAND_TOPIC, JOINT_STATE_TYPE, JOINT_STATES_TOPIC  # noqa: E402
+from utils.zapdos.sim_env import JOINT_COMMAND_TOPIC, JOINT_STATE_TYPE, JOINT_STATES_TOPIC  # noqa: E402
 
 
 class _FakeBridge:
@@ -62,3 +62,4 @@ class RosBridgeClientTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

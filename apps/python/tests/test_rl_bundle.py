@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -10,10 +10,10 @@ from unittest import mock
 import mujoco  # type: ignore
 from pxr import Usd, UsdGeom
 
-import utils.rl_bundle as MODULE
-from utils.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
-from utils.rl_cameras import build_render_cameras
-from utils.usd_to_mjcf import sanitize_name
+import utils.zapdos.rl_bundle as MODULE
+from utils.zapdos.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
+from utils.zapdos.rl_cameras import build_render_cameras
+from utils.zapdos.usd_to_mjcf import sanitize_name
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
@@ -231,3 +231,4 @@ class RLBundleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

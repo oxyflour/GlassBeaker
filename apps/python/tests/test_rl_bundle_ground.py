@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import unittest
@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pxr import Usd, UsdGeom
 
-from utils.rl_bundle import ensure_render_bundle
+from utils.zapdos.rl_bundle import ensure_render_bundle
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
@@ -42,3 +42,4 @@ class RLBundleGroundTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import unittest
@@ -9,7 +9,7 @@ import mujoco  # type: ignore
 from PIL import Image
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
-from utils.usd_to_mjcf import USDToMJCFConverter
+from utils.zapdos.usd_to_mjcf import USDToMJCFConverter
 
 
 class USDToMJCFMaterialsTest(unittest.TestCase):
@@ -134,3 +134,4 @@ class USDToMJCFMaterialsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

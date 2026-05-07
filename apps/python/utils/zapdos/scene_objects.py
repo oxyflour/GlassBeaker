@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from pxr import Usd, UsdGeom
 
-from utils.usd_to_mjcf import sanitize_name
+from utils.zapdos.usd_to_mjcf import sanitize_name
 
 SKIP_OBJECT_NAMES = {"Ground"}
 TRANSPARENT_CONTAINER_NAMES = {"Objects"}
@@ -69,3 +69,4 @@ def scene_object_spec(default_path: PurePosixPath, prim) -> SceneObjectSpec | No
         sim_path=sim_path,
         body_name=sanitize_name(sim_path),
     )
+

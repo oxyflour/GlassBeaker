@@ -1,15 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
 from pxr import Gf, Usd, UsdGeom
 
-from utils.rl_cameras import (
+from utils.zapdos.rl_cameras import (
     RenderCamera,
     SCENE_CAMERA_ROOT,
     focal_length_from_fovy,
 )
-from utils.usd_to_mjcf import sanitize_name
+from utils.zapdos.usd_to_mjcf import sanitize_name
 
 SKIP_TYPES = {"Scope", "Material", "Shader", "NodeGraph", "Camera"}
 GROUND_PRIM_NAME = "Ground"
@@ -186,3 +186,4 @@ def _define_camera(stage: Usd.Stage, path: str, spec: RenderCamera) -> None:
     camera.CreateHorizontalApertureAttr(float(spec.horizontal_aperture))
     camera.CreateVerticalApertureAttr(float(spec.vertical_aperture))
     camera.CreateClippingRangeAttr(Gf.Vec2f(*spec.clipping_range))
+

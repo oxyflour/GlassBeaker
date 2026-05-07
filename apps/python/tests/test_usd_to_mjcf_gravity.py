@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import unittest
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import mujoco  # type: ignore
 
-from utils.usd_to_mjcf import USDToMJCFConverter, sanitize_name
+from utils.zapdos.usd_to_mjcf import USDToMJCFConverter, sanitize_name
 
 
 class USDToMJCFGravityTest(unittest.TestCase):
@@ -111,3 +111,4 @@ def Xform "World"
 
 if __name__ == "__main__":
     unittest.main()
+

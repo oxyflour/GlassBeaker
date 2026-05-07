@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
 from pathlib import Path
@@ -20,8 +20,9 @@ class CameraMathTest(unittest.TestCase):
         source = RENDERER_ENTRY.read_text(encoding="utf-8")
 
         self.assertIn("from utils.camera_math import fovy_from_focal_length", source)
-        self.assertNotIn("from utils.rl_cameras import fovy_from_focal_length", source)
+        self.assertNotIn("from utils.zapdos.rl_cameras import fovy_from_focal_length", source)
 
 
 if __name__ == "__main__":
     unittest.main()
+

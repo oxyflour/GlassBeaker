@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import tempfile
@@ -11,8 +11,8 @@ from unittest import mock
 
 import numpy as np
 
-from utils import sim_env as sim_env_module
-from utils.sim_env import IsaacRenderer
+from utils.zapdos import sim_env as sim_env_module
+from utils.zapdos.sim_env import IsaacRenderer
 
 
 class IsaacRendererReadTest(unittest.TestCase):
@@ -273,3 +273,4 @@ class IsaacRendererReadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

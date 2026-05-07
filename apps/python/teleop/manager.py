@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import threading
 import time
@@ -11,7 +11,7 @@ from teleop.arm_config import get_arm_config
 from teleop.device import SpaceMouseDevice, SpaceMouseSample
 from teleop.ik_controller import IKController
 from teleop.ros_client import RosBridgeClient
-from utils.rl_bundle import DEFAULT_SCENE_USD
+from utils.zapdos.rl_bundle import DEFAULT_SCENE_USD
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
@@ -212,3 +212,4 @@ class SpaceMouseManager:
     def _quat_normalize(self, quat: np.ndarray) -> np.ndarray:
         norm = np.linalg.norm(quat)
         return quat if norm == 0.0 else quat / norm
+

@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 from copy import deepcopy
 import io
 import json
@@ -14,13 +14,13 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from utils.camera_override import save_camera_overrides
 from utils.genie_sim_runtime import resolve_assets_root
-from utils.mujoco_tools import body_world_pose, flatten_matrix
-from utils.rl_cameras import camera_name_to_index, image_topic
-from utils.rl_bundle import DEFAULT_SCENE_USD, RenderBundle, ensure_render_bundle
+from utils.zapdos.mujoco_tools import body_world_pose, flatten_matrix
+from utils.zapdos.rl_cameras import camera_name_to_index, image_topic
+from utils.zapdos.rl_bundle import DEFAULT_SCENE_USD, RenderBundle, ensure_render_bundle
 from utils.ros_bridge import bridge
 from utils.session import Session, Timer
 from utils.session_registry import AsyncSessionRegistry
-from utils.sim_env import (
+from utils.zapdos.sim_env import (
     IMAGE_TYPE,
     JOINT_COMMAND_TOPIC,
     JOINT_STATES_TOPIC,
@@ -32,16 +32,16 @@ from utils.sim_env import (
     placeholder_jpeg,
     tf_message,
 )
-from utils.zapdos_asset_library import asset_local_bounds, resolve_asset_record
-from utils.zapdos_overlay import (
+from utils.zapdos.zapdos_asset_library import asset_local_bounds, resolve_asset_record
+from utils.zapdos.zapdos_overlay import (
     default_overlay_state,
     load_overlay_state,
     overlay_body_name,
     save_overlay_state,
     scene_revision,
 )
-from utils.zapdos_overlay_scene import normalize_placement, write_overlay_scene
-from utils.zapdos_physics import ZapdosPhysics
+from utils.zapdos.zapdos_overlay_scene import normalize_placement, write_overlay_scene
+from utils.zapdos.zapdos_physics import ZapdosPhysics
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
@@ -502,3 +502,4 @@ async def _name_(req: Request):
             raise HTTPException(status_code=404, detail="Asset not found")
         return FileResponse(asset)
     raise HTTPException(status_code=404, detail="Action not found")
+

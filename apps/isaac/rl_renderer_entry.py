@@ -17,13 +17,13 @@ os.environ.setdefault("SIM_REPO_ROOT", str(REPO_ROOT / "deps" / "genie_sim"))
 import geniesim.rl.renderer.rl_renderer as upstream  # type: ignore
 
 from utils.camera_math import fovy_from_focal_length
-from utils.isaac_renderer_reload import (
+from utils.zapdos.isaac_renderer_reload import (
     CameraBinding,
     rebuild_camera_bindings,
     reset_subscriber_caches,
     validate_camera_topology,
 )
-from utils.renderer_ipc import request_path, response_path
+from utils.zapdos.renderer_ipc import request_path, response_path
 
 
 def _noop_spin(self) -> None:
