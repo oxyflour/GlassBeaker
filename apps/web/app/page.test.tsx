@@ -9,6 +9,12 @@ test("HomePage keeps Agent CopilotKit and Robotic rendering but removes Agent Ge
 
   assert.match(html, /Agent CopilotKit/);
   assert.match(html, /\/demo\/agent-cpk/);
+  assert.match(html, /Agent Pi Web/);
+  assert.match(html, /\/demo\/agent-pi-web/);
+  assert.match(html, /Circuit design/);
+  assert.match(html, /\/demo\/chinatsu/);
+  assert.match(html, /Antenna design/);
+  assert.match(html, /\/demo\/nijika/);
   assert.match(html, /Robotic rendering/);
   assert.match(html, /\/demo\/zapdos/);
   assert.doesNotMatch(html, /Agent Genie Sim/);
