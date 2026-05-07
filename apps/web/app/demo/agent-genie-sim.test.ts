@@ -4,8 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-function getBuiltAppRoutes(): string[] {
-  const manifestFile = path.join(
+function getManifestFile(): string {
+  return path.join(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
     "..",
@@ -13,13 +13,22 @@ function getBuiltAppRoutes(): string[] {
     "server",
     "app-paths-manifest.json"
   );
+}
 
-  if (!existsSync(manifestFile)) {
-    return [];
-  }
+function assertBuiltRouteRemoved() {
+  const manifestFile = getManifestFile();
+
+  assert.equal(
+    existsSync(manifestFile),
+    true,
+    "Expected Next build output manifest when REQUIRE_NEXT_BUILD_OUTPUT=1"
+  );
 
   const manifest = JSON.parse(readFileSync(manifestFile, "utf8")) as Record<string, string>;
-  return Object.keys(manifest);
+  const builtRoutes = Object.keys(manifest);
+
+  assert.equal(builtRoutes.includes("/demo/agent-genie-sim"), false);
+  assert.equal(builtRoutes.includes("/demo/agent-genie-sim/page"), false);
 }
 
 test("standalone agent genie sim route file is removed", () => {
@@ -31,7 +40,7 @@ test("standalone agent genie sim route file is removed", () => {
 
   assert.equal(existsSync(routeFile), false);
 
-  const builtRoutes = getBuiltAppRoutes();
-  assert.equal(builtRoutes.includes("/demo/agent-genie-sim"), false);
-  assert.equal(builtRoutes.includes("/demo/agent-genie-sim/page"), false);
+  if (process.env.REQUIRE_NEXT_BUILD_OUTPUT === "1") {
+    assertBuiltRouteRemoved();
+  }
 });
