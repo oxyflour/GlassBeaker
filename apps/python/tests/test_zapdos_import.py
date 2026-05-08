@@ -834,6 +834,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "op-1": MODULE.SceneOperation(
                 future=MODULE.ConcurrentFuture(),
                 success_payload={"ok": True, "items": []},
+                events=queue.Queue(),
             ),
         }
         session.scene_operations_lock = threading.Lock()
@@ -862,13 +863,72 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "op-1": MODULE.SceneOperation(
                 future=future,
                 success_payload={"ok": True, "items": []},
+                events=queue.Queue(),
             ),
         }
         session.scene_operations_lock = threading.Lock()
 
         events = [chunk async for chunk in MODULE._stream_scene_operation(session, "op-1")]
 
-        self.assertEqual(events, ['event: done\ndata: {"ok": true, "items": [], "scene_revision": "rev-2"}\n\n'])
+        self.assertEqual(events, [
+            'event: started\ndata: {"op_id": "op-1"}\n\n',
+            'event: done\ndata: {"ok": true, "items": [], "scene_revision": "rev-2"}\n\n',
+        ])
+        self.assertNotIn("op-1", session.scene_operations)
+
+    async def test_stream_scene_operation_emits_started_event_before_completion(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        future = MODULE.ConcurrentFuture()
+        session.scene_operations = {
+            "op-1": MODULE.SceneOperation(
+                future=future,
+                success_payload={"ok": True, "items": []},
+                events=queue.Queue(),
+            ),
+        }
+        session.scene_operations_lock = threading.Lock()
+        stream = MODULE._stream_scene_operation(session, "op-1")
+
+        started = await asyncio.wait_for(anext(stream), timeout=0.1)
+        future.set_result({"ok": True, "items": [], "scene_revision": "rev-2"})
+        done = await asyncio.wait_for(anext(stream), timeout=1.0)
+
+        self.assertEqual(started, 'event: started\ndata: {"op_id": "op-1"}\n\n')
+        self.assertEqual(done, 'event: done\ndata: {"ok": true, "items": [], "scene_revision": "rev-2"}\n\n')
+        with self.assertRaises(StopAsyncIteration):
+            await anext(stream)
+        self.assertNotIn("op-1", session.scene_operations)
+
+    async def test_stream_scene_operation_emits_failed_event_when_background_prepare_errors_without_drain(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.overlay_completions = queue.Queue()
+        session.rebuilding_scene = True
+        session.scene_operations = {
+            "op-1": MODULE.SceneOperation(
+                future=MODULE.ConcurrentFuture(),
+                success_payload={"ok": True, "items": []},
+                events=queue.Queue(),
+            ),
+        }
+        session.scene_operations_lock = threading.Lock()
+        stream = MODULE._stream_scene_operation(session, "op-1")
+
+        started = await asyncio.wait_for(anext(stream), timeout=0.1)
+        with mock.patch.object(session, "_prepare_overlay_rebuild", side_effect=RuntimeError("subprocess crashed")):
+            session._run_overlay_rebuild_background(
+                "op-1",
+                MODULE.default_overlay_state("C:/assets"),
+                {},
+                MODULE.default_overlay_state("C:/assets"),
+                "rev-1",
+            )
+        failed = await asyncio.wait_for(anext(stream), timeout=0.2)
+
+        self.assertEqual(started, 'event: started\ndata: {"op_id": "op-1"}\n\n')
+        self.assertEqual(failed, 'event: failed\ndata: {"detail": "subprocess crashed"}\n\n')
+        self.assertFalse(session.rebuilding_scene)
+        with self.assertRaises(StopAsyncIteration):
+            await anext(stream)
         self.assertNotIn("op-1", session.scene_operations)
 
     def test_save_camera_override_persists_renderer_snapshot(self):

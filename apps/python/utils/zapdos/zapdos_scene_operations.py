@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from concurrent.futures import Future as ConcurrentFuture
 from copy import deepcopy
 from dataclasses import dataclass
 import json
+import os
 import queue
 import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -28,6 +30,8 @@ from utils.zapdos.zapdos_overlay_scene import normalize_placement
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 OVERLAY_REBUILD_SCRIPT = REPO_ROOT / "apps" / "python" / "scripts" / "prepare_zapdos_overlay_rebuild.py"
+OVERLAY_REBUILD_TIMEOUT_SEC = 120.0
+SCENE_OPERATION_POLL_SEC = 0.1
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,7 @@ class OverlayRebuildCompletion:
 class SceneOperation:
     future: ConcurrentFuture
     success_payload: dict[str, object]
+    events: queue.Queue[tuple[str, dict[str, object]]]
 
 
 def build_set_scene_assets_overlay(
@@ -134,6 +139,7 @@ def start_overlay_operation(
         session.scene_operations[op_id] = SceneOperation(
             future=ConcurrentFuture(),
             success_payload=deepcopy(success_payload),
+            events=queue.Queue(),
         )
     session.rebuilding_scene = True
     try:
@@ -158,6 +164,7 @@ def prepare_overlay_rebuild(
     support_infos: dict[str, dict[str, float]],
     previous_overlay: OverlayState,
     previous_revision: str,
+    op_id: str | None = None,
 ) -> PreparedOverlayRebuild:
     request_payload = {
         "robot_usd": str(session.robot_usd),
@@ -166,32 +173,51 @@ def prepare_overlay_rebuild(
         "next_overlay": next_overlay,
         "support_infos": support_infos,
     }
-    token = uuid4().hex
-    request_path = session.session_dir / f"overlay-rebuild-{token}.request.json"
-    response_path = session.session_dir / f"overlay-rebuild-{token}.response.json"
-    request_path.write_text(json.dumps(request_payload), encoding="utf-8")
-    try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(OVERLAY_REBUILD_SCRIPT),
-                str(request_path),
-                str(response_path),
-            ],
-            cwd=str(REPO_ROOT / "apps" / "python"),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            raise RuntimeError(detail or f"Overlay rebuild script failed with exit code {result.returncode}")
-        payload = json.loads(response_path.read_text(encoding="utf-8"))
-    finally:
-        request_path.unlink(missing_ok=True)
-        response_path.unlink(missing_ok=True)
+    stage_logger = lambda stage: emit_scene_operation_progress(
+        session,
+        op_id,
+        f"prepare_overlay_rebuild.{stage}",
+    )
+    interpreter = _resolve_overlay_rebuild_interpreter()
+    if interpreter is None:
+        emit_scene_operation_progress(session, op_id, "prepare_overlay_rebuild.inline.started")
+        payload = _run_overlay_rebuild_inline(request_payload, stage_logger)
+        emit_scene_operation_progress(session, op_id, "prepare_overlay_rebuild.inline.done")
+    else:
+        token = uuid4().hex
+        request_path = session.session_dir / f"overlay-rebuild-{token}.request.json"
+        response_path = session.session_dir / f"overlay-rebuild-{token}.response.json"
+        request_path.write_text(json.dumps(request_payload), encoding="utf-8")
+        try:
+            emit_scene_operation_progress(
+                session,
+                op_id,
+                "prepare_overlay_rebuild.subprocess.started",
+                executable=interpreter,
+            )
+            try:
+                result = _run_overlay_rebuild_subprocess(
+                    [
+                        interpreter,
+                        '-u',
+                        str(OVERLAY_REBUILD_SCRIPT),
+                        str(request_path),
+                        str(response_path),
+                    ],
+                    cwd=str(REPO_ROOT / "apps" / "python"),
+                    env=_overlay_rebuild_env(),
+                    timeout=OVERLAY_REBUILD_TIMEOUT_SEC,
+                    on_output=lambda stream, text: _emit_overlay_rebuild_output(session, op_id, stream, text),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(_overlay_rebuild_timeout_detail(exc)) from exc
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout).strip()
+                raise RuntimeError(detail or f"Overlay rebuild script failed with exit code {result.returncode}")
+            payload = json.loads(response_path.read_text(encoding="utf-8"))
+        finally:
+            request_path.unlink(missing_ok=True)
+            response_path.unlink(missing_ok=True)
     bundle_payload = payload.get("bundle")
     next_revision = payload.get("next_revision")
     if not isinstance(bundle_payload, dict) or not isinstance(next_revision, str):
@@ -215,20 +241,27 @@ def run_overlay_rebuild_background(
 ) -> None:
     ensure_scene_operation_state(session)
     try:
+        emit_scene_operation_progress(session, op_id, "prepare_overlay_rebuild.started")
         prepared = session._prepare_overlay_rebuild(
             next_overlay,
             support_infos,
             previous_overlay,
             previous_revision,
+            op_id=op_id,
         )
+        emit_scene_operation_progress(session, op_id, "prepare_overlay_rebuild.done")
         session.overlay_completions.put_nowait(OverlayRebuildCompletion(op_id=op_id, prepared=prepared))
     except Exception as err:
-        session.overlay_completions.put_nowait(OverlayRebuildCompletion(op_id=op_id, error=err))
+        _fail_scene_operation(session, op_id, err)
 
 
-def apply_prepared_overlay_rebuild(session: Any, prepared: PreparedOverlayRebuild) -> str:
+def apply_prepared_overlay_rebuild(
+    session: Any,
+    prepared: PreparedOverlayRebuild,
+    op_id: str | None = None,
+) -> str:
     try:
-        session._swap_runtime_bundle(prepared.bundle, prepared.next_overlay)
+        session._swap_runtime_bundle(prepared.bundle, prepared.next_overlay, op_id)
         save_overlay_state(session.overlay_path, prepared.next_overlay)
         session.overlay_state = prepared.next_overlay
         session.scene_revision = prepared.next_revision
@@ -270,9 +303,20 @@ def discard_scene_operation(session: Any, op_id: str) -> None:
 async def stream_scene_operation(session: Any, op_id: str):
     delivered = False
     try:
-        payload = await asyncio.wrap_future(session.scene_operation_future(op_id))
-        delivered = True
-        yield _sse_event("done", payload)
+        future = asyncio.wrap_future(session.scene_operation_future(op_id))
+        yield _sse_event("started", {"op_id": op_id})
+        while True:
+            for name, payload in _drain_scene_operation_events(session, op_id):
+                yield _sse_event(name, payload)
+            done, _ = await asyncio.wait({future}, timeout=SCENE_OPERATION_POLL_SEC)
+            for name, payload in _drain_scene_operation_events(session, op_id):
+                yield _sse_event(name, payload)
+            if not done:
+                continue
+            payload = await future
+            delivered = True
+            yield _sse_event("done", payload)
+            break
     except HTTPException:
         raise
     except Exception as exc:
@@ -303,9 +347,7 @@ def _lookup_scene_operation(session: Any, op_id: str) -> SceneOperation | None:
 def _complete_overlay_rebuild(session: Any, completion: OverlayRebuildCompletion) -> None:
     operation = _lookup_scene_operation(session, completion.op_id)
     if completion.error is not None:
-        session.rebuilding_scene = False
-        if operation is not None and not operation.future.done():
-            operation.future.set_exception(completion.error)
+        _fail_scene_operation(session, completion.op_id, completion.error)
         return
     if completion.prepared is None:
         session.rebuilding_scene = False
@@ -314,7 +356,14 @@ def _complete_overlay_rebuild(session: Any, completion: OverlayRebuildCompletion
             operation.future.set_exception(err)
         return
     try:
-        revision = session._apply_prepared_overlay_rebuild(completion.prepared)
+        emit_scene_operation_progress(session, completion.op_id, "apply_overlay_rebuild.started")
+        revision = session._apply_prepared_overlay_rebuild(completion.prepared, completion.op_id)
+        emit_scene_operation_progress(
+            session,
+            completion.op_id,
+            "apply_overlay_rebuild.done",
+            scene_revision=revision,
+        )
     except Exception as err:
         if operation is not None and not operation.future.done():
             operation.future.set_exception(err)
@@ -326,5 +375,209 @@ def _complete_overlay_rebuild(session: Any, completion: OverlayRebuildCompletion
         })
 
 
+def _fail_scene_operation(session: Any, op_id: str, error: Exception) -> None:
+    session.rebuilding_scene = False
+    operation = _lookup_scene_operation(session, op_id)
+    if operation is not None and not operation.future.done():
+        operation.future.set_exception(error)
+
+
+def emit_scene_operation_progress(
+    session: Any,
+    op_id: str | None,
+    stage: str,
+    **payload: object,
+) -> None:
+    if not op_id:
+        return
+    _queue_scene_operation_event(session, op_id, "progress", {"stage": stage, **payload})
+
+
 def _sse_event(name: str, payload: object) -> str:
     return f"event: {name}\ndata: {json.dumps(payload)}\n\n"
+
+
+def _overlay_rebuild_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("ELECTRON_RUN_AS_NODE", None)
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
+
+
+def _resolve_overlay_rebuild_interpreter() -> str | None:
+    for env_name in ("GLASSBEAKER_PYTHON_EXE", "GB_PYTHON_EXE"):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            return value
+    executable = sys.executable.strip() if sys.executable else ""
+    if not executable:
+        return None
+    name = Path(executable).name.lower()
+    if name.startswith(("python", "pypy")):
+        return executable
+    if getattr(sys, "frozen", False):
+        return None
+    return executable
+
+
+def _run_overlay_rebuild_inline(
+    request_payload: dict[str, object],
+    stage_logger: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    from utils.zapdos.zapdos_overlay_rebuild_runner import prepare_overlay_rebuild_request
+
+    return prepare_overlay_rebuild_request(request_payload, stage_logger)
+
+
+def _run_overlay_rebuild_subprocess(
+    command: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    timeout: float,
+    on_output: Callable[[str, str], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    stdout_thread = threading.Thread(
+        target=_tee_subprocess_pipe,
+        args=(process.stdout, sys.stdout, stdout_chunks, "stdout", on_output),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_tee_subprocess_pipe,
+        args=(process.stderr, sys.stderr, stderr_chunks, "stderr", on_output),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_subprocess(process)
+        _join_subprocess_threads(stdout_thread, stderr_thread)
+        exc.stdout = "".join(stdout_chunks)
+        exc.stderr = "".join(stderr_chunks)
+        raise
+    _join_subprocess_threads(stdout_thread, stderr_thread)
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=process.returncode or 0,
+        stdout="".join(stdout_chunks),
+        stderr="".join(stderr_chunks),
+    )
+
+
+def _tee_subprocess_pipe(
+    pipe,
+    sink,
+    chunks: list[str],
+    stream: str,
+    on_output: Callable[[str, str], None] | None,
+) -> None:
+    if pipe is None:
+        return
+    try:
+        for line in pipe:
+            chunks.append(line)
+            _write_subprocess_output(sink, line)
+            if on_output is not None:
+                on_output(stream, line.rstrip("\r\n"))
+    finally:
+        close = getattr(pipe, "close", None)
+        if callable(close):
+            close()
+
+
+def _drain_scene_operation_events(
+    session: Any,
+    op_id: str,
+) -> list[tuple[str, dict[str, object]]]:
+    operation = _lookup_scene_operation(session, op_id)
+    if operation is None:
+        return []
+    events: list[tuple[str, dict[str, object]]] = []
+    while True:
+        try:
+            events.append(operation.events.get_nowait())
+        except queue.Empty:
+            return events
+
+
+def _queue_scene_operation_event(
+    session: Any,
+    op_id: str,
+    name: str,
+    payload: dict[str, object],
+) -> None:
+    operation = _lookup_scene_operation(session, op_id)
+    if operation is None:
+        return
+    operation.events.put_nowait((name, payload))
+
+
+def _emit_overlay_rebuild_output(
+    session: Any,
+    op_id: str | None,
+    stream: str,
+    text: str,
+) -> None:
+    if not op_id or not text:
+        return
+    payload: dict[str, object] = {"stream": stream, "text": text}
+    if text.startswith("stage: "):
+        payload["stage"] = f"prepare_overlay_rebuild.{text.removeprefix('stage: ').strip()}"
+    else:
+        payload["stage"] = "prepare_overlay_rebuild.output"
+    _queue_scene_operation_event(session, op_id, "progress", payload)
+
+
+def _write_subprocess_output(sink, text: str) -> None:
+    try:
+        sink.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sink, "encoding", None) or "utf-8"
+        sink.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    flush = getattr(sink, "flush", None)
+    if callable(flush):
+        flush()
+
+
+def _join_subprocess_threads(*threads: threading.Thread) -> None:
+    for thread in threads:
+        thread.join(timeout=1.0)
+
+
+def _terminate_subprocess(process: subprocess.Popen[str]) -> None:
+    with contextlib.suppress(Exception):
+        process.kill()
+
+
+def _overlay_rebuild_timeout_detail(exc: subprocess.TimeoutExpired) -> str:
+    parts = [f"Overlay rebuild script timed out after {exc.timeout:.1f}s."]
+    stderr = _timeout_stream_text(exc.stderr)
+    stdout = _timeout_stream_text(exc.stdout)
+    if stderr:
+        parts.append(f"stderr:\n{stderr}")
+    if stdout:
+        parts.append(f"stdout:\n{stdout}")
+    return "\n\n".join(parts)
+
+
+def _timeout_stream_text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    if isinstance(value, str):
+        return value.strip()
+    return ""

@@ -103,7 +103,8 @@ class ZapdosSession(Session):
             infos[body] = {"top_z": top_z}
         return infos
 
-    def _swap_runtime_bundle(self, bundle: RenderBundle, overlay_state) -> None:
+    def _swap_runtime_bundle(self, bundle: RenderBundle, overlay_state, op_id: str | None = None) -> None:
+        scene_ops.emit_scene_operation_progress(self, op_id, "swap_runtime_bundle.started")
         snapshot_qpos = np.copy(self.physics.data.qpos)
         snapshot_ctrl = np.copy(self.physics.data.ctrl)
         body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
@@ -112,6 +113,7 @@ class ZapdosSession(Session):
         new_physics = None
         try:
             new_physics = ZapdosPhysics(self.sess, bundle, body_map)
+            scene_ops.emit_scene_operation_progress(self, op_id, "swap_runtime_bundle.physics_loaded")
             count = min(len(snapshot_qpos), len(new_physics.data.qpos))
             if count:
                 new_physics.data.qpos[:count] = snapshot_qpos[:count]
@@ -124,18 +126,24 @@ class ZapdosSession(Session):
                     new_physics.set_body_pose(body, pose["pos"], pose["quat"])
             reload_scene = getattr(old_renderer, "reload_scene", None)
             if callable(reload_scene):
+                scene_ops.emit_scene_operation_progress(self, op_id, "swap_runtime_bundle.reload_scene.started")
                 try:
                     reload_scene(bundle)
                 except Exception:
+                    scene_ops.emit_scene_operation_progress(self, op_id, "swap_runtime_bundle.reload_scene.failed")
                     pass
                 else:
+                    scene_ops.emit_scene_operation_progress(self, op_id, "swap_runtime_bundle.reload_scene.done")
                     self.bundle = bundle
                     self.physics = new_physics
                     self.camera_index = camera_name_to_index(bundle.cameras)
                     self.last_frame_index = {camera.name: -1 for camera in bundle.cameras}
                     old_physics.close()
+                    scene_ops.emit_scene_operation_progress(self, op_id, "swap_runtime_bundle.done")
                     return
+            scene_ops.emit_scene_operation_progress(self, op_id, "swap_runtime_bundle.new_renderer.started")
             new_renderer = IsaacRenderer(self.sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
+            scene_ops.emit_scene_operation_progress(self, op_id, "swap_runtime_bundle.new_renderer.done")
         except Exception:
             if new_physics is not None:
                 new_physics.close()
@@ -147,6 +155,7 @@ class ZapdosSession(Session):
         self.renderer = new_renderer
         old_renderer.close(stop_remote=False)
         old_physics.close()
+        scene_ops.emit_scene_operation_progress(self, op_id, "swap_runtime_bundle.done")
 
     def list_scene_bodies(self) -> dict[str, object]:
         support_infos = self._build_support_infos()
@@ -186,13 +195,14 @@ class ZapdosSession(Session):
     def _start_overlay_operation(self, next_overlay, success_payload: dict[str, object]) -> dict[str, object]:
         return scene_ops.start_overlay_operation(self, next_overlay, success_payload)
 
-    def _prepare_overlay_rebuild(self, next_overlay, support_infos, previous_overlay, previous_revision):
+    def _prepare_overlay_rebuild(self, next_overlay, support_infos, previous_overlay, previous_revision, op_id: str | None = None):
         return scene_ops.prepare_overlay_rebuild(
             self,
             next_overlay,
             support_infos,
             previous_overlay,
             previous_revision,
+            op_id=op_id,
         )
 
     def _run_overlay_rebuild_background(
@@ -212,8 +222,8 @@ class ZapdosSession(Session):
             previous_revision,
         )
 
-    def _apply_prepared_overlay_rebuild(self, prepared) -> str:
-        return scene_ops.apply_prepared_overlay_rebuild(self, prepared)
+    def _apply_prepared_overlay_rebuild(self, prepared, op_id: str | None = None) -> str:
+        return scene_ops.apply_prepared_overlay_rebuild(self, prepared, op_id)
 
     def _drain_overlay_completions(self) -> None:
         scene_ops.drain_overlay_completions(self)

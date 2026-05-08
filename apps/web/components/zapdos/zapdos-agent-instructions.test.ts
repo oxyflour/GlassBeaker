@@ -13,6 +13,10 @@ test("Zapdos additional instructions include a canonical set_scene_assets exampl
   assert.match(ZAPDOS_ADDITIONAL_INSTRUCTIONS, /world_pose/);
 });
 
+test("Zapdos additional instructions tell the agent not to retry successful scene mutations", () => {
+  assert.match(ZAPDOS_ADDITIONAL_INSTRUCTIONS, /do not call set_scene_assets again/i);
+});
+
 test("set_scene_assets tool description includes the canonical payload example", () => {
   assert.match(SET_SCENE_ASSETS_DESCRIPTION, /asset_id/i);
   assert.match(SET_SCENE_ASSETS_DESCRIPTION, /motion/i);

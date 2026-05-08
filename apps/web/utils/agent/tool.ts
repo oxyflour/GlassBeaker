@@ -9,11 +9,18 @@ export const useTool = ((args: any, deps: any) => {
             try {
                 return await handler(args)
             } catch (error) {
-                return { error }
+                return { error: formatToolError(error) }
             }
         }
     }, deps)
 }) as typeof useFrontendTool
+
+export function formatToolError(error: unknown) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error);
+}
 
 type ToolParameters = NonNullable<Parameters<typeof useFrontendTool>[0]["parameters"]>;
 type ToolParameter = ToolParameters[number];

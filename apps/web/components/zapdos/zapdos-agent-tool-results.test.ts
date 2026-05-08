@@ -1,0 +1,62 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  summarizeRemoveAssetFromSceneResult,
+  summarizeSetSceneAssetsResult,
+} from "./zapdos-agent-tool-results";
+
+test("summarizeSetSceneAssetsResult returns a clear success message for one asset", () => {
+  const result = summarizeSetSceneAssetsResult({
+    items: [{
+      asset_id: "table_000",
+      body: "Scene_table_000_01",
+      instance_id: "table_000_01",
+    }],
+    scene_revision: "rev-2",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.asset_count, 1);
+  assert.equal(
+    result.message,
+    "Replaced the Zapdos overlay with 1 asset. Created table_000_01 (table_000) on body Scene_table_000_01. Scene revision: rev-2.",
+  );
+});
+
+test("summarizeSetSceneAssetsResult lists multiple created instances", () => {
+  const result = summarizeSetSceneAssetsResult({
+    items: [
+      {
+        asset_id: "table_000",
+        body: "Scene_table_000_01",
+        instance_id: "table_000_01",
+      },
+      {
+        asset_id: "mug_000",
+        body: "Scene_mug_000_01",
+        instance_id: "mug_000_01",
+      },
+    ],
+    scene_revision: "rev-3",
+  });
+
+  assert.equal(result.asset_count, 2);
+  assert.equal(
+    result.message,
+    "Replaced the Zapdos overlay with 2 assets. Created table_000_01 (table_000) on body Scene_table_000_01; mug_000_01 (mug_000) on body Scene_mug_000_01. Scene revision: rev-3.",
+  );
+});
+
+test("summarizeRemoveAssetFromSceneResult returns a clear success message", () => {
+  const result = summarizeRemoveAssetFromSceneResult({
+    instance_id: "table_000_01",
+    scene_revision: "rev-4",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.message,
+    "Removed overlay asset table_000_01. Scene revision: rev-4.",
+  );
+});

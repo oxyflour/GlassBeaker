@@ -5,6 +5,10 @@ import { postToolJson } from "../genie-sim/tool-client";
 import { ZAPDOS_SET_SCENE_ASSETS_EXAMPLE } from "./zapdos-agent-examples";
 import { ZAPDOS_ADDITIONAL_INSTRUCTIONS } from "./zapdos-agent-instructions";
 import {
+  summarizeRemoveAssetFromSceneResult,
+  summarizeSetSceneAssetsResult,
+} from "./zapdos-agent-tool-results";
+import {
   listSceneBodiesToolArgsSchema,
   removeAssetFromSceneToolArgsSchema,
   searchAssetsToolArgsSchema,
@@ -51,7 +55,7 @@ export function useZapdosAgentTools(sess: string) {
     description: SET_SCENE_ASSETS_DESCRIPTION,
     followUp: true,
     parameters: setSceneAssetsToolArgsSchema,
-    handler: async (args) => await setSceneAssets(sess, args),
+    handler: async (args) => summarizeSetSceneAssetsResult(await setSceneAssets(sess, args)),
   }, [sess]);
 
   useTypedTool({
@@ -60,7 +64,7 @@ export function useZapdosAgentTools(sess: string) {
     followUp: true,
     parameters: removeAssetFromSceneToolArgsSchema,
     handler: async ({ instance_id }) => {
-      return await removeAssetFromScene(sess, instance_id);
+      return summarizeRemoveAssetFromSceneResult(await removeAssetFromScene(sess, instance_id));
     },
   }, [sess]);
 }

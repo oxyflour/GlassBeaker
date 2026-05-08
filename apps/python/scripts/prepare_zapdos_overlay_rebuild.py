@@ -8,44 +8,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from utils.genie_sim_runtime import resolve_assets_root
-from utils.zapdos.rl_bundle import ensure_render_bundle
-from utils.zapdos.zapdos_asset_library import asset_local_bounds
-from utils.zapdos.zapdos_overlay import scene_revision
-from utils.zapdos.zapdos_overlay_scene import write_overlay_scene
+from utils.zapdos.zapdos_overlay_rebuild_runner import prepare_overlay_rebuild_request
+
+
+def _log_stage(stage: str) -> None:
+    print(f"stage: {stage}", file=sys.stderr, flush=True)
 
 
 def prepare_overlay_rebuild(request: dict[str, object]) -> dict[str, object]:
-    next_overlay = request["next_overlay"]
-    if not isinstance(next_overlay, dict):
-        raise TypeError("next_overlay must be an object")
-    support_infos = request["support_infos"]
-    if not isinstance(support_infos, dict):
-        raise TypeError("support_infos must be an object")
-    robot_usd = Path(str(request["robot_usd"]))
-    base_scene_usd = Path(str(request["base_scene_usd"]))
-    composed_scene_usd = Path(str(request["composed_scene_usd"]))
-    assets_root = resolve_assets_root(next_overlay.get("assets_root"))
-    instances = next_overlay.get("instances")
-    if not isinstance(instances, list):
-        raise TypeError("next_overlay.instances must be a list")
-    bounds_by_instance = {
-        str(item["id"]): asset_local_bounds(assets_root / str(item["url"]))
-        for item in instances
-    }
-    write_overlay_scene(
-        composed_scene_usd,
-        base_scene_usd,
-        assets_root,
-        next_overlay,
-        support_infos=support_infos,
-        asset_bounds_by_instance=bounds_by_instance,
-    )
-    bundle = ensure_render_bundle(robot_usd, composed_scene_usd)
-    return {
-        "bundle": bundle.to_json(),
-        "next_revision": scene_revision(base_scene_usd, next_overlay),
-    }
+    return prepare_overlay_rebuild_request(request, _log_stage)
 
 
 def main(argv: list[str] | None = None) -> int:
