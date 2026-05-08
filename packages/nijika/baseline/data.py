@@ -69,6 +69,61 @@ def _sample_points(vertices: np.ndarray, n_points: int, seed: int) -> np.ndarray
     return vertices[indices].astype(np.float32)
 
 
+def _sample_surface_points(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    ports: np.ndarray,
+    n_points: int,
+    seed: int,
+) -> np.ndarray:
+    """Sample unique points on triangle mesh surface, biased toward ports and edges."""
+    rng = np.random.default_rng(seed)
+    tri_verts = vertices[faces]
+    v0, v1, v2 = tri_verts[:, 0], tri_verts[:, 1], tri_verts[:, 2]
+    tri_centers = (v0 + v1 + v2) / 3.0
+    tri_areas = np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1) / 2.0
+
+    port_centers = (ports[:, :3] + ports[:, 3:]) / 2.0
+    dist_to_ports = np.min(
+        [np.linalg.norm(tri_centers - pc, axis=1) for pc in port_centers], axis=0
+    )
+    port_weight = np.exp(-dist_to_ports / 0.02)
+
+    bbox_min = tri_centers.min(axis=0)
+    bbox_max = tri_centers.max(axis=0)
+    dist_to_edges = np.min(
+        [
+            np.abs(tri_centers[:, 0] - bbox_min[0]),
+            np.abs(tri_centers[:, 0] - bbox_max[0]),
+            np.abs(tri_centers[:, 1] - bbox_min[1]),
+            np.abs(tri_centers[:, 1] - bbox_max[1]),
+        ],
+        axis=0,
+    )
+    edge_weight = np.exp(-dist_to_edges / 0.01)
+
+    importance = tri_areas * (1.0 + 4.0 * port_weight + 2.0 * edge_weight)
+    probs = importance / importance.sum()
+
+    n_tris = len(faces)
+    replace = n_tris < n_points
+    tri_idx = rng.choice(n_tris, size=n_points, replace=replace, p=probs)
+
+    r1 = rng.random(n_points)
+    r2 = rng.random(n_points)
+    swap = r1 + r2 > 1.0
+    r1[swap] = 1.0 - r1[swap]
+    r2[swap] = 1.0 - r2[swap]
+
+    sv = vertices[faces[tri_idx]]
+    points = (
+        sv[:, 0]
+        + r1[:, None] * (sv[:, 1] - sv[:, 0])
+        + r2[:, None] * (sv[:, 2] - sv[:, 0])
+    )
+    return points.astype(np.float32)
+
+
 def _stable_seed(name: str) -> int:
     return sum((idx + 1) * ord(char) for idx, char in enumerate(name)) % (2**32)
 
@@ -101,7 +156,13 @@ def _build_input_sample(
     if len(vertices) == 0:
         raise ValueError(f"No mesh vertices in {config_path}")
     ports = _load_ports(config["ports"])
-    points = _sample_points(vertices, n_points=n_points, seed=_stable_seed(config_path.stem))
+    faces = np.asarray(config["mesh"].get("faces", []), dtype=np.int32)
+    if len(faces) > 0 and len(ports) > 0:
+        points = _sample_surface_points(
+            vertices, faces, ports, n_points=n_points, seed=_stable_seed(config_path.stem)
+        )
+    else:
+        points = _sample_points(vertices, n_points=n_points, seed=_stable_seed(config_path.stem))
     center = vertices.mean(axis=0)
     size = vertices.max(axis=0) - vertices.min(axis=0)
     geom = np.concatenate([center, size]).astype(np.float32)
