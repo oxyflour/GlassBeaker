@@ -180,4 +180,6 @@ def evaluate(
     truth_all = torch.cat(truths, dim=0)
     metrics = summarize_prediction_metrics(pred_all, truth_all, port_count=port_count)
     metrics["loss"] = float(np.mean(losses))
+    metrics["reciprocity_mse"] = float(reciprocity_loss(pred_all, port_count).item())
+    metrics["passivity_mse"] = float(passivity_loss(pred_all, port_count).item())
     return metrics, pred_all, truth_all

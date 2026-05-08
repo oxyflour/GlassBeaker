@@ -49,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-epochs", type=int, default=10)
     parser.add_argument("--reciprocity-weight", type=float, default=0.0, help="Weight for reciprocity constraint loss (S_ij = S_ji)")
     parser.add_argument("--passivity-weight", type=float, default=0.0, help="Weight for passivity constraint loss (|S| <= 1)")
+    parser.add_argument("--physics", action="store_true", default=False, help="Enable physics-aware training: sets reciprocity/passivity weights to 0.1 and uses physics-combined model scoring")
     return parser.parse_args()
 
 def set_seed(seed: int) -> None:
@@ -111,7 +112,15 @@ def build_dataset(tensors: dict[str, torch.Tensor], target: torch.Tensor, use_gr
 
 def main() -> None:
     args = parse_args()
+    if args.physics:
+        if args.reciprocity_weight == 0.0:
+            args.reciprocity_weight = 0.1
+        if args.passivity_weight == 0.0:
+            args.passivity_weight = 0.1
     set_seed(args.seed)
+    # Disable memory-efficient SDP to avoid NaN with fully-masked tokens in transformer
+    if torch.cuda.is_available():
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loss_config = build_loss_config(args)
     final_loss_config = build_final_loss_config(args, loss_config)
@@ -202,14 +211,19 @@ def main() -> None:
             loss_config=epoch_loss_config,
         )
         score = float(val_metrics["db_mae"])
+        if args.physics:
+            score = score + 0.5 * (float(val_metrics["reciprocity_mse"]) * 100.0 + float(val_metrics["passivity_mse"]) * 100.0)
         if score < best["score"]:
-            best = {"epoch": epoch, "score": score, "state": copy.deepcopy(model.state_dict()), "metrics": val_metrics}
+            best = {"epoch": epoch, "score": score, "state": copy.deepcopy(model.state_dict()), "opt_state": copy.deepcopy(optimizer.state_dict()), "metrics": val_metrics}
         if epoch == 1 or epoch % 50 == 0:
-            print(
-                f"epoch={epoch:03d} train_loss={np.mean(batch_losses):.4f} "
-                f"val_rmse={val_metrics['rmse']:.4f} val_db_mae={val_metrics['db_mae']:.4f} "
-                f"lr={optimizer.param_groups[0]['lr']:.2e} device={device.type}"
-            )
+            parts = [
+                f"epoch={epoch:03d} train_loss={np.mean(batch_losses):.4f}",
+                f"val_rmse={val_metrics['rmse']:.4f} val_db_mae={val_metrics['db_mae']:.4f}",
+                f"lr={optimizer.param_groups[0]['lr']:.2e} device={device.type}",
+            ]
+            if args.physics:
+                parts.insert(-1, f"recip={val_metrics['reciprocity_mse']:.2e} passiv={val_metrics['passivity_mse']:.2e}")
+            print(" ".join(parts))
     model.load_state_dict(best["state"])
     final_metrics, val_pred, val_truth = evaluate(
         model=model,
@@ -241,6 +255,8 @@ def main() -> None:
     torch.save(
         {
             "state_dict": model.state_dict(),
+            "opt_state_dict": optimizer.state_dict(),
+            "epoch": best["epoch"],
             "freq_grid": bundle.freq_grid.tolist(),
             "port_count": bundle.port_count,
             "target_mean": target_mean.squeeze(0).squeeze(0).tolist(),
@@ -257,14 +273,6 @@ def main() -> None:
         },
         model_path,
     )
-    # Compute physics constraint violation metrics on validation set
-    from baseline.training_utils import reciprocity_loss, passivity_loss
-    model.eval()
-    with torch.no_grad():
-        val_pred_denorm = val_pred  # Already denormalized in evaluate()
-        recip_violation = reciprocity_loss(val_pred_denorm, bundle.port_count).item()
-        pass_violation = passivity_loss(val_pred_denorm, bundle.port_count).item()
-
     metrics = {
         "device": device.type,
         "train_samples": len(train_records),
@@ -274,8 +282,8 @@ def main() -> None:
         "val_rmse": final_metrics["rmse"],
         "val_db_mae": final_metrics["db_mae"],
         "val_db_rmse": final_metrics["db_rmse"],
-        "val_reciprocity_mse": recip_violation,
-        "val_passivity_mse": pass_violation,
+        "val_reciprocity_mse": final_metrics["reciprocity_mse"],
+        "val_passivity_mse": final_metrics["passivity_mse"],
         "example_sample": example.name,
         "example_rmse": final_metrics["sample_rmse"][0],
         "example_db_mae": final_metrics["sample_db_mae"][0],
