@@ -79,6 +79,30 @@ export function loadSceneTexture(url = ""): Promise<Texture | undefined> {
   return textures[url] || (textures[url] = textureLoader.loadAsync(url));
 }
 
+export interface LoadedSceneMeshResource {
+  item: MeshVisual;
+  geometry: BufferGeometry;
+  image?: Texture;
+}
+
+export async function loadSceneMeshResources(
+  items: MeshVisual[],
+  loaders: {
+    loadGeometry?: typeof loadSceneGeometry;
+    loadTexture?: typeof loadSceneTexture;
+  } = {},
+): Promise<LoadedSceneMeshResource[]> {
+  const loadGeometry = loaders.loadGeometry ?? loadSceneGeometry;
+  const loadTexture = loaders.loadTexture ?? loadSceneTexture;
+  return await Promise.all(items.map(async (item) => {
+    const [geometry, image] = await Promise.all([
+      loadGeometry(item),
+      loadTexture(item.texture),
+    ]);
+    return { item, geometry, image };
+  }));
+}
+
 const materials: Record<string, MeshStandardMaterial> = {};
 export function getSceneMaterial(item: MeshVisual, image?: Texture) {
   const [r, g, b, a] = item.color ?? [1, 1, 1, 1];

@@ -59,6 +59,7 @@ function buildToolParameter(name: string, field: z.ZodTypeAny): ToolParameter {
   if (schema instanceof z.ZodString) return { name, type: "string", required, description };
   if (schema instanceof z.ZodNumber) return { name, type: "number", required, description };
   if (schema instanceof z.ZodBoolean) return { name, type: "boolean", required, description };
+  if (schema instanceof z.ZodArray) return { name, type: getArrayParameterType(name, schema.element), required, description };
   if (schema instanceof z.ZodObject) return { name, type: "object", required, description, attributes: buildToolParametersFromZod(schema) };
   if (schema instanceof z.ZodDiscriminatedUnion) return { name, type: "object", required, description, attributes: mergeObjectVariants([...schema.options]) };
   if (schema instanceof z.ZodTuple) return { name, type: `${getPrimitiveArrayItemType(name, schema.items)}[]`, required, description };
@@ -116,6 +117,17 @@ function getPrimitiveArrayItemType(name: string, items: readonly z.ZodTypeAny[])
   if (first instanceof z.ZodString) return "string";
   if (first instanceof z.ZodNumber) return "number";
   return "boolean";
+}
+
+function getArrayParameterType(name: string, element: z.ZodTypeAny) {
+  const item = unwrapSchema(element);
+  if (item instanceof z.ZodString || item instanceof z.ZodEnum || (item instanceof z.ZodLiteral && typeof item._def.value === "string")) {
+    return "string[]";
+  }
+  if (item instanceof z.ZodNumber) return "number[]";
+  if (item instanceof z.ZodBoolean) return "boolean[]";
+  if (item instanceof z.ZodObject || item instanceof z.ZodDiscriminatedUnion) return "object[]";
+  throw new Error(`Unsupported array item schema for tool parameter "${name}"`);
 }
 
 function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {

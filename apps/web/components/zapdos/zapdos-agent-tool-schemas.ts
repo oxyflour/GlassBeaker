@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { ZAPDOS_PLACEMENT_GUIDE, ZAPDOS_SET_SCENE_ASSETS_EXAMPLE } from "./zapdos-agent-examples";
+
 const xySchema = z.tuple([z.number(), z.number()]);
 const posSchema = z.tuple([z.number(), z.number(), z.number()]);
 const quatSchema = z.tuple([z.number(), z.number(), z.number(), z.number()]);
@@ -34,7 +36,7 @@ export const placementSchema = z.discriminatedUnion("kind", [
   floorAtXyPlacementSchema,
   onTopOfBodyPlacementSchema,
   worldPosePlacementSchema,
-]).describe("Placement payload using floor_at_xy, on_top_of_body, or world_pose.");
+]).describe(ZAPDOS_PLACEMENT_GUIDE);
 
 export const searchAssetsToolArgsSchema = z.object({
   query: z.string().trim().min(1).describe("English asset query or exact asset id."),
@@ -43,10 +45,20 @@ export const searchAssetsToolArgsSchema = z.object({
 
 export const listSceneBodiesToolArgsSchema = z.object({}).strict();
 
-export const addAssetToSceneToolArgsSchema = z.object({
+export const sceneAssetSchema = z.object({
   asset_id: z.string().trim().min(1).describe("Exact asset id from search_assets."),
   motion: z.enum(["static", "dynamic"]).describe("Use static or dynamic."),
   placement: placementSchema,
+}).strict().describe('Each assets[] item must be { asset_id, motion, placement }.');
+
+export const setSceneAssetsToolArgsSchema = z.object({
+  assets: z.array(sceneAssetSchema).min(1).describe([
+    "Full replacement asset list for the current Zapdos overlay scene.",
+    'Each item must include asset_id, motion, and placement.',
+    ZAPDOS_PLACEMENT_GUIDE,
+    "Example:",
+    ZAPDOS_SET_SCENE_ASSETS_EXAMPLE,
+  ].join("\n")),
 }).strict();
 
 export const removeAssetFromSceneToolArgsSchema = z.object({
@@ -54,5 +66,6 @@ export const removeAssetFromSceneToolArgsSchema = z.object({
 }).strict();
 
 export type SearchAssetsToolArgs = z.infer<typeof searchAssetsToolArgsSchema>;
-export type AddAssetToSceneToolArgs = z.infer<typeof addAssetToSceneToolArgsSchema>;
+export type SceneAsset = z.infer<typeof sceneAssetSchema>;
+export type SetSceneAssetsToolArgs = z.infer<typeof setSceneAssetsToolArgsSchema>;
 export type RemoveAssetFromSceneToolArgs = z.infer<typeof removeAssetFromSceneToolArgsSchema>;

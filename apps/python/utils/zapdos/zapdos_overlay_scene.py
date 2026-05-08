@@ -82,7 +82,7 @@ def resolve_instance_pose(
         }
     quat = _placement_quat(placement)
     payload_quat = _payload_quat(placement)
-    min_z = _rotated_asset_min_z(asset_bounds, _quat_mul(quat, payload_quat))
+    min_z, _ = _rotated_asset_z_bounds(asset_bounds, _quat_mul(quat, payload_quat))
     if placement["kind"] == "floor_at_xy":
         return {
             "pos": [
@@ -117,16 +117,21 @@ def write_overlay_scene(
     base_stage = Usd.Stage.Open(base_scene_usd.as_posix())
     up_axis = UsdGeom.GetStageUpAxis(base_stage) if base_stage is not None else UsdGeom.Tokens.z
     meters_per_unit = UsdGeom.GetStageMetersPerUnit(base_stage) if base_stage is not None else 1.0
+    resolved_support_infos = {
+        body: {"top_z": float(info["top_z"])}
+        for body, info in support_infos.items()
+    }
     stage = Usd.Stage.CreateNew(output_path.as_posix())
     UsdGeom.SetStageUpAxis(stage, up_axis)
     UsdGeom.SetStageMetersPerUnit(stage, float(meters_per_unit))
     world = UsdGeom.Xform.Define(stage, "/World")
     world.GetPrim().GetReferences().AddReference(str(base_scene_usd.resolve()))
     for instance in overlay_state["instances"]:
+        asset_bounds = asset_bounds_by_instance[instance["id"]]
         pose = resolve_instance_pose(
             instance,
-            asset_bounds=asset_bounds_by_instance[instance["id"]],
-            support_infos=support_infos,
+            asset_bounds=asset_bounds,
+            support_infos=resolved_support_infos,
             pose_overrides=overlay_state["pose_overrides"],
         )
         object_path = Sdf.Path(f"/World/{instance['id']}")
@@ -157,6 +162,10 @@ def write_overlay_scene(
         )
         if instance["motion"] == "dynamic":
             object_prim.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Double).Set(1.0)
+        _, max_z = _rotated_asset_z_bounds(asset_bounds, _quat_mul(pose["quat"], pose["payload_quat"]))
+        resolved_support_infos[overlay_body_name(instance["id"])] = {
+            "top_z": float(pose["pos"][2]) + max_z,
+        }
     stage.SetDefaultPrim(world.GetPrim())
     stage.GetRootLayer().Save()
     return output_path
@@ -187,11 +196,12 @@ def _payload_quat(placement: dict[str, object]) -> list[float]:
     return [1.0, 0.0, 0.0, 0.0]
 
 
-def _rotated_asset_min_z(asset_bounds: dict[str, list[float]], quat: list[float]) -> float:
+def _rotated_asset_z_bounds(asset_bounds: dict[str, list[float]], quat: list[float]) -> tuple[float, float]:
     w, x, y, z = _normalize_quat(quat)
     mins = asset_bounds["min"]
     maxs = asset_bounds["max"]
     min_z = math.inf
+    max_z = -math.inf
     for corner_x in (mins[0], maxs[0]):
         for corner_y in (mins[1], maxs[1]):
             for corner_z in (mins[2], maxs[2]):
@@ -201,7 +211,8 @@ def _rotated_asset_min_z(asset_bounds: dict[str, list[float]], quat: list[float]
                     + (1.0 - 2.0 * (x * x + y * y)) * float(corner_z)
                 )
                 min_z = min(min_z, rot_z)
-    return float(min_z)
+                max_z = max(max_z, rot_z)
+    return float(min_z), float(max_z)
 
 
 def _normalize_quat(quat: list[float]) -> tuple[float, float, float, float]:

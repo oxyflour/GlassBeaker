@@ -10,7 +10,8 @@ import { SparkRendererBridge, SparkSplat } from "../../utils/three/splat";
 import { SurfacePivotControls } from "./SurfacePivotControls";
 import { ZapdosTopOverlay } from "./ZapdosTopOverlay";
 import { buildBodyPosePayload, getSceneVisual, setSceneBodyPose } from "./zapdos-scene-api";
-import { applyObjectMatrix, getSceneMaterial, loadSceneGeometry, loadSceneTexture } from "./zapdos-scene-assets";
+import { applyObjectMatrix, getSceneMaterial, loadSceneMeshResources } from "./zapdos-scene-assets";
+import { ENABLE_ZAPDOS_CAMERAS } from "./zapdos-scene-flags";
 import { applySceneHotkey, clearMissingSelection, isSelectionClick, pickEditableBodyFromHits, shouldApplyBodyPose, shouldReloadSceneRevision, type ZapdosTransformMode } from "./zapdos-scene-state";
 import { getZapdosRuntimeErrorMessage, getZapdosSceneRevision, isZapdosInactivePayload, ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE } from "./zapdos-runtime";
 import { useZapdosAgentTools } from "./useZapdosAgentTools";
@@ -185,9 +186,8 @@ function SceneRuntime({
         topLevel.push(group);
         root.add(group);
       }
-      for (const item of payload.meshes) {
-        const geometry = await loadSceneGeometry(item);
-        const image = await loadSceneTexture(item.texture);
+      const loadedMeshes = await loadSceneMeshResources(payload.meshes);
+      for (const { geometry, image, item } of loadedMeshes) {
         const mesh = new Mesh(geometry, getSceneMaterial(item, image));
         mesh.castShadow = !item.name.endsWith(".plane");
         mesh.receiveShadow = true;
@@ -297,7 +297,7 @@ export function ZapdosScene({ sess, onRuntimeError }: { sess: string; onRuntimeE
         setSse={ setSse }
         setTransformDragging={ setTransformDragging } />
     </Canvas>
-    <Cameras onRuntimeError={ onRuntimeError } sess={ sess } />
+    {ENABLE_ZAPDOS_CAMERAS ? <Cameras onRuntimeError={ onRuntimeError } sess={ sess } /> : null}
     <ZapdosTopOverlay mode={ mode } selectedBody={ selectedBody } sess={ sess } sse={ sse } />
     </Panel>
     <Panel maxSize="33%">

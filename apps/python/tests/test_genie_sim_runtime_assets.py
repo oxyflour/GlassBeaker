@@ -66,6 +66,50 @@ class GenieSimRuntimeAssetsTest(unittest.TestCase):
             self.assertEqual(result["objects"][0]["assetId"], "table_001")
             self.assertTrue(Path(result["sceneUsdaPath"]).exists())
 
+    def test_load_assets_module_caches_by_root_and_rebinds_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = getattr(runtime, "_load_assets_module_cached", None)
+            if cache is not None:
+                cache.cache_clear()
+            sys.modules.pop("assets", None)
+            sys.modules.pop("geniesim.assets", None)
+
+            def make_counted_assets_root(name: str, asset_id: str) -> Path:
+                assets_root = Path(tmp) / name
+                aligned = assets_root / "objects" / asset_id
+                aligned.mkdir(parents=True)
+                (aligned / "Aligned.usda").write_text("#usda 1.0\n", encoding="utf-8")
+                counter_path = assets_root / "counter.txt"
+                (assets_root / "__init__.py").write_text(
+                    "\n".join(
+                        [
+                            "from pathlib import Path",
+                            "ASSETS_PATH = Path(__file__).parent",
+                            "COUNTER_PATH = ASSETS_PATH / 'counter.txt'",
+                            "count = int(COUNTER_PATH.read_text(encoding='utf-8')) if COUNTER_PATH.exists() else 0",
+                            "COUNTER_PATH.write_text(str(count + 1), encoding='utf-8')",
+                            f"ASSETS_INDEX = {{'{asset_id}': {{'url': 'objects/{asset_id}/Aligned.usda', 'description': {{}}}}}}",
+                            f"ASSETS_INDEX_HASH = '{asset_id}-hash'",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                return assets_root
+
+            assets_root_a = make_counted_assets_root("GenieSimAssetsA", "table_001")
+            assets_root_b = make_counted_assets_root("GenieSimAssetsB", "box_002")
+
+            module_a = runtime.load_assets_module(assets_root_a)
+            module_b = runtime.load_assets_module(assets_root_b)
+            module_a_again = runtime.load_assets_module(assets_root_a)
+
+            self.assertIs(module_a_again, module_a)
+            self.assertEqual((assets_root_a / "counter.txt").read_text(encoding="utf-8"), "1")
+            self.assertEqual((assets_root_b / "counter.txt").read_text(encoding="utf-8"), "1")
+            self.assertIn("table_001", module_a_again.ASSETS_INDEX)
+            self.assertIs(sys.modules["assets"], module_a_again)
+            self.assertIs(sys.modules["geniesim.assets"], module_a_again)
+
 
 if __name__ == "__main__":
     unittest.main()

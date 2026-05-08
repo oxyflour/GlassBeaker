@@ -2,15 +2,23 @@ import { useCopilotAdditionalInstructions } from "@copilotkit/react-core";
 
 import { SEARCH_ASSETS_DESCRIPTION } from "../genie-sim";
 import { postToolJson } from "../genie-sim/tool-client";
+import { ZAPDOS_SET_SCENE_ASSETS_EXAMPLE } from "./zapdos-agent-examples";
 import { ZAPDOS_ADDITIONAL_INSTRUCTIONS } from "./zapdos-agent-instructions";
 import {
-  addAssetToSceneToolArgsSchema,
   listSceneBodiesToolArgsSchema,
   removeAssetFromSceneToolArgsSchema,
   searchAssetsToolArgsSchema,
+  setSceneAssetsToolArgsSchema,
 } from "./zapdos-agent-tool-schemas";
-import { addAssetToScene, listSceneBodies, removeAssetFromScene } from "./zapdos-tool-api";
+import { listSceneBodies, removeAssetFromScene, setSceneAssets } from "./zapdos-tool-api";
 import { useTypedTool } from "../../utils/agent/tool";
+
+export const SET_SCENE_ASSETS_DESCRIPTION = [
+  "Replace the session-local Zapdos overlay asset list and rebuild the runtime once.",
+  'Pass { assets: [{ asset_id, motion, placement }] } where placement uses floor_at_xy, on_top_of_body, or world_pose.',
+  "Example:",
+  ZAPDOS_SET_SCENE_ASSETS_EXAMPLE,
+].join("\n");
 
 export function useZapdosAgentTools(sess: string) {
   useCopilotAdditionalInstructions({ instructions: ZAPDOS_ADDITIONAL_INSTRUCTIONS }, [sess]);
@@ -39,11 +47,11 @@ export function useZapdosAgentTools(sess: string) {
   }, [sess]);
 
   useTypedTool({
-    name: "add_asset_to_scene",
-    description: "Insert a session-local asset into the active Zapdos scene and rebuild the runtime.",
+    name: "set_scene_assets",
+    description: SET_SCENE_ASSETS_DESCRIPTION,
     followUp: true,
-    parameters: addAssetToSceneToolArgsSchema,
-    handler: async (args) => await addAssetToScene(sess, args),
+    parameters: setSceneAssetsToolArgsSchema,
+    handler: async (args) => await setSceneAssets(sess, args),
   }, [sess]);
 
   useTypedTool({

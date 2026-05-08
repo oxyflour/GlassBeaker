@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 MODULE_PATH = REPO_ROOT / "apps" / "python" / "api" / "zapdos" / "{session}" / "{action}.py"
 SPEC = importlib.util.spec_from_file_location("zapdos_session_action", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)

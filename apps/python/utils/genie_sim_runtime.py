@@ -48,8 +48,9 @@ def resolve_assets_root(assets_root: str | Path | None = None) -> Path:
     return DEFAULT_ASSETS_ROOT.resolve()
 
 
-def load_assets_module(assets_root: str | Path | None = None):
-    root = resolve_assets_root(assets_root)
+@lru_cache(maxsize=8)
+def _load_assets_module_cached(assets_root: str):
+    root = Path(assets_root)
     init_file = root / "__init__.py"
     if not init_file.exists():
         raise FileNotFoundError(f"GenieSim assets entry not found: {init_file}")
@@ -58,6 +59,11 @@ def load_assets_module(assets_root: str | Path | None = None):
         raise ImportError(f"Failed to create module spec for {init_file}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def load_assets_module(assets_root: str | Path | None = None):
+    module = _load_assets_module_cached(str(resolve_assets_root(assets_root)))
     sys.modules["assets"] = module
     sys.modules["geniesim.assets"] = module
     return module

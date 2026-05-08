@@ -221,6 +221,59 @@ class ZapdosOverlaySceneTest(unittest.TestCase):
             self.assertEqual(table.GetAttribute("xformOp:orient").Get().GetReal(), 1.0)
             self.assertAlmostEqual(payload.GetAttribute("xformOp:orient").Get().GetReal(), math.sqrt(0.5), places=6)
 
+    def test_write_overlay_scene_supports_on_top_of_body_for_earlier_overlay_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_root = self.make_assets_root(tmp)
+            base_scene = Path(tmp) / "scene.usda"
+            stage = Usd.Stage.CreateNew(base_scene.as_posix())
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            stage.GetRootLayer().Save()
+
+            overlay = default_overlay_state(str(assets_root))
+            overlay["instances"] = [
+                {
+                    "id": "table_000_01",
+                    "asset_id": "table_000",
+                    "url": "objects/table_000/Aligned.usda",
+                    "motion": "static",
+                    "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
+                },
+                {
+                    "id": "mug_000_01",
+                    "asset_id": "mug_000",
+                    "url": "objects/table_000/Aligned.usda",
+                    "motion": "dynamic",
+                    "placement": {
+                        "kind": "on_top_of_body",
+                        "body": "Scene_table_000_01",
+                        "xy": [0.1, 0.2],
+                        "gap": 0.0,
+                        "yaw": 0.0,
+                    },
+                },
+            ]
+
+            scene_path = write_overlay_scene(
+                Path(tmp) / "overlay_scene.usda",
+                base_scene,
+                assets_root,
+                overlay,
+                support_infos={},
+                asset_bounds_by_instance={
+                    "table_000_01": {"min": [-0.375, -0.375, 0.0], "max": [0.375, 0.375, 0.75]},
+                    "mug_000_01": {"min": [-0.05, -0.05, 0.0], "max": [0.05, 0.05, 0.1]},
+                },
+            )
+
+            stage = Usd.Stage.Open(scene_path.as_posix())
+            mug = stage.GetPrimAtPath("/World/mug_000_01")
+            translate = mug.GetAttribute("xformOp:translate").Get()
+            self.assertEqual((translate[0], translate[1]), (0.1, 0.2))
+            self.assertAlmostEqual(translate[2], 0.75, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
