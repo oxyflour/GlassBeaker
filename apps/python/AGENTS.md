@@ -1,0 +1,2 @@
+- apps/python 下不要随便新建文件夹
+- 模块 http 接口放 apps/python/api/xxx，模块实现放 apps/python/utils/xxx/

@@ -155,13 +155,9 @@ async function ensureDir(dir: string) {
 async function clearDatasetOutputs(root: string) {
     const entries = await fs.readdir(root, { withFileTypes: true })
     await Promise.all(entries.map(async entry => {
-        const shouldDelete = entry.name === "dataset.json"
-            || /^antenna_\d+\.json$/.test(entry.name)
-            || (entry.isDirectory() && /^antenna_\d+$/.test(entry.name))
-        if (!shouldDelete) {
-            return
+        if (entry.name === "dataset.json") {
+            await fs.rm(path.join(root, entry.name), { force: true })
         }
-        await fs.rm(path.join(root, entry.name), { recursive: true, force: true })
     }))
 }
 

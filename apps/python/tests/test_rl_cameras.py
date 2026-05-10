@@ -1,8 +1,13 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 
-from utils.zapdos.rl_cameras import RenderCamera, camera_name_to_index
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
+
+from utils.zapdos.bundle.camera_specs import RenderCamera, camera_name_to_index
 
 
 class RLCamerasTest(unittest.TestCase):
@@ -56,4 +61,3 @@ class RLCamerasTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -7,7 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from utils.ros_view_store import RosViewStore  # type: ignore
+from utils.ros_view.ros_view_store import RosViewStore  # type: ignore
 
 
 class _BridgeStub:

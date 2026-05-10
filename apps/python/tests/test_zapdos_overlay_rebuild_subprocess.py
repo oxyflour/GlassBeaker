@@ -12,6 +12,8 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
+import utils.zapdos.session.zapdos_session as SESSION_MODULE
+
 ACTION_PATH = REPO_ROOT / "apps" / "python" / "api" / "zapdos" / "{session}" / "{action}.py"
 SCRIPT_PATH = REPO_ROOT / "apps" / "python" / "scripts" / "prepare_zapdos_overlay_rebuild.py"
 
@@ -54,9 +56,10 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
 
             def fake_run(command, **kwargs):
                 self.assertEqual(command[0], sys.executable)
-                self.assertEqual(Path(command[1]).resolve(), SCRIPT_PATH.resolve())
-                request_path = Path(command[2])
-                response_path = Path(command[3])
+                self.assertEqual(command[1], "-u")
+                self.assertEqual(Path(command[2]).resolve(), SCRIPT_PATH.resolve())
+                request_path = Path(command[3])
+                response_path = Path(command[4])
                 payload = json.loads(request_path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["robot_usd"], str(session.robot_usd))
                 self.assertEqual(payload["base_scene_usd"], str(session.base_scene_usd))
@@ -69,15 +72,16 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
                 }), encoding="utf-8")
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-            with mock.patch("subprocess.run", side_effect=fake_run) as run_mock:
-                with mock.patch.object(ACTION.RenderBundle, "from_json", return_value=fake_bundle) as from_json:
-                    prepared = ACTION.ZapdosSession._prepare_overlay_rebuild(
-                        session,
-                        next_overlay,
-                        {"Scene_table_000_01": {"top_z": 0.75}},
-                        previous_overlay,
-                        "rev-1",
-                    )
+            with mock.patch.object(SESSION_MODULE.rebuild_manager, "_resolve_overlay_rebuild_interpreter", return_value=sys.executable):
+                with mock.patch.object(SESSION_MODULE.rebuild_manager, "_run_overlay_rebuild_subprocess", side_effect=fake_run) as run_mock:
+                    with mock.patch.object(SESSION_MODULE.rebuild_manager.RenderBundle, "from_json", return_value=fake_bundle) as from_json:
+                        prepared = ACTION.ZapdosSession._prepare_overlay_rebuild(
+                            session,
+                            next_overlay,
+                            {"Scene_table_000_01": {"top_z": 0.75}},
+                            previous_overlay,
+                            "rev-1",
+                        )
 
         run_mock.assert_called_once()
         from_json.assert_called_once_with({"bundle_dir": "bundle", "cameras": []})
@@ -108,22 +112,16 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
             },
             "support_infos": {"Scene_table_000_01": {"top_z": 0.75}},
         }
-        fake_bundle = SimpleNamespace(to_json=mock.Mock(return_value={"bundle_dir": "bundle", "cameras": []}))
-
-        with mock.patch.object(script, "resolve_assets_root", return_value=Path("C:/assets")):
-            with mock.patch.object(script, "asset_local_bounds", return_value={"min": [0, 0, 0], "max": [1, 1, 1]}):
-                with mock.patch.object(script, "write_overlay_scene") as write_overlay_scene:
-                    with mock.patch.object(script, "ensure_render_bundle", return_value=fake_bundle) as ensure_render_bundle:
-                        with mock.patch.object(script, "scene_revision", return_value="rev-2") as scene_revision:
-                            result = script.prepare_overlay_rebuild(request)
-
-        write_overlay_scene.assert_called_once()
-        ensure_render_bundle.assert_called_once_with(Path("robot.usda"), Path("scene-overlay.usda"))
-        scene_revision.assert_called_once_with(Path("base_scene.usda"), request["next_overlay"])
-        self.assertEqual(result, {
+        expected = {
             "bundle": {"bundle_dir": "bundle", "cameras": []},
             "next_revision": "rev-2",
-        })
+        }
+
+        with mock.patch.object(script, "prepare_overlay_rebuild_request", return_value=expected) as runner:
+            result = script.prepare_overlay_rebuild(request)
+
+        runner.assert_called_once_with(request, script._log_stage)
+        self.assertEqual(result, expected)
 
 
 if __name__ == "__main__":

@@ -2,13 +2,17 @@
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
+
 from utils.camera_override import apply_camera_overrides, load_camera_overrides, save_camera_overrides
-from utils.zapdos.rl_cameras import RenderCamera
+from utils.zapdos.bundle.camera_specs import RenderCamera
 from utils.user_config import read_user_config
 
 

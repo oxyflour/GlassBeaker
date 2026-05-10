@@ -12,8 +12,8 @@ from pxr import Usd, UsdGeom
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-import utils.genie_sim_runtime as runtime
-from utils.genie_sim_runtime import load_assets_module, search_assets
+import utils.genie_sim.genie_sim_runtime as runtime
+from utils.genie_sim import load_assets_module, search_assets
 
 SCENE_CODE = "\n".join(
     [

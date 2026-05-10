@@ -5,7 +5,7 @@ import traceback
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from utils.genie_sim_runtime import (
+from utils.genie_sim import (
     execute_scene_code,
     load_assets_module,
     resolve_assets_root,

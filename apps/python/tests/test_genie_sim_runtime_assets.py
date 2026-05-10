@@ -9,7 +9,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-import utils.genie_sim_runtime as runtime
+import utils.genie_sim.genie_sim_runtime as runtime
 
 SCENE_CODE = "\n".join(
     [

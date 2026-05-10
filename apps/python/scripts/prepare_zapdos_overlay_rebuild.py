@@ -8,7 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from utils.zapdos.zapdos_overlay_rebuild_runner import prepare_overlay_rebuild_request
+from utils.zapdos.rebuild.overlay_rebuild_runner import prepare_overlay_rebuild_request
 
 
 def _log_stage(stage: str) -> None:

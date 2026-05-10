@@ -8,8 +8,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from teleop.ros_client import RosBridgeClient  # noqa: E402
-from utils.zapdos.sim_env import JOINT_COMMAND_TOPIC, JOINT_STATE_TYPE, JOINT_STATES_TOPIC  # noqa: E402
+from utils.teleop.ros_client import RosBridgeClient  # noqa: E402
+from utils.zapdos.ros.topics import JOINT_COMMAND_TOPIC, JOINT_STATE_TYPE, JOINT_STATES_TOPIC  # noqa: E402
 
 
 class _FakeBridge:

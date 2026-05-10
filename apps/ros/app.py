@@ -75,7 +75,7 @@ class RosSession(Session):
                 method, args, call = pickle.loads(data) # type: ignore
                 err, ret = None, None
                 try:
-                    ret = self.call_once(method, args)
+                    ret = await self.call(method, args)
                 except Exception as exception:
                     err = exception
                 if self.sock:

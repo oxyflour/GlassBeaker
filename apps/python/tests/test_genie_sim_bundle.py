@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pxr import Gf, Usd, UsdGeom
 
-from utils.genie_sim_bundle import write_scene_usda
+from utils.genie_sim import write_scene_usda
 
 
 class GenieSimBundleTest(unittest.TestCase):

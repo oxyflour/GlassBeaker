@@ -9,8 +9,8 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from teleop.device import SpaceMouseSample  # noqa: E402
-from teleop.manager import SpaceMouseManager  # noqa: E402
+from utils.teleop.device import SpaceMouseSample  # noqa: E402
+from utils.teleop.manager import SpaceMouseManager  # noqa: E402
 
 
 class _FakeDevice:
@@ -124,7 +124,7 @@ class SpaceMouseManagerTest(unittest.TestCase):
             def __init__(self, *_args, **_kwargs) -> None:
                 raise AssertionError("start() should not construct IKController")
 
-        with mock.patch("teleop.manager.IKController", _SlowIKController):
+        with mock.patch("utils.teleop.manager.IKController", _SlowIKController):
             started = self.call_with_timeout(manager.start)
 
         self.assertEqual(started["running"], True)
@@ -143,7 +143,7 @@ class SpaceMouseManagerTest(unittest.TestCase):
                 super().__init__()
                 built.append((robot_usd, scene_usd))
 
-        with mock.patch("teleop.manager.IKController", _LazyIKController):
+        with mock.patch("utils.teleop.manager.IKController", _LazyIKController):
             manager.step_once()
 
         self.assertEqual(len(built), 1)

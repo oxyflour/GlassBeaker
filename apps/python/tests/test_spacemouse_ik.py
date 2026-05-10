@@ -8,7 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from teleop.ik_controller import IKController  # noqa: E402
+from utils.teleop.ik_controller import IKController  # noqa: E402
 
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 SCENE_USD = REPO_ROOT / "apps" / "python" / "assets" / "default_scene.usda"

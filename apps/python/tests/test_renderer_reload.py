@@ -1,9 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
-from utils.zapdos.isaac_renderer_reload import (
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
+
+from utils.zapdos.renderer.isaac_renderer_reload import (
     CameraBinding,
     rebuild_camera_bindings,
     reset_subscriber_caches,
@@ -75,4 +80,3 @@ class RendererReloadHelperTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

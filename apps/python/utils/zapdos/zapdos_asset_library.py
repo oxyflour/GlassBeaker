@@ -6,7 +6,7 @@ from typing import TypedDict
 
 from pxr import Usd, UsdGeom
 
-from utils.genie_sim_runtime import load_assets_module, resolve_assets_root
+from utils.genie_sim import load_assets_module, resolve_assets_root
 
 
 class AssetRecord(TypedDict):

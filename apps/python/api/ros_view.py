@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from utils.ros_view_store import store
+from utils.ros_view.ros_view_store import store
 
 router = APIRouter()
 

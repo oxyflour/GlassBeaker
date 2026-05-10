@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,12 +11,15 @@ from unittest import mock
 import mujoco  # type: ignore
 from pxr import Usd, UsdGeom
 
-import utils.zapdos.rl_bundle as MODULE
-from utils.zapdos.rl_bundle import DEFAULT_SCENE_USD, ensure_render_bundle
-from utils.zapdos.rl_cameras import build_render_cameras
-from utils.zapdos.usd_to_mjcf import sanitize_name
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
+
+import utils.zapdos.bundle.bundle_builder as MODULE
+from utils.zapdos.bundle.bundle_builder import ensure_render_bundle
+from utils.zapdos.bundle.camera_specs import build_render_cameras
+from utils.zapdos.bundle.render_bundle import DEFAULT_SCENE_USD
+from utils.zapdos.bundle.usd_to_mjcf_adapter import sanitize_name
+
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 
 
@@ -93,7 +97,7 @@ class RLBundleTest(unittest.TestCase):
         self.assertEqual(str(UsdGeom.GetStageUpAxis(wrapper_stage)), "Z")
         self.assertEqual(str(UsdGeom.GetStageUpAxis(render_stage)), "Z")
 
-        cameras = build_render_cameras(model, body_map)
+        cameras = build_render_cameras(model, {body: f"MyRobot/{body}" for body in robot_bodies})
         self.assertEqual([camera.name for camera in cameras], bundle.camera_names())
         self.assertEqual(
             [camera.name for camera in cameras],
@@ -231,4 +235,3 @@ class RLBundleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

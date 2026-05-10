@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from teleop.manager import SpaceMouseManager
+from utils.teleop.manager import SpaceMouseManager
 
 router = APIRouter()
 manager = SpaceMouseManager()

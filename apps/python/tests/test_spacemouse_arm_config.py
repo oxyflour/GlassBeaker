@@ -7,7 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from teleop.arm_config import ARM_CONFIGS, get_arm_config  # noqa: E402
+from utils.teleop.arm_config import ARM_CONFIGS, get_arm_config  # noqa: E402
 
 
 class SpaceMouseArmConfigTest(unittest.TestCase):

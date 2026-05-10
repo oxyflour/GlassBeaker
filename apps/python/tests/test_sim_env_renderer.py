@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import threading
 import time
@@ -11,8 +12,11 @@ from unittest import mock
 
 import numpy as np
 
-from utils.zapdos import sim_env as sim_env_module
-from utils.zapdos.sim_env import IsaacRenderer
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
+
+from utils.zapdos.renderer import isaac_renderer as renderer_module
+from utils.zapdos.renderer.isaac_renderer import IsaacRenderer
 
 
 class IsaacRendererReadTest(unittest.TestCase):
@@ -38,10 +42,10 @@ class IsaacRendererReadTest(unittest.TestCase):
         opener = mock.Mock()
         opener.open.return_value = DummyResponse()
 
-        with mock.patch.object(sim_env_module, "ISAAC_API_URL", "http://127.0.0.1:13000/api/isaac"):
-            with mock.patch.object(sim_env_module, "build_opener", create=True, return_value=opener) as build_opener:
-                with mock.patch.object(sim_env_module, "urlopen", side_effect=AssertionError("should bypass proxy")):
-                    payload = sim_env_module._isaac_request("GET")
+        with mock.patch.object(renderer_module, "ISAAC_API_URL", "http://127.0.0.1:13000/api/isaac"):
+            with mock.patch.object(renderer_module, "build_opener", create=True, return_value=opener) as build_opener:
+                with mock.patch.object(renderer_module, "urlopen", side_effect=AssertionError("should bypass proxy")):
+                    payload = renderer_module._isaac_request("GET")
 
         self.assertEqual(payload, {"ok": True})
         build_opener.assert_called_once()
@@ -262,7 +266,7 @@ class IsaacRendererReadTest(unittest.TestCase):
         renderer.frame_counter = None
         renderer.frames = None
 
-        with mock.patch.object(sim_env_module, "_isaac_request") as isaac_request:
+        with mock.patch.object(renderer_module, "_isaac_request") as isaac_request:
             renderer.close(stop_remote=False)
 
         isaac_request.assert_not_called()
@@ -273,4 +277,3 @@ class IsaacRendererReadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

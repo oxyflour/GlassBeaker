@@ -19,9 +19,9 @@ from fastapi import Request
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-import utils.zapdos.zapdos_scene_operations as SCENE_OPS_MODULE
-import utils.zapdos.zapdos_session as SESSION_MODULE
-from utils.zapdos.rl_bundle import ensure_render_bundle
+import utils.zapdos.overlay.overlay_commands as OVERLAY_COMMANDS_MODULE
+import utils.zapdos.session.zapdos_session as SESSION_MODULE
+from utils.zapdos.bundle import ensure_render_bundle
 
 MODULE_PATH = REPO_ROOT / "apps" / "python" / "api" / "zapdos" / "{session}" / "{action}.py"
 SPEC = importlib.util.spec_from_file_location("zapdos_session_action_import", MODULE_PATH)
@@ -35,8 +35,203 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         MODULE.sessions.clear()
 
     def test_action_module_reexports_split_runtime_symbols(self):
-        self.assertEqual(MODULE.ZapdosSession.__module__, "utils.zapdos.zapdos_session")
-        self.assertEqual(MODULE._stream_scene_operation.__module__, "utils.zapdos.zapdos_scene_operations")
+        self.assertEqual(MODULE.ZapdosSession.__module__, "utils.zapdos.session.zapdos_session")
+        self.assertEqual(MODULE._name_.__module__, "utils.zapdos.session.request_router")
+        self.assertEqual(MODULE._stream_scene_rebuild_job.__module__, "utils.zapdos.rebuild.scene_rebuild_manager")
+
+    def test_consumer_modules_import_new_bundle_and_camera_packages(self):
+        cases = {
+            REPO_ROOT / "apps" / "python" / "utils" / "teleop" / "manager.py": [
+                "from utils.zapdos.bundle import DEFAULT_SCENE_USD",
+                "from utils.zapdos.rl_bundle import DEFAULT_SCENE_USD",
+            ],
+            REPO_ROOT / "apps" / "python" / "utils" / "teleop" / "ik_controller.py": [
+                "from utils.zapdos.bundle import ensure_render_bundle",
+                "from utils.zapdos.rl_bundle import ensure_render_bundle",
+            ],
+            REPO_ROOT / "apps" / "python" / "api" / "teleop" / "spacemouse.py": [
+                "from utils.teleop.manager import SpaceMouseManager",
+                "from teleop.manager import SpaceMouseManager",
+            ],
+            REPO_ROOT / "apps" / "python" / "utils" / "camera_override.py": [
+                "from utils.zapdos.bundle.camera_specs import RenderCamera",
+                "from utils.zapdos.rl_cameras import RenderCamera",
+            ],
+            REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "renderer" / "base.py": [
+                "from utils.zapdos.bundle import RenderBundle",
+                "from utils.zapdos.rl_bundle import RenderBundle",
+            ],
+            REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "renderer" / "isaac_renderer.py": [
+                "from utils.zapdos.bundle.camera_specs import camera_name_to_index, cameras_json",
+                "from utils.zapdos.rl_cameras import camera_name_to_index, cameras_json",
+            ],
+            REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "rebuild" / "overlay_rebuild_runner.py": [
+                "from utils.zapdos.bundle import ensure_render_bundle",
+                "from utils.zapdos.rl_bundle import ensure_render_bundle",
+            ],
+        }
+
+        for path, (expected_import, legacy_import) in cases.items():
+            source = path.read_text(encoding="utf-8")
+            self.assertIn(expected_import, source, path.as_posix())
+            self.assertNotIn(legacy_import, source, path.as_posix())
+
+    def test_camera_specs_owns_render_camera_contracts(self):
+        source = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "bundle"
+            / "camera_specs.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("class RenderCamera", source)
+        self.assertIn("def build_render_cameras", source)
+        self.assertNotIn("from utils.zapdos.rl_cameras import", source)
+
+    def test_bundle_package_owns_render_bundle_contracts(self):
+        source = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "bundle"
+            / "render_bundle.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("class RenderBundle", source)
+        self.assertIn("DEFAULT_SCENE_USD", source)
+        self.assertNotIn("from utils.zapdos.rl_bundle import", source)
+
+    def test_bundle_package_owns_bundle_builder_without_legacy_bridge(self):
+        source = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "bundle"
+            / "bundle_builder.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("def ensure_render_bundle", source)
+        self.assertNotIn("import utils.zapdos.rl_bundle as legacy_bundle", source)
+
+    def test_bundle_package_owns_scene_catalog_and_stage_builder(self):
+        scene_catalog = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "bundle"
+            / "scene_catalog.py"
+        ).read_text(encoding="utf-8")
+        stage_builder = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "bundle"
+            / "stage_builder.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("class SceneObjectSpec", scene_catalog)
+        self.assertNotIn("from utils.zapdos.scene_objects import", scene_catalog)
+        self.assertIn("def build_robot_wrapper", stage_builder)
+        self.assertNotIn("from utils.zapdos.rl_bundle_stage import", stage_builder)
+
+    def test_physics_package_owns_mujoco_tools_without_root_bridge(self):
+        source = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "physics"
+            / "mujoco_tools.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("def decode_mesh_path", source)
+        self.assertIn("def body_world_pose", source)
+        self.assertNotIn("from utils.zapdos.mujoco_tools import", source)
+
+    def test_renderer_package_owns_reload_helpers_without_root_bridge(self):
+        source = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "renderer"
+            / "isaac_renderer_reload.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("class CameraBinding", source)
+        self.assertIn("def rebuild_camera_bindings", source)
+        self.assertNotIn("from utils.zapdos.isaac_renderer_reload import", source)
+
+    def test_legacy_flat_zapdos_modules_are_deleted(self):
+        legacy_paths = [
+            "apps/python/utils/zapdos/rl_bundle.py",
+            "apps/python/utils/zapdos/rl_bundle_stage.py",
+            "apps/python/utils/zapdos/rl_cameras.py",
+            "apps/python/utils/zapdos/scene_objects.py",
+            "apps/python/utils/zapdos/sim_env.py",
+            "apps/python/utils/zapdos/zapdos_overlay.py",
+            "apps/python/utils/zapdos/zapdos_overlay_rebuild_runner.py",
+            "apps/python/utils/zapdos/zapdos_overlay_scene.py",
+            "apps/python/utils/zapdos/zapdos_physics.py",
+            "apps/python/utils/zapdos/zapdos_scene_operations.py",
+            "apps/python/utils/zapdos/zapdos_scene_visuals.py",
+            "apps/python/utils/zapdos/zapdos_session.py",
+        ]
+
+        for raw_path in legacy_paths:
+            with self.subTest(path=raw_path):
+                self.assertFalse((REPO_ROOT / raw_path).exists(), raw_path)
+
+    def test_root_helper_shells_are_deleted(self):
+        helper_paths = [
+            "apps/python/utils/zapdos/mujoco_tools.py",
+            "apps/python/utils/zapdos/isaac_renderer_reload.py",
+            "apps/python/utils/zapdos/renderer_ipc.py",
+        ]
+
+        for raw_path in helper_paths:
+            with self.subTest(path=raw_path):
+                self.assertFalse((REPO_ROOT / raw_path).exists(), raw_path)
+
+    def test_session_coordinator_module_stays_within_line_budget(self):
+        path = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "session"
+            / "zapdos_session.py"
+        )
+
+        self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 200)
+
+    def test_rebuild_manager_owns_overlay_rebuild_runner_import(self):
+        source = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "rebuild"
+            / "scene_rebuild_manager.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("from utils.zapdos.rebuild.overlay_rebuild_runner import prepare_overlay_rebuild_request", source)
+        self.assertNotIn("from utils.zapdos.zapdos_overlay_rebuild_runner import prepare_overlay_rebuild_request", source)
 
     def make_request(self, query: str = ""):
         return Request(
@@ -246,6 +441,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(session.physics, MODULE.ZapdosPhysics)
         self.assertEqual(session.physics.body_map, {"Scene_Crate": "Crate"})
         self.assertEqual(session.physics.editable_body_names, {"Scene_Crate"})
+        self.assertIs(session.scene_rebuild_service.session, session)
 
     def test_session_init_discards_stale_overlay_instances(self):
         rewritten_overlay = None
@@ -397,7 +593,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.rebuilding_scene = False
 
         with mock.patch.object(
-            SCENE_OPS_MODULE,
+            OVERLAY_COMMANDS_MODULE,
             "resolve_asset_record",
             return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
         ):
@@ -429,6 +625,17 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             }],
         })
 
+    def test_set_scene_assets_delegates_to_scene_rebuild_service(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.scene_rebuild_service = mock.Mock(
+            submit_replace=mock.Mock(return_value={"ok": True, "op_id": "op-9"}),
+        )
+
+        result = MODULE.ZapdosSession.set_scene_assets(session, [{"asset_id": "table_000"}])
+
+        self.assertEqual(result, {"ok": True, "op_id": "op-9"})
+        session.scene_rebuild_service.submit_replace.assert_called_once_with([{"asset_id": "table_000"}])
+
     def test_set_scene_assets_rejects_ambiguous_placement(self):
         session = self.build_pose_edit_session()
         session.base_scene_usd = Path("scene.usda")
@@ -440,7 +647,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.rebuilding_scene = False
 
         with mock.patch.object(
-            SCENE_OPS_MODULE,
+            OVERLAY_COMMANDS_MODULE,
             "resolve_asset_record",
             return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
         ):
@@ -512,7 +719,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         captured = {}
 
         with mock.patch.object(
-            SCENE_OPS_MODULE,
+            OVERLAY_COMMANDS_MODULE,
             "resolve_asset_record",
             return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
         ):
@@ -545,6 +752,17 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.scene_revision, "rev-1")
         self.assertEqual(session.overlay_state["pose_overrides"]["Scene_Crate"]["pos"], [4.0, 5.0, 6.0])
         save_overlay.assert_called_once()
+
+    def test_remove_asset_from_scene_delegates_to_scene_rebuild_service(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.scene_rebuild_service = mock.Mock(
+            submit_remove=mock.Mock(return_value={"ok": True, "instance_id": "table_000_01"}),
+        )
+
+        result = MODULE.ZapdosSession.remove_asset_from_scene(session, "table_000_01")
+
+        self.assertEqual(result, {"ok": True, "instance_id": "table_000_01"})
+        session.scene_rebuild_service.submit_remove.assert_called_once_with("table_000_01")
 
     def test_swap_runtime_bundle_closes_previous_physics_after_successful_swap(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
@@ -827,17 +1045,17 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(completion.error)
         session.call.assert_not_called()
 
-    def test_drain_overlay_completions_resolves_scene_operation_future(self):
+    def test_drain_overlay_completions_resolves_scene_rebuild_job_future(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.overlay_completions = queue.Queue()
-        session.scene_operations = {
-            "op-1": MODULE.SceneOperation(
+        session.scene_rebuild_jobs = {
+            "op-1": MODULE.SceneRebuildJob(
                 future=MODULE.ConcurrentFuture(),
                 success_payload={"ok": True, "items": []},
                 events=queue.Queue(),
             ),
         }
-        session.scene_operations_lock = threading.Lock()
+        session.scene_rebuild_jobs_lock = threading.Lock()
         prepared = MODULE.PreparedOverlayRebuild(
             bundle=SimpleNamespace(),
             next_overlay=MODULE.default_overlay_state("C:/assets"),
@@ -851,43 +1069,51 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             session._drain_overlay_completions()
 
         self.assertEqual(
-            session.scene_operations["op-1"].future.result(timeout=1),
+            session.scene_rebuild_jobs["op-1"].future.result(timeout=1),
             {"ok": True, "items": [], "scene_revision": "rev-2"},
         )
 
-    async def test_stream_scene_operation_emits_done_event_and_discards_operation(self):
+    def test_drain_overlay_completions_delegates_to_scene_rebuild_service(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.scene_rebuild_service = mock.Mock(drain_completions=mock.Mock())
+
+        MODULE.ZapdosSession._drain_overlay_completions(session)
+
+        session.scene_rebuild_service.drain_completions.assert_called_once_with()
+
+    async def test_stream_scene_rebuild_job_emits_done_event_and_discards_job(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         future = MODULE.ConcurrentFuture()
         future.set_result({"ok": True, "items": [], "scene_revision": "rev-2"})
-        session.scene_operations = {
-            "op-1": MODULE.SceneOperation(
+        session.scene_rebuild_jobs = {
+            "op-1": MODULE.SceneRebuildJob(
                 future=future,
                 success_payload={"ok": True, "items": []},
                 events=queue.Queue(),
             ),
         }
-        session.scene_operations_lock = threading.Lock()
+        session.scene_rebuild_jobs_lock = threading.Lock()
 
-        events = [chunk async for chunk in MODULE._stream_scene_operation(session, "op-1")]
+        events = [chunk async for chunk in MODULE._stream_scene_rebuild_job(session, "op-1")]
 
         self.assertEqual(events, [
             'event: started\ndata: {"op_id": "op-1"}\n\n',
             'event: done\ndata: {"ok": true, "items": [], "scene_revision": "rev-2"}\n\n',
         ])
-        self.assertNotIn("op-1", session.scene_operations)
+        self.assertNotIn("op-1", session.scene_rebuild_jobs)
 
-    async def test_stream_scene_operation_emits_started_event_before_completion(self):
+    async def test_stream_scene_rebuild_job_emits_started_event_before_completion(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         future = MODULE.ConcurrentFuture()
-        session.scene_operations = {
-            "op-1": MODULE.SceneOperation(
+        session.scene_rebuild_jobs = {
+            "op-1": MODULE.SceneRebuildJob(
                 future=future,
                 success_payload={"ok": True, "items": []},
                 events=queue.Queue(),
             ),
         }
-        session.scene_operations_lock = threading.Lock()
-        stream = MODULE._stream_scene_operation(session, "op-1")
+        session.scene_rebuild_jobs_lock = threading.Lock()
+        stream = MODULE._stream_scene_rebuild_job(session, "op-1")
 
         started = await asyncio.wait_for(anext(stream), timeout=0.1)
         future.set_result({"ok": True, "items": [], "scene_revision": "rev-2"})
@@ -897,21 +1123,21 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done, 'event: done\ndata: {"ok": true, "items": [], "scene_revision": "rev-2"}\n\n')
         with self.assertRaises(StopAsyncIteration):
             await anext(stream)
-        self.assertNotIn("op-1", session.scene_operations)
+        self.assertNotIn("op-1", session.scene_rebuild_jobs)
 
-    async def test_stream_scene_operation_emits_failed_event_when_background_prepare_errors_without_drain(self):
+    async def test_stream_scene_rebuild_job_emits_failed_event_when_background_prepare_errors_without_drain(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.overlay_completions = queue.Queue()
         session.rebuilding_scene = True
-        session.scene_operations = {
-            "op-1": MODULE.SceneOperation(
+        session.scene_rebuild_jobs = {
+            "op-1": MODULE.SceneRebuildJob(
                 future=MODULE.ConcurrentFuture(),
                 success_payload={"ok": True, "items": []},
                 events=queue.Queue(),
             ),
         }
-        session.scene_operations_lock = threading.Lock()
-        stream = MODULE._stream_scene_operation(session, "op-1")
+        session.scene_rebuild_jobs_lock = threading.Lock()
+        stream = MODULE._stream_scene_rebuild_job(session, "op-1")
 
         started = await asyncio.wait_for(anext(stream), timeout=0.1)
         with mock.patch.object(session, "_prepare_overlay_rebuild", side_effect=RuntimeError("subprocess crashed")):
@@ -922,14 +1148,16 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                 MODULE.default_overlay_state("C:/assets"),
                 "rev-1",
             )
+        progress = await asyncio.wait_for(anext(stream), timeout=0.2)
         failed = await asyncio.wait_for(anext(stream), timeout=0.2)
 
         self.assertEqual(started, 'event: started\ndata: {"op_id": "op-1"}\n\n')
+        self.assertEqual(progress, 'event: progress\ndata: {"stage": "prepare_overlay_rebuild.started"}\n\n')
         self.assertEqual(failed, 'event: failed\ndata: {"detail": "subprocess crashed"}\n\n')
         self.assertFalse(session.rebuilding_scene)
         with self.assertRaises(StopAsyncIteration):
             await anext(stream)
-        self.assertNotIn("op-1", session.scene_operations)
+        self.assertNotIn("op-1", session.scene_rebuild_jobs)
 
     def test_save_camera_override_persists_renderer_snapshot(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)

@@ -10,7 +10,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-import utils.genie_sim_runtime as runtime
+import utils.genie_sim.genie_sim_runtime as runtime
 
 SCENE_CODE = "\n".join(
     [
@@ -144,7 +144,7 @@ class GenieSimRuntimeBuiltinsTest(unittest.TestCase):
             with mock.patch.dict(sys.modules, self.library_modules(library), clear=False):
                 with mock.patch.object(runtime, "prepare_runtime", return_value=helper):
                     with mock.patch.object(runtime, "resolve_repo_root", return_value=repo_root):
-                        with mock.patch("utils.genie_sim_runtime.importlib.import_module") as import_module:
+                        with mock.patch("utils.genie_sim.genie_sim_runtime.importlib.import_module") as import_module:
                             runtime.execute_scene_code(SCENE_CODE, assets_root=assets_root)
 
             import_module.assert_not_called()

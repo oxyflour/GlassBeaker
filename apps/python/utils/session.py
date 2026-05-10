@@ -1,5 +1,4 @@
 import asyncio
-from concurrent.futures import Future as ConcurrentFuture
 import json
 import queue
 import threading
@@ -47,30 +46,9 @@ class Session:
         self.active = time.time()
         try:
             ret = self.call_once(method, args)
-            if isinstance(ret, ConcurrentFuture):
-                ret.add_done_callback(lambda future: self._complete_background_call(res, future))
-                return
             self.loop.call_soon_threadsafe(res.set_result, ret)
         except Exception as err:
             self.loop.call_soon_threadsafe(res.set_exception, err)
-
-    def _complete_background_call(self, res: asyncio.Future, future: ConcurrentFuture):
-        try:
-            result = future.result()
-        except Exception as err:
-            self.loop.call_soon_threadsafe(self._set_exception_if_pending, res, err)
-            return
-        self.loop.call_soon_threadsafe(self._set_result_if_pending, res, result)
-
-    @staticmethod
-    def _set_result_if_pending(res: asyncio.Future, result: Any):
-        if not res.done():
-            res.set_result(result)
-
-    @staticmethod
-    def _set_exception_if_pending(res: asyncio.Future, err: Exception):
-        if not res.done():
-            res.set_exception(err)
     
     def proc_calls(self):
         while not self.calls.empty():
@@ -110,6 +88,8 @@ class Session:
         pass
     
     def call_once(self, method: str, args: tuple) -> Any:
+        # this runs in session thread
+        # DO NOT run heavy computations here, or it will block the session
         return None
 
     def step_once(self):

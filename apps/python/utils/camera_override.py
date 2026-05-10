@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from utils.zapdos.rl_cameras import RenderCamera
+from utils.zapdos.bundle.camera_specs import RenderCamera
 from utils.user_config import read_user_config, write_user_config
 
 

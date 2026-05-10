@@ -9,10 +9,35 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from utils import zapdos_overlay
+from utils.zapdos.overlay import overlay_state as zapdos_overlay
 
 
 class ZapdosOverlayTest(unittest.TestCase):
+    def test_overlay_package_owns_state_and_repository_without_legacy_imports(self):
+        state_source = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "overlay"
+            / "overlay_state.py"
+        ).read_text(encoding="utf-8")
+        repository_source = (
+            REPO_ROOT
+            / "apps"
+            / "python"
+            / "utils"
+            / "zapdos"
+            / "overlay"
+            / "overlay_repository.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("def default_overlay_state", state_source)
+        self.assertIn("def load_overlay_state", repository_source)
+        self.assertNotIn("from utils.zapdos.zapdos_overlay import", state_source)
+        self.assertNotIn("from utils.zapdos.zapdos_overlay import", repository_source)
+
     def test_scene_revision_ignores_pose_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene = Path(tmp) / "scene.usda"
