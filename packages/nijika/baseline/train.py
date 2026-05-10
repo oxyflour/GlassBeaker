@@ -23,13 +23,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("tmp/nijika-baseline"))
     parser.add_argument(
         "--model-kind",
-        choices=["graph_topology_spectral_head", "structured_pair_coupling_freq_head", "structured_pair_pole_offset_residue_head", "structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_pair_topology_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "transolver_pair_spectral_head", "legacy_global_head"],
+        choices=["graph_topology_spectral_head", "structured_pair_coupling_freq_head", "structured_pair_pole_offset_residue_head", "structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_pair_topology_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "temporal_pair_spectral_head", "transolver_pair_spectral_head", "legacy_global_head"],
         default="structured_pair_spectral_head",
     )
     parser.add_argument("--epochs", type=int, default=400)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--freq-bins", type=int, default=201)
     parser.add_argument("--points", type=int, default=128)
+    parser.add_argument("--max-temporal-steps", type=int, default=0)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--hidden-dim", type=int, default=160)
     parser.add_argument("--num-poles", type=int, default=12)
@@ -104,8 +105,10 @@ def scheduled_loss_config(
     return {key: base_config[key] + alpha * (final_config[key] - base_config[key]) for key in base_config}
 
 
-def build_dataset(tensors: dict[str, torch.Tensor], target: torch.Tensor, use_graph: bool) -> TensorDataset:
+def build_dataset(tensors: dict[str, torch.Tensor], target: torch.Tensor, use_graph: bool, has_temporal: bool = False) -> TensorDataset:
     items = [tensors["points"], tensors["ports"], tensors["geom"], tensors["frame"], tensors["cuts"], tensors["nibs"], target]
+    if has_temporal:
+        items.append(tensors["temporal"])
     if use_graph:
         items.extend(tensors[key] for key in GRAPH_KEYS)
     return TensorDataset(*items)
@@ -124,7 +127,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loss_config = build_loss_config(args)
     final_loss_config = build_final_loss_config(args, loss_config)
-    bundle = load_dataset(args.dataset_root, n_points=args.points, freq_bins=args.freq_bins)
+    bundle = load_dataset(args.dataset_root, n_points=args.points, freq_bins=args.freq_bins, max_temporal_steps=args.max_temporal_steps)
     train_records, val_records = split_records(bundle.records, seed=args.seed)
     train_tensors = stack_records(train_records)
     val_tensors = stack_records(val_records)
@@ -142,13 +145,14 @@ def main() -> None:
         model_config=model_config,
     ).to(device)
     use_graph = uses_graph_features(model)
+    has_temporal = "temporal" in train_tensors
     train_loader = DataLoader(
-        build_dataset(train_tensors, train_target, use_graph),
+        build_dataset(train_tensors, train_target, use_graph, has_temporal),
         batch_size=min(args.batch_size, len(train_records)),
         shuffle=True,
     )
     val_loader = DataLoader(
-        build_dataset(val_tensors, val_target, use_graph),
+        build_dataset(val_tensors, val_target, use_graph, has_temporal),
         batch_size=min(args.batch_size, len(val_records)),
         shuffle=False,
     )
@@ -173,7 +177,12 @@ def main() -> None:
         model.train()
         batch_losses = []
         for batch in train_loader:
-            points, ports, geom, frame, cuts, nibs, target, *graph_extra = batch
+            points, ports, geom, frame, cuts, nibs, target, *rest = batch
+            temporal_batch = None
+            graph_extra = rest
+            if has_temporal:
+                temporal_batch = rest[0]
+                graph_extra = rest[1:]
             graph_tensors = None
             if graph_extra:
                 graph_tensors = {key: tensor for key, tensor in zip(GRAPH_KEYS, graph_extra, strict=False)}
@@ -188,6 +197,7 @@ def main() -> None:
                 nibs=nibs,
                 device=device,
                 graph_tensors=graph_tensors,
+                temporal=temporal_batch,
             )
             loss = composite_loss(
                 pred,
@@ -209,6 +219,7 @@ def main() -> None:
             target_std=target_std,
             port_count=bundle.port_count,
             loss_config=epoch_loss_config,
+            has_temporal=has_temporal,
         )
         score = float(val_metrics["db_mae"])
         if args.physics:
@@ -239,6 +250,7 @@ def main() -> None:
             start_epoch=args.loss_ramp_start_epoch,
             end_epoch=args.loss_ramp_end_epoch,
         ),
+        has_temporal=has_temporal,
     )
     example = val_records[0]
     plot_path = args.output_dir / f"{example.name}_matrix_db.png"

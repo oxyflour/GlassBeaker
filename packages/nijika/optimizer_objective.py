@@ -6,6 +6,79 @@ from typing import Any
 import torch
 
 
+def antenna_efficiency(
+    s_matrix: torch.Tensor,
+    feed_index: int,
+    termination_probs: torch.Tensor | None = None,
+    terminations: dict[int, str] | None = None,
+    z0: float = 50.0,
+    ground_admittance: float = 1e6,
+    open_admittance: float = 1e-6,
+) -> torch.Tensor:
+    """Compute antenna total efficiency via S→Z→circuit solve.
+
+    Supports both soft (term_probs) and hard (terminations dict) modes.
+    Soft mode: Z_load = (1 / (p*Y_gnd + (1-p)*Y_open)) for each port.
+    """
+    P = s_matrix.size(-1)
+    I_mat = torch.eye(P, dtype=s_matrix.dtype, device=s_matrix.device)
+    Z = z0 * (I_mat + s_matrix) @ torch.linalg.inv(I_mat - s_matrix)
+
+    Z_mod = Z.clone()
+    if termination_probs is not None:
+        Y_gnd = ground_admittance
+        Y_open = open_admittance
+        for port in range(P):
+            if port == feed_index:
+                continue
+            p = termination_probs[port]
+            y_load = p * Y_gnd + (1.0 - p) * Y_open
+            z_load = 1.0 / (y_load + 1e-12)
+            Z_mod[..., port, port] = Z_mod[..., port, port] + z_load
+    elif terminations is not None:
+        for port, term in terminations.items():
+            Z_mod[..., port, port] = Z_mod[..., port, port] + (0.0 if term == "ground" else 1e6)
+    Z_mod[..., feed_index, feed_index] = Z_mod[..., feed_index, feed_index] + z0
+
+    V = torch.zeros_like(Z_mod[..., 0])
+    V[..., feed_index] = 1.0
+    I = torch.linalg.solve(Z_mod, V)
+
+    p_avail = torch.tensor(1.0 / (8.0 * z0), device=V.device, dtype=V.real.dtype)
+    z_in = V[..., feed_index] / (I[..., feed_index] + 1e-9) - z0
+    p_delivered = 0.5 * torch.real(I[..., feed_index].conj() * I[..., feed_index]) * torch.real(z_in)
+    return (p_delivered / p_avail).clamp(0.0, 1.0)
+
+
+def efficiency_objective(
+    s_matrix: torch.Tensor,
+    feed_logits: torch.Tensor,
+    termination_logits: torch.Tensor,
+    z0: float = 50.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Maximize efficiency with fully differentiable feed AND termination selection.
+
+    Uses soft interpolation of load impedances instead of hard ground/open
+    thresholding, so gradients flow through termination_logits.
+    """
+    feed_probs = torch.softmax(feed_logits, dim=-1)
+    term_probs = torch.sigmoid(termination_logits)
+
+    P = s_matrix.size(-1)
+    losses = []
+    for feed_idx in range(P):
+        eta = antenna_efficiency(s_matrix, feed_idx, termination_probs=term_probs, z0=z0)
+        losses.append(-eta.mean())
+
+    per_feed_loss = torch.stack(losses, dim=-1)
+    total_loss = (per_feed_loss * feed_probs).sum(dim=-1)
+    return total_loss, {
+        "feed_probs": feed_probs,
+        "termination_probs": term_probs,
+        "per_feed_loss": per_feed_loss,
+    }
+
+
 def feed_probabilities(feed_logits: torch.Tensor) -> torch.Tensor:
     return torch.softmax(feed_logits, dim=-1)
 

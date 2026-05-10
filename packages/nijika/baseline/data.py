@@ -22,6 +22,7 @@ class SampleRecord:
     nibs: np.ndarray
     graph: dict[str, np.ndarray] | None
     target: np.ndarray
+    temporal: np.ndarray | None = None
 
 
 @dataclass
@@ -170,6 +171,34 @@ def _build_input_sample(
     return config_path.stem, points, ports, geom, frame, cuts, nibs
 
 
+def _read_temporal_signal(path: Path, max_steps: int) -> np.ndarray | None:
+    """Read a Port X [Y].txt file, returning the signal column up to max_steps."""
+    try:
+        data = np.loadtxt(path, dtype=np.float32)
+    except (OSError, ValueError):
+        return None
+    signal = data[:max_steps, 1].copy()
+    if len(signal) < max_steps:
+        signal = np.pad(signal, (0, max_steps - len(signal)))
+    return signal
+
+
+def _load_temporal_signals(
+    sample_dir: Path, port_count: int, max_steps: int
+) -> np.ndarray | None:
+    """Load all port-pair temporal signals into (port_count*port_count, max_steps)."""
+    rows = []
+    for row in range(1, port_count + 1):
+        for col in range(1, port_count + 1):
+            signal = _read_temporal_signal(
+                sample_dir / f"Port {row} [{col}].txt", max_steps
+            )
+            if signal is None:
+                return None
+            rows.append(signal)
+    return np.stack(rows, axis=0).astype(np.float32)
+
+
 def _build_frequency_grid(sample_dirs: list[Path], freq_bins: int) -> np.ndarray:
     mins: list[float] = []
     maxs: list[float] = []
@@ -180,7 +209,7 @@ def _build_frequency_grid(sample_dirs: list[Path], freq_bins: int) -> np.ndarray
     return np.linspace(max(mins), min(maxs), freq_bins, dtype=np.float32)
 
 
-def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201) -> DatasetBundle:
+def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201, max_temporal_steps: int = 0) -> DatasetBundle:
     sample_dirs = sorted(path for path in root.iterdir() if path.is_dir())
     if not sample_dirs:
         raise FileNotFoundError(f"No sample directories found in {root}")
@@ -214,6 +243,9 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201) -> Datas
                 curve = _interpolate_curve(sample_dir / f"S{row},{col}.cst.txt", freq_grid)
                 curves.append(np.stack([curve.real, curve.imag], axis=-1))
         target = np.concatenate(curves, axis=-1).astype(np.float32)
+        temporal = None
+        if max_temporal_steps > 0:
+            temporal = _load_temporal_signals(sample_dir, len(ports), max_temporal_steps)
         records.append(
             SampleRecord(
                 name=sample_dir.name,
@@ -225,6 +257,7 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201) -> Datas
                 nibs=nibs,
                 graph=graph,
                 target=target,
+                temporal=temporal,
             )
         )
     if not records:
@@ -278,4 +311,6 @@ def stack_records(records: list[SampleRecord]) -> dict[str, torch.Tensor]:
     if records and records[0].graph is not None:
         for key in ("graph_inner", "graph_segment", "graph_port", "graph_mask", "graph_adj", "graph_edge_attr", "pair_topology"):
             stacked[key] = torch.tensor(np.stack([record.graph[key] for record in records]), dtype=torch.float32)
+    if records and records[0].temporal is not None:
+        stacked["temporal"] = torch.tensor(np.stack([record.temporal for record in records]), dtype=torch.float32)
     return stacked

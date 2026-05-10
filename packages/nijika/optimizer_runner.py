@@ -13,11 +13,12 @@ from baseline.training_utils import forward_model, uses_graph_features
 from optimizer_geometry import bound_distance, mesh_geom, rebuild_config_with_distances
 from optimizer_inputs import build_optimizer_inputs
 from optimizer_objective import (
+    antenna_efficiency,
+    efficiency_objective,
     enumerate_role_assignments,
     loaded_input_admittance,
     reflection_from_admittance,
     s_to_y,
-    soft_role_objective,
 )
 
 
@@ -81,6 +82,12 @@ def _predict_s_matrix(model: torch.nn.Module, tensors: dict[str, Any], device: t
     return torch.complex(pair[..., 0], pair[..., 1])
 
 
+def _enable_dropout(model: torch.nn.Module) -> None:
+    for m in model.modules():
+        if isinstance(m, torch.nn.Dropout):
+            m.train()
+
+
 def _predict_s_matrix_from_inputs(model: torch.nn.Module, tensors: dict[str, Any], device: torch.device) -> torch.Tensor:
     pred = forward_model(
         model,
@@ -99,13 +106,45 @@ def _predict_s_matrix_from_inputs(model: torch.nn.Module, tensors: dict[str, Any
     return torch.complex(pair[..., 0], pair[..., 1])
 
 
-def _candidate_loss(s_matrix: torch.Tensor, feed_index: int, terminations: list[str], *, z0: float, open_admittance: float, ground_admittance: float) -> float:
-    y_matrix = s_to_y(s_matrix, z0=z0)
-    loads = torch.tensor([ground_admittance if item == "ground" else open_admittance for item in terminations], dtype=y_matrix.dtype)
-    y_in = loaded_input_admittance(y_matrix, feed_index=feed_index, other_load_admittances=loads)
-    gamma = torch.abs(reflection_from_admittance(y_in, z0=z0))
-    coupling = torch.abs(s_matrix[:, feed_index, [idx for idx in range(s_matrix.size(-1)) if idx != feed_index]]).mean(dim=-1)
-    return float((gamma.mean() * 5.0 + coupling.mean() * 3.0).item())
+def _mc_predict_s_matrix(
+    model: torch.nn.Module,
+    tensors: dict[str, Any],
+    device: torch.device,
+    n_samples: int = 8,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """MC dropout S-matrix prediction with gradients.
+
+    Returns (mean_S, std_mag) where mean_S is the complex mean S-matrix
+    and std_mag is the standard deviation of |S| across samples.
+    """
+    _enable_dropout(model)
+    samples = []
+    for _ in range(n_samples):
+        pred = forward_model(
+            model,
+            points=tensors["points"],
+            ports=tensors["ports"],
+            geom=tensors["geom"],
+            frame=tensors["frame"],
+            cuts=tensors["cuts"],
+            nibs=tensors["nibs"],
+            device=device,
+            graph_tensors=tensors["graph"],
+        )[0]
+        port_count = tensors["ports"].shape[1]
+        freq_bins = pred.shape[0]
+        pair = pred.view(freq_bins, port_count, port_count, 2)
+        samples.append(torch.complex(pair[..., 0], pair[..., 1]))
+    stacked = torch.stack(samples, dim=0)  # (N, F, P, P)
+    mean_s = stacked.mean(dim=0)
+    std_mag = torch.abs(stacked).std(dim=0)  # (F, P, P) std of |S|
+    return mean_s, std_mag
+
+
+def _candidate_loss(s_matrix: torch.Tensor, feed_index: int, terminations: list[str], *, z0: float = 50.0) -> float:
+    term_dict = {i: terminations[i] for i in range(len(terminations))}
+    eta = antenna_efficiency(s_matrix, feed_index, terminations=term_dict, z0=z0)
+    return float((-eta.mean()).item())
 
 
 def optimize_model(
@@ -177,24 +216,31 @@ def optimize_model(
             device=device,
             include_graph=uses_graph_features(model),
         )
-        s_matrix = _predict_s_matrix_from_inputs(model, model_inputs, device)[mask]
-        loss, detail = soft_role_objective(
-            s_matrix,
+        # MC dropout: mean S-matrix + uncertainty
+        s_mean, s_std = _mc_predict_s_matrix(model, model_inputs, device, n_samples=8)
+        s_mean = s_mean[mask]
+        s_std = s_std[mask]
+
+        # Efficiency loss from mean prediction
+        eff_loss, detail = efficiency_objective(
+            s_mean,
             feed_logits=feed_logits,
             termination_logits=term_logits,
-            match_weight=match_weight,
-            isolation_weight=isolation_weight,
-            bandwidth_weight=bandwidth_weight,
-            match_threshold_db=match_threshold_db,
-            ground_admittance=ground_admittance,
-            open_admittance=open_admittance,
+            z0=50.0,
         )
+
+        # Uncertainty penalty: discourage optimizer from exploiting uncertain regions
+        unc_penalty = s_std.mean() * 0.5
+
+        loss = eff_loss + unc_penalty
         loss.backward()
         optimizer.step()
         trace.append(
             {
                 "step": step,
                 "loss": float(loss.item()),
+                "eff_loss": float(eff_loss.item()),
+                "unc_penalty": float(unc_penalty.item()),
                 "feed_probs": detail["feed_probs"].detach().cpu().tolist(),
                 "termination_probs": detail["termination_probs"].detach().cpu().tolist(),
                 "cut_distances": cut_distances.detach().cpu().tolist(),
@@ -206,7 +252,7 @@ def optimize_model(
     ranked = []
     for candidate in enumerate_role_assignments(port_count=len(nibs)):
         terms = [role["termination"] for role in candidate["roles"] if not role["feed"]]
-        score = _candidate_loss(final_s, candidate["feed_index"], terms, z0=50.0, open_admittance=open_admittance, ground_admittance=ground_admittance)
+        score = _candidate_loss(final_s, candidate["feed_index"], terms, z0=50.0)
         ranked.append({"score": score, **candidate})
     ranked.sort(key=lambda item: item["score"])
     soft = {key: trace[-1][key] for key in ("cut_distances", "nib_distances", "feed_probs", "termination_probs")}
