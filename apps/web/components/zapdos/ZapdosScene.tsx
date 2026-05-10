@@ -15,6 +15,7 @@ import { ENABLE_ZAPDOS_CAMERAS } from "./zapdos-scene-flags";
 import { applySceneHotkey, clearMissingSelection, isSelectionClick, pickEditableBodyFromHits, shouldApplyBodyPose, shouldReloadSceneRevision, type ZapdosTransformMode } from "./zapdos-scene-state";
 import { getZapdosRuntimeErrorMessage, getZapdosSceneRevision, isZapdosInactivePayload, ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE } from "./zapdos-runtime";
 import { useZapdosAgentTools } from "./useZapdosAgentTools";
+import type { RobotModelKey } from "./robot-model";
 import { Perf } from "r3f-perf";
 import { Group, Panel } from "react-resizable-panels";
 import { CopilotChat } from "@copilotkit/react-core/v2";
@@ -261,7 +262,17 @@ function SceneRuntime({
     onObjectChange={ () => selectedObject.updateMatrixWorld(true) } /> : null;
 }
 
-export function ZapdosScene({ sess, onRuntimeError }: { sess: string; onRuntimeError: (message: string) => void }) {
+export function ZapdosScene({
+  activeRobotModelKey,
+  onRobotModelChange,
+  sess,
+  onRuntimeError,
+}: {
+  activeRobotModelKey: RobotModelKey | null
+  onRobotModelChange: (key: RobotModelKey) => void
+  sess: string
+  onRuntimeError: (message: string) => void
+}) {
   const [mode, setMode] = useState<ZapdosTransformMode>("translate");
   const [selectedBody, setSelectedBody] = useState<string | null>(null);
   const [sse, setSse] = useState(0);
@@ -298,7 +309,13 @@ export function ZapdosScene({ sess, onRuntimeError }: { sess: string; onRuntimeE
         setTransformDragging={ setTransformDragging } />
     </Canvas>
     {ENABLE_ZAPDOS_CAMERAS ? <Cameras onRuntimeError={ onRuntimeError } sess={ sess } /> : null}
-    <ZapdosTopOverlay mode={ mode } selectedBody={ selectedBody } sess={ sess } sse={ sse } />
+    <ZapdosTopOverlay
+      activeRobotModelKey={ activeRobotModelKey }
+      mode={ mode }
+      onRobotModelChange={ onRobotModelChange }
+      selectedBody={ selectedBody }
+      sess={ sess }
+      sse={ sse } />
     </Panel>
     <Panel maxSize="33%">
       <CopilotChat />

@@ -4,17 +4,23 @@ import { useState } from "react";
 
 import { AddBenchmarkTableButton } from "./AddBenchmarkTableButton";
 import { CameraOverrideSaveButton } from "./CameraOverrideSaveButton";
+import { RobotModelSelect } from "./RobotModelSelect";
 import { SpaceMouseModeSelect } from "./SpaceMouseModeSelect";
+import type { RobotModelKey } from "./robot-model";
 
 export function ZapdosTopOverlay({
+  activeRobotModelKey,
   defaultSettingsOpen = false,
   mode = "translate",
+  onRobotModelChange,
   selectedBody = null,
   sess,
   sse,
 }: {
+  activeRobotModelKey: RobotModelKey | null
   defaultSettingsOpen?: boolean
   mode?: "translate" | "rotate"
+  onRobotModelChange: (key: RobotModelKey) => void
   selectedBody?: string | null
   sess: string
   sse: number
@@ -41,6 +47,7 @@ export function ZapdosTopOverlay({
           Config
         </button>
         { open ? <div className="absolute right-0 mt-3 flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-3">
+          <RobotModelSelect activeRobotModelKey={ activeRobotModelKey } onChange={ onRobotModelChange } />
           <SpaceMouseModeSelect />
           <AddBenchmarkTableButton sess={ sess } />
           <CameraOverrideSaveButton sess={ sess } />
