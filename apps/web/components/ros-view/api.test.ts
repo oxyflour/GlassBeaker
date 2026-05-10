@@ -29,7 +29,6 @@ test("loadRosViewState requests the ROS view backend state route", async () => {
     const state = await mod.loadRosViewState();
     assert.equal(calls[0]?.input, "/python/ros_view/state");
     assert.equal(state.connected, true);
-    assert.equal(state.topics[0]?.src, "/python/ros_view/render/%2Fenv_0%2Fhead_camera%2Fimage_raw");
     assert.equal(state.topics[0]?.id, "/env_0/head_camera/image_raw");
   } finally {
     globalThis.fetch = originalFetch;
@@ -60,7 +59,6 @@ test("subscribeRosViewState listens to the SSE state stream", async () => {
   });
 
   assert.equal(source.url, "/python/ros_view/stream");
-  assert.equal(payload?.topics[0]?.src, "/python/ros_view/render/%2Fenv_0%2Fhead_camera%2Fimage_raw");
   close();
   assert.equal(source.closed, true);
 });

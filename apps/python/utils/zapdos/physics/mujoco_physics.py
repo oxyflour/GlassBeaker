@@ -70,6 +70,11 @@ class MujocoPhysics:
     def _build_geometry(self, asset_root: Path) -> dict[str, ZapdosGeometry]:
         geoms: dict[str, ZapdosGeometry] = {}
         for geom_id in range(self.model.ngeom):
+            geom_model_name = (
+                mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""  # type: ignore
+            )
+            if "collision" in geom_model_name.lower():
+                continue
             geom = ZapdosGeometry(geom_id=geom_id, kind=PRIMITIVE_TYPES.get(int(self.model.geom_type[geom_id])) or "")
             if geom.kind == "mesh":
                 mesh_id = int(self.model.geom_dataid[geom_id])

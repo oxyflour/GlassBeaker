@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import mujoco  # type: ignore
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from utils.zapdos.usd_to_mjcf import USDToMJCFConverter, fmt_f, sanitize_name
 
@@ -15,6 +15,15 @@ ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 
 
 class USDToMJCFTest(unittest.TestCase):
+    def bind_constant_material(self, stage, material_path: str, color: tuple[float, float, float]):
+        material = UsdShade.Material.Define(stage, material_path)
+        shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
+        shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(
+            Gf.Vec3f(*color)
+        )
+        material.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
+        return material
+
     def test_force_body_paths_emit_scene_object_as_top_level_body(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scene_path = Path(tmpdir) / "scene_object.usda"
@@ -197,6 +206,72 @@ def Xform "World"
             root = ET.parse(output_xml).getroot()
             self.assertEqual(root.findall(".//geom"), [])
 
+    def test_instance_proxy_mesh_is_exported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            asset_path = root / "visual_asset.usda"
+            scene_path = root / "instance_visual.usda"
+            output_xml = root / "instance_visual.xml"
+
+            asset_stage = Usd.Stage.CreateNew(str(asset_path))
+            visual_root = UsdGeom.Xform.Define(asset_stage, "/VisualRoot")
+            asset_stage.SetDefaultPrim(visual_root.GetPrim())
+            mesh = UsdGeom.Mesh.Define(asset_stage, "/VisualRoot/Tri")
+            mesh.CreatePointsAttr([(-1, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)])
+            mesh.CreateFaceVertexCountsAttr([3, 3, 3, 3])
+            mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 1, 3, 1, 2, 3, 0, 2, 3])
+            asset_stage.GetRootLayer().Save()
+
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            body = UsdGeom.Xform.Define(stage, "/World/Body")
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(1.0)
+            visuals = UsdGeom.Xform.Define(stage, "/World/Body/visuals")
+            visuals.GetPrim().GetReferences().AddReference(str(asset_path.resolve()))
+            visuals.GetPrim().SetInstanceable(True)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="instance_visual").convert()
+
+            geom = ET.parse(output_xml).getroot().find(".//geom")
+            self.assertIsNotNone(geom)
+            self.assertEqual(geom.attrib["type"], "mesh")
+            model = mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
+            self.assertEqual(model.ngeom, 1)
+
+    def test_stronger_ancestor_material_binding_overrides_descendant_default_material(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "strong_material.usda"
+            output_xml = Path(tmpdir) / "strong_material.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            body = UsdGeom.Xform.Define(stage, "/World/Body")
+            mesh = UsdGeom.Mesh.Define(stage, "/World/Body/Mesh")
+            mesh.CreatePointsAttr([(-1, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)])
+            mesh.CreateFaceVertexCountsAttr([3, 3, 3, 3])
+            mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 1, 3, 1, 2, 3, 0, 2, 3])
+
+            white = self.bind_constant_material(stage, "/World/Looks/White", (1.0, 1.0, 1.0))
+            gray = self.bind_constant_material(stage, "/World/Looks/Gray", (0.2, 0.3, 0.4))
+            UsdShade.MaterialBindingAPI(mesh.GetPrim()).Bind(white)
+            UsdShade.MaterialBindingAPI(body.GetPrim()).Bind(
+                gray,
+                bindingStrength=UsdShade.Tokens.strongerThanDescendants,
+            )
+            stage.GetRootLayer().Save()
+
+            converter = USDToMJCFConverter(scene_path, output_xml, model_name="strong_material")
+            prim = converter.stage.GetPrimAtPath("/World/Body/Mesh")
+
+            self.assertEqual(converter.get_bound_material_path(prim), "/World/Looks/Gray")
+            rgba = converter.get_material_diffuse_rgba(prim)
+            self.assertEqual(
+                [round(float(value), 3) for value in rgba],
+                [0.2, 0.3, 0.4, 1.0],
+            )
+
     def test_cube_scale_changes_emitted_box_size(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scene_path = Path(tmpdir) / "scaled_cube.usda"
@@ -278,6 +353,52 @@ def Xform "World"
             actuator = ET.parse(output_xml).getroot().find("./actuator/position")
             self.assertIsNotNone(actuator)
             self.assertEqual(actuator.attrib["kp"], fmt_f(1e4))
+            mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
+
+    def test_position_drive_uses_actuator_without_joint_spring_attrs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "position_drive.usda"
+            output_xml = Path(tmpdir) / "position_drive.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            base = UsdGeom.Xform.Define(stage, "/World/Base")
+            arm = UsdGeom.Xform.Define(stage, "/World/Arm")
+            for prim in (base.GetPrim(), arm.GetPrim()):
+                UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(1.0)
+
+            joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Arm/RevoluteJoint")
+            joint.CreateBody0Rel().SetTargets([base.GetPath()])
+            joint.CreateBody1Rel().SetTargets([arm.GetPath()])
+            joint.CreateAxisAttr("Z")
+            joint.CreateLowerLimitAttr(-45.0)
+            joint.CreateUpperLimitAttr(45.0)
+            joint_prim = joint.GetPrim()
+            joint_prim.CreateAttribute(
+                "drive:angular:physics:damping",
+                Sdf.ValueTypeNames.Float,
+            ).Set(10.0)
+            joint_prim.CreateAttribute(
+                "drive:angular:physics:stiffness",
+                Sdf.ValueTypeNames.Float,
+            ).Set(100.0)
+            joint_prim.CreateAttribute(
+                "drive:angular:physics:targetPosition",
+                Sdf.ValueTypeNames.Float,
+            ).Set(15.0)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="position_drive").convert()
+
+            root = ET.parse(output_xml).getroot()
+            joint_xml = root.find(".//joint")
+            self.assertIsNotNone(joint_xml)
+            self.assertEqual(joint_xml.attrib.get("damping"), fmt_f(10.0))
+            self.assertNotIn("stiffness", joint_xml.attrib)
+            self.assertNotIn("springref", joint_xml.attrib)
+            actuator = root.find("./actuator/position")
+            self.assertIsNotNone(actuator)
+            self.assertEqual(actuator.attrib.get("joint"), joint_xml.attrib["name"])
             mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
 
     def test_explicit_collision_enabled_visual_geom_keeps_contact_bits(self):

@@ -584,6 +584,55 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mesh["body"], "Scene_Crate")
         self.assertIn("localMatrix", mesh)
 
+    def test_get_visual_ignores_collision_mesh_that_reuses_visual_asset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            xml_path = root / "scene.xml"
+            mesh_path = root / "shared.obj"
+            mesh_path.write_text(
+                "\n".join((
+                    "v -1 0 0",
+                    "v 1 0 0",
+                    "v 0 1 0",
+                    "v 0 0 1",
+                    "f 1 2 3",
+                    "f 1 2 4",
+                    "f 2 3 4",
+                    "f 1 3 4",
+                    "",
+                )),
+                encoding="utf-8",
+            )
+            xml_path.write_text(
+                """
+<mujoco>
+  <asset>
+    <mesh name="shared" file="shared.obj"/>
+  </asset>
+  <worldbody>
+    <body name="RobotLink" pos="0 0 0.2">
+      <geom name="RobotLink_visuals_geom" type="mesh" mesh="shared" rgba="0.2 0.3 0.4 1"/>
+      <geom name="RobotLink_collisions_geom" type="mesh" mesh="shared" rgba="1 1 1 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+""".strip(),
+                encoding="utf-8",
+            )
+            physics = MODULE.ZapdosPhysics(
+                "sess-1",
+                SimpleNamespace(mjcf=xml_path),
+                {"RobotLink": "MyRobot/RobotLink"},
+            )
+
+            payload = physics.get_visual()
+
+        self.assertEqual(len(payload["meshes"]), 1)
+        self.assertEqual(
+            [round(value, 3) for value in payload["meshes"][0]["color"]],
+            [0.2, 0.3, 0.4, 1.0],
+        )
+
     def test_set_body_pose_updates_editable_scene_body(self):
         session = self.build_pose_edit_session()
         body_id = mujoco.mj_name2id(session.physics.model, mujoco.mjtObj.mjOBJ_BODY, "Scene_Crate")  # type: ignore

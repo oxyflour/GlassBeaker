@@ -488,6 +488,14 @@ class USDToMJCFConverter:
                 return val
         return default
 
+    def stage_prims(self, include_instance_proxies: bool = False):
+        if not include_instance_proxies:
+            return self.stage.Traverse()
+        return Usd.PrimRange.Stage(
+            self.stage,
+            Usd.TraverseInstanceProxies(Usd.PrimDefaultPredicate),
+        )
+
     def physics_attr_prims(self, prim):
         yield prim
         entity = prim.GetChild("entity")
@@ -578,13 +586,20 @@ class USDToMJCFConverter:
         return np.array([float(rgb[0]), float(rgb[1]), float(rgb[2]), float(alpha)], dtype=float)
 
     def get_bound_material_path(self, prim) -> Optional[str]:
+        fallback_material_path = None
         current = prim
         while current and current.IsValid():
-            material_path = self.get_rel_target_path(current, "material:binding")
-            if material_path is not None:
-                return material_path
+            rel = current.GetRelationship("material:binding")
+            if rel and rel.IsValid():
+                targets = rel.GetTargets()
+                if targets:
+                    material_path = str(targets[0])
+                    if rel.GetMetadata("bindMaterialAs") == UsdShade.Tokens.strongerThanDescendants: # type: ignore
+                        return material_path
+                    if fallback_material_path is None:
+                        fallback_material_path = material_path
             current = current.GetParent()
-        return None
+        return fallback_material_path
 
     def get_surface_shader(self, material_prim):
         material = UsdShade.Material(material_prim) # type: ignore
@@ -1446,7 +1461,7 @@ class USDToMJCFConverter:
     # ------------------------
 
     def build_nodes(self):
-        for prim in self.stage.Traverse():
+        for prim in self.stage_prims(include_instance_proxies=True):
             if not self.prim_is_body_candidate(prim):
                 continue
 
@@ -1493,7 +1508,7 @@ class USDToMJCFConverter:
             emitted_camera_keys.add(key)
             self.world_cameras.append(metadata_camera)
 
-        for prim in self.stage.Traverse():
+        for prim in self.stage_prims(include_instance_proxies=True):
             if not prim.IsA(UsdGeom.Camera): # type: ignore
                 continue
 
@@ -1594,6 +1609,9 @@ class USDToMJCFConverter:
             and not self.range_is_finite(joint.range)
             and joint.damping is not None
         )
+
+    def uses_position_actuator(self, joint: JointData) -> bool:
+        return joint.kind in ("hinge", "slide") and joint.springref is not None
 
     def estimate_velocity_kv(self, joint: JointData) -> float:
         base = float(joint.damping) if joint.damping is not None and joint.damping > 0.0 else 1.0
@@ -1697,7 +1715,7 @@ class USDToMJCFConverter:
             if joint.kind not in ("hinge", "slide") or not self.joint_has_drive(joint):
                 continue
 
-            if joint.springref is not None:
+            if self.uses_position_actuator(joint):
                 actuator_attr = {
                     "name": f"{joint.name}_position",
                     "joint": joint.name,
@@ -1847,9 +1865,9 @@ class USDToMJCFConverter:
                 joint_attr["range"] = fmt_vec(j.range)
             if j.damping is not None:
                 joint_attr["damping"] = fmt_f(j.damping)
-            if j.stiffness is not None:
+            if j.stiffness is not None and not self.uses_position_actuator(j):
                 joint_attr["stiffness"] = fmt_f(j.stiffness)
-            if j.springref is not None:
+            if j.springref is not None and not self.uses_position_actuator(j):
                 joint_attr["springref"] = fmt_f(j.springref)
             if j.actuatorfrcrange is not None:
                 joint_attr["actuatorfrcrange"] = fmt_vec(j.actuatorfrcrange)
