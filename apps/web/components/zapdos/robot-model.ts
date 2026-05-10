@@ -5,7 +5,7 @@ export type RobotModelKey = "r1pro" | "moz1";
 export const DEFAULT_ROBOT_MODEL_KEY: RobotModelKey = "r1pro";
 
 const ROBOT_USD_BY_KEY: Record<RobotModelKey, string> = {
-  moz1: "deps/moz01/spirit01_model/urdf/moz1.urdf",
+  moz1: "deps/spirit01_model/USD/Moz1_robot_only.usda",
   r1pro: "deps/galaxea/object/r1pro/r1pro.usda",
 };
 

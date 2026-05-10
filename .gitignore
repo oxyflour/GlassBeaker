@@ -13,7 +13,6 @@ __pycache__/
 
 tmp/
 build/
-deps/
 dist
 out
 
