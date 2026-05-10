@@ -94,7 +94,9 @@ class RosSession(Session):
             try:
                 msg = self.msgs.get(False)
                 if self.sock:
-                    await self.sock.send(pickle.dumps(['', None, msg]), False)
+                    topic, msg = msg['topic'], msg['msg']
+                    data = pickle.dumps([f'ros:{topic}', None, msg])
+                    await self.sock.send(data, False)
             except queue.Empty:
                 await asyncio.sleep(0.1)
     

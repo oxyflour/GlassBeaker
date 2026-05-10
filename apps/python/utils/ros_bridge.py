@@ -30,17 +30,15 @@ class Bridge:
         await self.call('subscribe', [topic, type])
     
     def reply(self, call: str, err, ret):
-        if call in self.calls:
+        if call.startswith('ros:'):
+            topic = call[len('ros:'):]
+            for callback in self.subs.get(topic) or []:
+                callback(topic, ret)
+        else:
             item = self.calls[call]
             if err:
                 item.set_exception(err)
             else:
                 item.set_result(ret)
-        elif 'topic' in ret:
-            topic = ret['topic']
-            for callback in self.subs.get(topic) or []:
-                callback(topic, ret.get('msg'))
-        elif call:
-            print(f'ignored call {call}')
 
 bridge = Bridge()

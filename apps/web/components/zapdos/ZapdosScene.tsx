@@ -50,17 +50,22 @@ function Cameras({ sess, onRuntimeError }: { sess: string; onRuntimeError: (mess
         if (!response.ok) throw new Error(await response.text());
         return await response.json() as Record<string, number[]>;
       })
-      .then(result => setCameras(Object.keys(result)))
+      // JUST FOR DEBUG
+      .then(result => setCameras(Object.keys(result).slice(0, 1)))
       .catch(error => onRuntimeError(getZapdosRuntimeErrorMessage(error)));
   }, [onRuntimeError, sess]);
-  return <div className="absolute bottom-0 left-0 w-full">{cameras.map(camera => (
-    <img
-      alt={ camera }
-      className="inline"
-      key={ camera }
-      src={ `/python/zapdos/${sess}/render/${camera}` }
-      style={ { width, marginLeft, marginBottom: 8 } } />
-  ))}</div>;
+  return <div className="absolute bottom-0 left-0 w-full">
+  {
+    cameras.map(camera => (
+      <img
+        alt={ camera }
+        className="inline"
+        key={ camera }
+        src={ `/python/zapdos/${sess}/render/${camera}` }
+        style={ { width, marginLeft, marginBottom: 8 } } />
+    ))
+  }
+  </div>;
 }
 
 function SceneRuntime({
@@ -293,7 +298,7 @@ export function ZapdosScene({
       <ambientLight intensity={ 1.2 } />
       <SurfacePivotControls enabled={ !transformDragging } pickRootName={ PIVOT_PICK_ROOT } />
       <EffectComposer multisampling={ 8 }><N8AO aoRadius={ 1 } distanceFalloff={ 1 } intensity={ 4 } /></EffectComposer>
-      <Environment preset="studio" />
+      <Environment files="/studio_small_03_1k.hdr" />
       <group name={ PIVOT_PICK_ROOT }>
         <group position={ [0, 0, 2] }>
           <SparkSplat url="/tmp/butterfly.spz" />
