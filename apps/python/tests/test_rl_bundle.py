@@ -232,6 +232,11 @@ class RLBundleTest(unittest.TestCase):
         self.assertAlmostEqual(clipping[1], 80.0)
         self.assertEqual(tuple(camera_prim.GetAttribute("xformOp:translate").Get()), (0.1, 0.2, 0.3))
 
+    def test_r1pro_bundle_keeps_original_camera_names(self):
+        bundle = ensure_render_bundle(ROBOT_USD, DEFAULT_SCENE_USD)
+        self.assertIn("head_camera", bundle.camera_names())
+        self.assertNotIn("main", bundle.camera_names())
+
 
 if __name__ == "__main__":
     unittest.main()

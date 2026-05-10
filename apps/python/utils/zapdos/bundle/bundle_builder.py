@@ -11,9 +11,11 @@ from pxr import Usd
 
 from utils.camera_override import apply_camera_overrides
 from utils.user_config import read_user_config
+from utils.zapdos.physics.mujoco_tools import compile_urdf_to_mjcf, merge_mjcf_files
 
 from .camera_specs import build_render_cameras
 from .render_bundle import DEFAULT_SCENE_USD, RenderBundle
+from .robot_assets import RobotAssetDescriptor, resolve_robot_assets
 from .scene_catalog import collect_scene_objects
 from .stage_builder import (
     build_render_scene,
@@ -27,10 +29,11 @@ from .usd_to_mjcf_adapter import USDToMJCFConverter
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 TMP_ROOT = REPO_ROOT / "apps" / "python" / "tmp" / "rl_bundles"
-BUNDLE_VERSION = 6
+BUNDLE_VERSION = 7
 BUNDLE_DEPENDENCY_FILES = (
     Path(__file__).resolve(),
     Path(__file__).with_name("render_bundle.py").resolve(),
+    Path(__file__).with_name("robot_assets.py").resolve(),
     Path(__file__).with_name("stage_builder.py").resolve(),
     Path(__file__).with_name("camera_specs.py").resolve(),
     Path(__file__).with_name("scene_catalog.py").resolve(),
@@ -42,7 +45,9 @@ BUNDLE_DEPENDENCY_FILES = (
 def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
     robot_usd = robot_usd.resolve()
     scene_usd = scene_usd.resolve()
-    bundle_dir = TMP_ROOT / _bundle_key(robot_usd, scene_usd)
+    probe_dir = TMP_ROOT / "_probe" / robot_usd.stem
+    probe_descriptor = resolve_robot_assets(robot_usd, probe_dir)
+    bundle_dir = TMP_ROOT / _bundle_key(robot_usd, scene_usd, probe_descriptor.dependency_paths)
     manifest_path = bundle_dir / "manifest-v1.json"
     if manifest_path.exists():
         bundle = RenderBundle.from_json(json.loads(manifest_path.read_text(encoding="utf-8")))
@@ -50,19 +55,20 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
             return bundle
 
     bundle_dir.mkdir(parents=True, exist_ok=True)
+    descriptor = resolve_robot_assets(robot_usd, bundle_dir)
     bundle = _initial_bundle(robot_usd, scene_usd, bundle_dir)
     scene_objects = collect_scene_objects(scene_usd)
-    up_axis, meters_per_unit = compose_stage_metadata(scene_usd, robot_usd)
-    robot_stage = Usd.Stage.Open(str(robot_usd))
+    up_axis, meters_per_unit = compose_stage_metadata(scene_usd, descriptor.visual_usd)
+    robot_stage = Usd.Stage.Open(str(descriptor.visual_usd))
     if robot_stage is None:
-        raise RuntimeError(f"Failed to open robot stage: {robot_usd}")
-    source_map = _source_map(robot_usd, robot_stage, bundle, scene_usd, scene_objects, up_axis, meters_per_unit)
+        raise RuntimeError(f"Failed to open robot stage: {descriptor.visual_usd}")
+    source_map = _source_map(descriptor, robot_stage, bundle, scene_usd, scene_objects, up_axis, meters_per_unit)
     model = mujoco.MjModel.from_xml_path(str(bundle.mjcf))  # type: ignore
     robot_bodies = _robot_body_names(model, source_map)
     body_poses = _body_pose_map(model, robot_bodies)
     cameras = apply_camera_overrides(build_render_cameras(model, {body: f"MyRobot/{body}" for body in robot_bodies}))
     body_map = _write_render_stages(
-        robot_usd,
+        descriptor,
         scene_usd,
         bundle,
         robot_stage,
@@ -110,18 +116,18 @@ def _initial_bundle(robot_usd: Path, scene_usd: Path, bundle_dir: Path) -> Rende
 
 
 def _source_map(
-    robot_usd: Path,
+    descriptor: RobotAssetDescriptor,
     robot_stage: Usd.Stage,
     bundle: RenderBundle,
     scene_usd: Path,
     scene_objects,
     up_axis: str,
     meters_per_unit: float,
-) -> dict[str, str]:
+) -> dict[str, list[str]]:
     with ThreadPoolExecutor(max_workers=2) as executor:
         sim_scene_future = executor.submit(
             _build_sim_scene_mjcf,
-            robot_usd,
+            descriptor,
             scene_usd,
             bundle.sim_scene_usda,
             bundle.mjcf,
@@ -130,17 +136,17 @@ def _source_map(
             DEFAULT_SCENE_USD,
             {spec.sim_path for spec in scene_objects},
         )
-        source_map = robot_source_map(robot_usd, source_stage=robot_stage)
+        source_map = descriptor.attachments_by_body or robot_source_map(descriptor.visual_usd, source_stage=robot_stage)
         sim_scene_future.result()
     return source_map
 
 
 def _write_render_stages(
-    robot_usd: Path,
+    descriptor: RobotAssetDescriptor,
     scene_usd: Path,
     bundle: RenderBundle,
     robot_stage: Usd.Stage,
-    source_map: dict[str, str],
+    source_map: dict[str, list[str]],
     robot_bodies: list[str],
     body_poses: dict[str, tuple[list[float], list[float]]],
     cameras,
@@ -158,7 +164,7 @@ def _write_render_stages(
             DEFAULT_SCENE_USD,
         )
         body_map = build_robot_wrapper(
-            robot_usd,
+            descriptor.visual_usd,
             robot_bodies,
             source_map,
             body_poses,
@@ -167,13 +173,14 @@ def _write_render_stages(
             up_axis,
             meters_per_unit,
             source_stage=robot_stage,
+            static_visual_paths=descriptor.static_visual_paths,
         )
         scene_render_future.result()
     return body_map
 
 
 def _build_sim_scene_mjcf(
-    robot_usd: Path,
+    descriptor: RobotAssetDescriptor,
     scene_usd: Path,
     sim_scene_usda: Path,
     mjcf: Path,
@@ -182,14 +189,21 @@ def _build_sim_scene_mjcf(
     fallback_scene_usd: Path | None,
     force_body_paths: set[str],
 ) -> None:
-    sim_stage = build_sim_scene(
-        robot_usd,
-        scene_usd,
-        sim_scene_usda,
-        up_axis,
-        meters_per_unit,
-        fallback_scene_usd,
-    )
+    if descriptor.physics_input.suffix.lower() == ".urdf":
+        robot_xml = mjcf.with_name("robot.xml")
+        scene_xml = mjcf.with_name("scene.xml")
+        compile_urdf_to_mjcf(descriptor.physics_input, robot_xml)
+        sim_stage = build_sim_scene(None, scene_usd, sim_scene_usda, up_axis, meters_per_unit, fallback_scene_usd)
+        USDToMJCFConverter(
+            sim_scene_usda,
+            scene_xml,
+            "scene_bundle",
+            force_body_paths=force_body_paths,
+            stage=sim_stage,
+        ).convert()
+        merge_mjcf_files(robot_xml, scene_xml, mjcf)
+        return
+    sim_stage = build_sim_scene(descriptor.physics_input, scene_usd, sim_scene_usda, up_axis, meters_per_unit, fallback_scene_usd)
     USDToMJCFConverter(
         sim_scene_usda,
         mjcf,
@@ -199,7 +213,7 @@ def _build_sim_scene_mjcf(
     ).convert()
 
 
-def _robot_body_names(model, source_map: dict[str, str]) -> list[str]:
+def _robot_body_names(model, source_map: dict[str, list[str]]) -> list[str]:
     names: list[str] = []
     for body_id in range(1, model.nbody):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)  # type: ignore
@@ -210,7 +224,7 @@ def _robot_body_names(model, source_map: dict[str, str]) -> list[str]:
     return names
 
 
-def _bundle_key(robot_usd: Path, scene_usd: Path) -> str:
+def _bundle_key(robot_usd: Path, scene_usd: Path, extra_paths: list[Path] | tuple[Path, ...] = ()) -> str:
     digest = hashlib.sha1()
     digest.update(f"bundle-v{BUNDLE_VERSION}".encode("utf-8"))
     try:
@@ -218,7 +232,7 @@ def _bundle_key(robot_usd: Path, scene_usd: Path) -> str:
     except RuntimeError:
         overrides = {}
     digest.update(json.dumps(overrides, sort_keys=True).encode("utf-8"))
-    for path in (robot_usd, scene_usd, *BUNDLE_DEPENDENCY_FILES):
+    for path in dict.fromkeys((robot_usd, scene_usd, *extra_paths, *BUNDLE_DEPENDENCY_FILES)):
         stat = path.stat()
         digest.update(str(path).encode("utf-8"))
         digest.update(str(stat.st_mtime_ns).encode("utf-8"))

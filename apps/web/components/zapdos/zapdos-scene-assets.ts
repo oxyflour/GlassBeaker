@@ -41,9 +41,10 @@ async function loadObj(url: string) {
 export async function loadSceneGeometry(item: MeshVisual) {
   const { size = [1, 1, 1] } = item;
   if (item.kind === "mesh") {
-    if (item.mesh?.endsWith(".stl")) {
+    const ext = item.mesh?.split(".").slice(-1)[0].toLowerCase();
+    if (item.mesh && ext === "stl") {
       return await (meshes[item.mesh] || (meshes[item.mesh] = stlLoader.loadAsync(item.mesh)));
-    } else if (item.mesh?.endsWith(".obj")) {
+    } else if (item.mesh && ext === "obj") {
       return await (meshes[item.mesh] || (meshes[item.mesh] = loadObj(item.mesh)))
     } else {
       throw new Error(`unknown mesh type ${item.mesh}`);

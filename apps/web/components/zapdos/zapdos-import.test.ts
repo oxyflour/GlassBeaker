@@ -22,6 +22,13 @@ test("buildZapdosSessionStorageKey changes when scene changes", () => {
   );
 });
 
+test("buildZapdosSessionStorageKey keeps raw robot_usd strings distinct", () => {
+  assert.notEqual(
+    buildZapdosSessionStorageKey(null, "deps/galaxea/object/r1pro/r1pro.usda"),
+    buildZapdosSessionStorageKey(null, "deps/moz01/spirit01_model/urdf/moz1.urdf")
+  );
+});
+
 test("parseZapdosInitEvent recognizes error payloads", () => {
   assert.deepEqual(parseZapdosInitEvent("error: scene_usd not found"), {
     phase: "error",

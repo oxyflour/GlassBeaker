@@ -1,6 +1,7 @@
 node_modules
 .pnpm-store
 *.tsbuildinfo
+MUJOCO_LOG.TXT
 
 apps/web/.next
 !apps/web/.env.example

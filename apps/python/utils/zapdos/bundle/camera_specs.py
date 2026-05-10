@@ -9,6 +9,9 @@ SCENE_CAMERA_ROOT = "/SceneRender"
 CAMERA_CLIPPING_RANGE = [0.01, 100.0]
 CAMERA_HORIZONTAL_APERTURE = 32.0
 CAMERA_VERTICAL_APERTURE = 24.0
+FALLBACK_MAIN_CAMERA_POS = [2.5, -2.5, 1.8]
+FALLBACK_MAIN_CAMERA_QUAT = [0.7876584850800812, 0.48285349897730395, 0.2000044679157027, 0.32625882703841574]
+FALLBACK_MAIN_CAMERA_FOVY = 45.0
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,22 @@ def cameras_json(cameras: list[RenderCamera]) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
+def fallback_main_camera() -> RenderCamera:
+    return RenderCamera(
+        name="main",
+        prim=f"{SCENE_CAMERA_ROOT}/main",
+        topic=image_topic("main"),
+        frame_id="main",
+        body=None,
+        pos=list(FALLBACK_MAIN_CAMERA_POS),
+        quat=list(FALLBACK_MAIN_CAMERA_QUAT),
+        fovy=FALLBACK_MAIN_CAMERA_FOVY,
+        horizontal_aperture=float(CAMERA_HORIZONTAL_APERTURE),
+        vertical_aperture=float(CAMERA_VERTICAL_APERTURE),
+        clipping_range=[float(value) for value in CAMERA_CLIPPING_RANGE],
+    )
+
+
 def build_render_cameras(model, body_paths: dict[str, str]) -> list[RenderCamera]:
     cameras: list[RenderCamera] = []
     for cam_id in range(model.ncam):
@@ -92,7 +111,7 @@ def build_render_cameras(model, body_paths: dict[str, str]) -> list[RenderCamera
             clipping_range=[float(value) for value in CAMERA_CLIPPING_RANGE],
         ))
     if not cameras:
-        raise RuntimeError("MuJoCo model has no cameras.")
+        cameras = [fallback_main_camera()]
     camera_name_to_index(cameras)
     return cameras
 
@@ -101,10 +120,14 @@ __all__ = [
     "CAMERA_CLIPPING_RANGE",
     "CAMERA_HORIZONTAL_APERTURE",
     "CAMERA_VERTICAL_APERTURE",
+    "FALLBACK_MAIN_CAMERA_FOVY",
+    "FALLBACK_MAIN_CAMERA_POS",
+    "FALLBACK_MAIN_CAMERA_QUAT",
     "RenderCamera",
     "SCENE_CAMERA_ROOT",
     "build_render_cameras",
     "camera_name_to_index",
     "cameras_json",
+    "fallback_main_camera",
     "image_topic",
 ]

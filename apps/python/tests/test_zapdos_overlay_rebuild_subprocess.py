@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 import tempfile
 import unittest
@@ -40,7 +39,7 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
         session.robot_usd.write_text("#usda 1.0\n", encoding="utf-8")
         return session
 
-    def test_prepare_overlay_rebuild_runs_script_subprocess(self):
+    def test_prepare_overlay_rebuild_runs_inline_without_spawning_subprocess(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = self._build_session(Path(tmp))
             next_overlay = ACTION.default_overlay_state("C:/assets")
@@ -53,28 +52,22 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
             }]
             previous_overlay = ACTION.default_overlay_state("C:/assets")
             fake_bundle = SimpleNamespace(bundle_dir=Path("bundle"))
+            payload = {
+                "bundle": {"bundle_dir": "bundle", "cameras": []},
+                "next_revision": "rev-2",
+            }
 
-            def fake_run(command, **kwargs):
-                self.assertEqual(command[0], sys.executable)
-                self.assertEqual(command[1], "-u")
-                self.assertEqual(Path(command[2]).resolve(), SCRIPT_PATH.resolve())
-                request_path = Path(command[3])
-                response_path = Path(command[4])
-                payload = json.loads(request_path.read_text(encoding="utf-8"))
-                self.assertEqual(payload["robot_usd"], str(session.robot_usd))
-                self.assertEqual(payload["base_scene_usd"], str(session.base_scene_usd))
-                self.assertEqual(payload["composed_scene_usd"], str(session.composed_scene_usd))
-                self.assertEqual(payload["next_overlay"], next_overlay)
-                self.assertEqual(payload["support_infos"], {"Scene_table_000_01": {"top_z": 0.75}})
-                response_path.write_text(json.dumps({
-                    "bundle": {"bundle_dir": "bundle", "cameras": []},
-                    "next_revision": "rev-2",
-                }), encoding="utf-8")
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-            with mock.patch.object(SESSION_MODULE.rebuild_manager, "_resolve_overlay_rebuild_interpreter", return_value=sys.executable):
-                with mock.patch.object(SESSION_MODULE.rebuild_manager, "_run_overlay_rebuild_subprocess", side_effect=fake_run) as run_mock:
-                    with mock.patch.object(SESSION_MODULE.rebuild_manager.RenderBundle, "from_json", return_value=fake_bundle) as from_json:
+            with mock.patch("subprocess.Popen") as popen:
+                with mock.patch.object(
+                    SESSION_MODULE.rebuild_manager,
+                    "_run_overlay_rebuild_inline",
+                    return_value=payload,
+                ) as run_inline:
+                    with mock.patch.object(
+                        SESSION_MODULE.rebuild_manager.RenderBundle,
+                        "from_json",
+                        return_value=fake_bundle,
+                    ) as from_json:
                         prepared = ACTION.ZapdosSession._prepare_overlay_rebuild(
                             session,
                             next_overlay,
@@ -83,7 +76,14 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
                             "rev-1",
                         )
 
-        run_mock.assert_called_once()
+        popen.assert_not_called()
+        run_inline.assert_called_once_with({
+            "robot_usd": str(session.robot_usd),
+            "base_scene_usd": str(session.base_scene_usd),
+            "composed_scene_usd": str(session.composed_scene_usd),
+            "next_overlay": next_overlay,
+            "support_infos": {"Scene_table_000_01": {"top_z": 0.75}},
+        }, mock.ANY)
         from_json.assert_called_once_with({"bundle_dir": "bundle", "cameras": []})
         self.assertIs(prepared.bundle, fake_bundle)
         self.assertEqual(prepared.next_overlay, next_overlay)

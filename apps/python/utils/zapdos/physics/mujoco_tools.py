@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import os
 from pathlib import Path
 import re
 import sys
+import xml.etree.ElementTree as ET
 
 import mujoco  # type: ignore
 import numpy as np
@@ -167,8 +169,43 @@ async def create_xml(input: str):
     out_xml.write_text(xml_str)
     return out_xml
 
+
+def compile_urdf_to_mjcf(urdf_path: Path, output_xml: Path) -> None:
+    model = mujoco.MjModel.from_xml_path(str(urdf_path))  # type: ignore
+    output_xml.parent.mkdir(parents=True, exist_ok=True)
+    mujoco.mj_saveLastXML(str(output_xml), model)  # type: ignore
+
+
+def merge_mjcf_files(robot_xml: Path, scene_xml: Path, output_xml: Path) -> None:
+    scene_tree = ET.parse(scene_xml)
+    robot_tree = ET.parse(robot_xml)
+    scene_root = scene_tree.getroot()
+    robot_root = robot_tree.getroot()
+    for tag in ("asset", "worldbody", "actuator", "sensor", "contact", "equality", "tendon", "default"):
+        _merge_container(scene_root, robot_root, tag)
+    for child in robot_root:
+        if child.tag in {"compiler", "option", "asset", "worldbody", "actuator", "sensor", "contact", "equality", "tendon", "default"}:
+            continue
+        if scene_root.find(child.tag) is None:
+            scene_root.append(deepcopy(child))
+    output_xml.parent.mkdir(parents=True, exist_ok=True)
+    scene_tree.write(output_xml, encoding="utf-8", xml_declaration=True)
+
+
+def _merge_container(scene_root, robot_root, tag: str) -> None:
+    source = robot_root.find(tag)
+    if source is None:
+        return
+    target = scene_root.find(tag)
+    if target is None:
+        scene_root.append(deepcopy(source))
+        return
+    for child in source:
+        target.append(deepcopy(child))
+
 __all__ = [
     "body_world_pose",
+    "compile_urdf_to_mjcf",
     "create_xml",
     "decode_mesh_path",
     "decode_texture_path",
@@ -176,6 +213,7 @@ __all__ = [
     "flatten_matrix",
     "geom_size",
     "geom_world_pose",
+    "merge_mjcf_files",
     "mesh_world_pose",
     "pose_matrix",
     "quat_matrix",

@@ -4,9 +4,7 @@ import asyncio
 import contextlib
 import importlib.util
 import io
-import json
 import queue
-import subprocess
 import sys
 import tempfile
 import threading
@@ -87,7 +85,7 @@ class ZapdosOverlayRebuildDiagnosticsTest(unittest.TestCase):
         with mock.patch.dict(sys.modules, _stub_modules(), clear=False):
             return _load_module(SCRIPT_PATH, "prepare_zapdos_overlay_rebuild_diagnostics_test")
 
-    def test_prepare_overlay_rebuild_subprocess_uses_timeout_and_sanitized_env(self):
+    def test_prepare_overlay_rebuild_runs_inline_without_spawning_subprocess(self):
         module = self.load_scene_ops()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -101,102 +99,73 @@ class ZapdosOverlayRebuildDiagnosticsTest(unittest.TestCase):
             previous_overlay = module.default_overlay_state("C:/assets")
             fake_bundle = SimpleNamespace(bundle_dir=Path("bundle"))
 
-            class FakeProcess:
-                def __init__(self):
-                    self.stdout = io.StringIO("")
-                    self.stderr = io.StringIO("")
-                    self.returncode = 0
-
-                def wait(self, timeout=None):
-                    self.timeout = timeout
-                    return self.returncode
-
-            def fake_popen(command, **kwargs):
-                self.assertEqual(kwargs["env"]["PYTHONUNBUFFERED"], "1")
-                self.assertNotIn("ELECTRON_RUN_AS_NODE", kwargs["env"])
-                self.assertEqual(kwargs["bufsize"], 1)
-                Path(command[4]).write_text(json.dumps({
-                    "bundle": {"bundle_dir": "bundle", "cameras": []},
-                    "next_revision": "rev-2",
-                }), encoding="utf-8")
-                process = FakeProcess()
-                self.process = process
-                return process
-
-            with mock.patch.dict("os.environ", {"ELECTRON_RUN_AS_NODE": "1"}, clear=False):
-                with mock.patch("subprocess.Popen", side_effect=fake_popen):
+            payload = {
+                "bundle": {"bundle_dir": "bundle", "cameras": []},
+                "next_revision": "rev-2",
+            }
+            with mock.patch("subprocess.Popen") as popen:
+                with mock.patch.object(module, "_run_overlay_rebuild_inline", return_value=payload) as run_inline:
                     with mock.patch.object(module.RenderBundle, "from_json", return_value=fake_bundle):
-                        prepared = module.prepare_overlay_rebuild(session, next_overlay, {}, previous_overlay, "rev-1")
+                        prepared = module.prepare_overlay_rebuild(
+                            session,
+                            next_overlay,
+                            {},
+                            previous_overlay,
+                            "rev-1",
+                        )
 
         self.assertIs(prepared.bundle, fake_bundle)
         self.assertEqual(prepared.next_revision, "rev-2")
-        self.assertEqual(self.process.timeout, 120.0)
+        popen.assert_not_called()
+        run_inline.assert_called_once()
 
-    def test_prepare_overlay_rebuild_falls_back_to_inline_when_interpreter_unavailable(self):
+    def test_prepare_overlay_rebuild_emits_inline_progress_stages(self):
         module = self.load_scene_ops()
+        session = SimpleNamespace(
+            overlay_completions=queue.Queue(),
+            scene_rebuild_jobs={
+                "op-1": module.SceneRebuildJob(
+                    future=module.ConcurrentFuture(),
+                    success_payload={"ok": True, "items": []},
+                    events=queue.Queue(),
+                ),
+            },
+            scene_rebuild_jobs_lock=threading.Lock(),
+        )
+        session.scene_rebuild_future = lambda op_id: module.scene_rebuild_future(session, op_id)
+        session.discard_scene_rebuild_job = lambda op_id: module.discard_scene_rebuild_job(session, op_id)
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            session = SimpleNamespace(
-                robot_usd=root / "robot.usda",
-                base_scene_usd=root / "base_scene.usda",
-                composed_scene_usd=root / "scene-overlay.usda",
-                session_dir=root,
-            )
-            next_overlay = module.default_overlay_state("C:/assets")
-            previous_overlay = module.default_overlay_state("C:/assets")
-            fake_bundle = SimpleNamespace(bundle_dir=Path("bundle"))
-
-            with mock.patch.object(module, "_resolve_overlay_rebuild_interpreter", return_value=None):
-                with mock.patch.object(module, "_run_overlay_rebuild_inline", return_value={
+            session.robot_usd = root / "robot.usda"
+            session.base_scene_usd = root / "base_scene.usda"
+            session.composed_scene_usd = root / "scene-overlay.usda"
+            session.session_dir = root
+            def fake_run_inline(request_payload, stage_logger):
+                stage_logger("write_overlay_scene")
+                stage_logger("ensure_render_bundle")
+                return {
                     "bundle": {"bundle_dir": "bundle", "cameras": []},
                     "next_revision": "rev-2",
-                }) as run_inline:
-                    with mock.patch.object(module, "_run_overlay_rebuild_subprocess") as run_subprocess:
-                        with mock.patch.object(module.RenderBundle, "from_json", return_value=fake_bundle):
-                            prepared = module.prepare_overlay_rebuild(
-                                session,
-                                next_overlay,
-                                {},
-                                previous_overlay,
-                                "rev-1",
-                                op_id="op-1",
-                            )
+                }
 
-        run_inline.assert_called_once()
-        run_subprocess.assert_not_called()
-        self.assertIs(prepared.bundle, fake_bundle)
-        self.assertEqual(prepared.next_revision, "rev-2")
+            with mock.patch.object(module, "_run_overlay_rebuild_inline", side_effect=fake_run_inline):
+                prepared = module.prepare_overlay_rebuild(
+                    session,
+                    module.default_overlay_state("C:/assets"),
+                    {},
+                    module.default_overlay_state("C:/assets"),
+                    "rev-1",
+                    op_id="op-1",
+                )
 
-    def test_prepare_overlay_rebuild_timeout_includes_child_output(self):
-        module = self.load_scene_ops()
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            session = SimpleNamespace(
-                robot_usd=root / "robot.usda",
-                base_scene_usd=root / "base_scene.usda",
-                composed_scene_usd=root / "scene-overlay.usda",
-                session_dir=root,
-            )
-            next_overlay = module.default_overlay_state("C:/assets")
-            previous_overlay = module.default_overlay_state("C:/assets")
-            class FakeProcess:
-                def __init__(self):
-                    self.stdout = io.StringIO("stage: write_overlay_scene\n")
-                    self.stderr = io.StringIO("stage: ensure_render_bundle\n")
-                    self.returncode = None
-
-                def wait(self, timeout=None):
-                    raise subprocess.TimeoutExpired(
-                        cmd=[sys.executable, str(SCRIPT_PATH)],
-                        timeout=timeout or 120.0,
-                    )
-
-                def kill(self):
-                    self.returncode = -9
-
-            with mock.patch("subprocess.Popen", return_value=FakeProcess()):
-                with self.assertRaisesRegex(RuntimeError, "ensure_render_bundle"):
-                    module.prepare_overlay_rebuild(session, next_overlay, {}, previous_overlay, "rev-1")
+        events = module._drain_scene_rebuild_events(session, "op-1")
+        stages = [payload["stage"] for name, payload in events if name == "progress"]
+        self.assertIsNotNone(prepared)
+        self.assertIn("prepare_overlay_rebuild.inline.started", stages)
+        self.assertIn("prepare_overlay_rebuild.write_overlay_scene", stages)
+        self.assertIn("prepare_overlay_rebuild.ensure_render_bundle", stages)
+        self.assertIn("prepare_overlay_rebuild.inline.done", stages)
 
     def test_prepare_overlay_rebuild_script_logs_progress_stages(self):
         script = self.load_script()
@@ -215,35 +184,6 @@ class ZapdosOverlayRebuildDiagnosticsTest(unittest.TestCase):
         output = stderr.getvalue()
         self.assertIn("write_overlay_scene", output)
         self.assertIn("ensure_render_bundle", output)
-
-    def test_run_overlay_rebuild_subprocess_pipes_live_output(self):
-        module = self.load_scene_ops()
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        class FakeProcess:
-            def __init__(self):
-                self.stdout = io.StringIO("child stdout\n")
-                self.stderr = io.StringIO("child stderr\n")
-                self.returncode = 0
-
-            def wait(self, timeout=None):
-                return self.returncode
-
-        with mock.patch("subprocess.Popen", return_value=FakeProcess()):
-            with mock.patch.object(module.sys, "stdout", stdout):
-                with mock.patch.object(module.sys, "stderr", stderr):
-                    result = module._run_overlay_rebuild_subprocess(
-                        [sys.executable, "child.py"],
-                        cwd="C:/tmp",
-                        env={"PYTHONUNBUFFERED": "1"},
-                        timeout=1.0,
-                    )
-
-        self.assertEqual(stdout.getvalue(), "child stdout\n")
-        self.assertEqual(stderr.getvalue(), "child stderr\n")
-        self.assertEqual(result.stdout, "child stdout\n")
-        self.assertEqual(result.stderr, "child stderr\n")
 
     def test_background_prepare_error_completes_scene_rebuild_job_without_drain(self):
         module = self.load_scene_ops()

@@ -29,6 +29,9 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(MODULE)
 
+R1PRO_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
+MOZ1_URDF = REPO_ROOT / "deps" / "moz01" / "spirit01_model" / "urdf" / "moz1.urdf"
+
 
 class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -331,6 +334,46 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                 resolved = MODULE._input_path(req, "scene_usd", Path("unused.usda"))
 
             self.assertEqual(resolved, scene.resolve())
+
+    async def test_zapdos_session_create_accepts_moz1_urdf_bundle(self):
+        create = SESSION_MODULE.ZapdosSession.create
+        bundle = SimpleNamespace()
+        with mock.patch.object(SESSION_MODULE.asyncio, "to_thread", new=mock.AsyncMock(return_value=bundle)) as to_thread:
+            with mock.patch.object(SESSION_MODULE, "ZapdosSession", side_effect=lambda sess, built_bundle: (sess, built_bundle)):
+                result = await create("sess-1", MOZ1_URDF, MODULE.DEFAULT_SCENE_USD)
+
+        self.assertEqual(result, ("sess-1", bundle))
+        to_thread.assert_awaited_once_with(ensure_render_bundle, MOZ1_URDF, MODULE.DEFAULT_SCENE_USD)
+
+    async def test_get_or_create_session_future_uses_default_r1pro_when_query_is_empty(self):
+        req = self.make_request()
+        create = mock.AsyncMock(return_value=SimpleNamespace(camera_index={}))
+
+        with mock.patch.object(MODULE.ZapdosSession, "create", new=create):
+            future = MODULE._get_or_create_session_future(req, "sess-default")
+            await MODULE._await_session_future("sess-default", future)
+
+        create.assert_awaited_once_with("sess-default", MODULE.DEFAULT_ROBOT_USD, MODULE.DEFAULT_SCENE_USD)
+
+    async def test_get_or_create_session_future_accepts_explicit_r1pro_robot_usd(self):
+        req = self.make_request(urlencode({"robot_usd": "deps/galaxea/object/r1pro/r1pro.usda"}))
+        create = mock.AsyncMock(return_value=SimpleNamespace(camera_index={}))
+
+        with mock.patch.object(MODULE.ZapdosSession, "create", new=create):
+            future = MODULE._get_or_create_session_future(req, "sess-r1pro")
+            await MODULE._await_session_future("sess-r1pro", future)
+
+        create.assert_awaited_once_with("sess-r1pro", R1PRO_USD.resolve(), MODULE.DEFAULT_SCENE_USD)
+
+    async def test_get_or_create_session_future_accepts_moz1_urdf_robot_usd(self):
+        req = self.make_request(urlencode({"robot_usd": "deps/moz01/spirit01_model/urdf/moz1.urdf"}))
+        create = mock.AsyncMock(return_value=SimpleNamespace(camera_index={}))
+
+        with mock.patch.object(MODULE.ZapdosSession, "create", new=create):
+            future = MODULE._get_or_create_session_future(req, "sess-moz1")
+            await MODULE._await_session_future("sess-moz1", future)
+
+        create.assert_awaited_once_with("sess-moz1", MOZ1_URDF.resolve(), MODULE.DEFAULT_SCENE_USD)
 
     async def test_failed_bootstrap_is_evicted_and_can_retry(self):
         req = self.make_request()

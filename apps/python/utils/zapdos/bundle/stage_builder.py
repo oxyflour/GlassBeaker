@@ -28,22 +28,22 @@ def compose_stage_metadata(scene_usd: Path, robot_usd: Path | None = None) -> tu
     return "Z", 1.0
 
 
-def robot_source_map(robot_usd: Path, source_stage: Usd.Stage | None = None) -> dict[str, str]:
+def robot_source_map(robot_usd: Path, source_stage: Usd.Stage | None = None) -> dict[str, list[str]]:
     stage = source_stage if source_stage is not None else Usd.Stage.Open(str(robot_usd))
     if stage is None:
         raise RuntimeError(f"Failed to open robot stage: {robot_usd}")
-    source_map: dict[str, str] = {}
+    source_map: dict[str, list[str]] = {}
     for prim in stage.Traverse():
         if not prim.IsValid() or prim.GetTypeName() in SKIP_TYPES:
             continue
         if not prim.IsA(UsdGeom.Xformable):
             continue
-        source_map[sanitize_name(str(prim.GetPath()))] = str(prim.GetPath())
+        source_map[sanitize_name(str(prim.GetPath()))] = [str(prim.GetPath())]
     return source_map
 
 
 def build_sim_scene(
-    robot_usd: Path,
+    robot_usd: Path | None,
     scene_usd: Path,
     output_path: Path,
     up_axis: str,
@@ -52,7 +52,8 @@ def build_sim_scene(
 ) -> Usd.Stage:
     stage = Usd.Stage.CreateNew(str(output_path))
     _configure_stage(stage, up_axis, meters_per_unit)
-    UsdGeom.Xform.Define(stage, "/Root").GetPrim().GetReferences().AddReference(str(robot_usd.resolve()))
+    if robot_usd is not None:
+        UsdGeom.Xform.Define(stage, "/Root").GetPrim().GetReferences().AddReference(str(robot_usd.resolve()))
     scene_root = UsdGeom.Xform.Define(stage, "/Scene").GetPrim()
     _add_scene_references(scene_root, scene_usd, fallback_scene_usd)
     stage.GetRootLayer().Save()
@@ -62,13 +63,14 @@ def build_sim_scene(
 def build_robot_wrapper(
     robot_usd: Path,
     body_names: list[str],
-    source_map: dict[str, str],
+    source_map: dict[str, list[str]],
     initial_poses: dict[str, tuple[list[float], list[float]]] | None,
     cameras: list[RenderCamera],
     output_path: Path,
     up_axis: str,
     meters_per_unit: float,
     source_stage: Usd.Stage | None = None,
+    static_visual_paths: list[str] | None = None,
 ) -> dict[str, str]:
     stage = source_stage if source_stage is not None else Usd.Stage.Open(str(robot_usd))
     if stage is None:
@@ -79,9 +81,11 @@ def build_robot_wrapper(
     wrapper.SetDefaultPrim(root.GetPrim())
     body_map: dict[str, str] = {}
     body_cameras = _group_body_cameras(cameras)
+    for source_path in static_visual_paths or []:
+        _reference_visuals(wrapper, stage, robot_usd, source_path, f"/MyRobot/{_leaf_name(source_path)}")
     for body_name in body_names:
-        source_path = source_map.get(body_name)
-        if source_path is None:
+        source_paths = source_map.get(body_name)
+        if source_paths is None:
             continue
         body = UsdGeom.Xform.Define(wrapper, f"/MyRobot/{body_name}")
         xform = UsdGeom.Xformable(body.GetPrim())
@@ -90,12 +94,11 @@ def build_robot_wrapper(
             pos, quat = initial_poses.get(body_name, (pos, quat))
         xform.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*pos))
         xform.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(Gf.Quatf(*quat))
-        visuals_path = f"{source_path}/visuals"
-        source_visuals = stage.GetPrimAtPath(visuals_path)
-        if source_visuals.IsValid():
-            visuals = wrapper.DefinePrim(f"/MyRobot/{body_name}/visuals", source_visuals.GetTypeName())
-            visuals.GetReferences().AddReference(str(robot_usd.resolve()), visuals_path)
-            _deactivate_embedded_cameras(visuals)
+        for source_path in source_paths:
+            target_path = f"/MyRobot/{body_name}"
+            if _leaf_name(source_path) != body_name:
+                target_path = f"/MyRobot/{body_name}/{_leaf_name(source_path)}"
+            _reference_visuals(wrapper, stage, robot_usd, source_path, target_path)
         for camera in body_cameras.get(body_name, []):
             _define_camera(wrapper, f"/MyRobot/{body_name}/{camera.name}", camera)
         body_map[body_name] = f"MyRobot/{body_name}"
@@ -185,6 +188,26 @@ def _define_camera(stage: Usd.Stage, path: str, spec: RenderCamera) -> None:
     camera.CreateHorizontalApertureAttr(float(spec.horizontal_aperture))
     camera.CreateVerticalApertureAttr(float(spec.vertical_aperture))
     camera.CreateClippingRangeAttr(Gf.Vec2f(*spec.clipping_range))
+
+
+def _reference_visuals(
+    wrapper: Usd.Stage,
+    source_stage: Usd.Stage,
+    robot_usd: Path,
+    source_path: str,
+    target_root: str,
+) -> None:
+    source_visuals = source_stage.GetPrimAtPath(f"{source_path}/visuals")
+    if not source_visuals.IsValid():
+        return
+    UsdGeom.Xform.Define(wrapper, target_root)
+    visuals = wrapper.DefinePrim(f"{target_root}/visuals", source_visuals.GetTypeName())
+    visuals.GetReferences().AddReference(str(robot_usd.resolve()), f"{source_path}/visuals")
+    _deactivate_embedded_cameras(visuals)
+
+
+def _leaf_name(source_path: str) -> str:
+    return sanitize_name(source_path.split("/")[-1])
 
 
 __all__ = [
