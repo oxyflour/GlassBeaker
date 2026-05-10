@@ -11,7 +11,6 @@ import { SurfacePivotControls } from "./SurfacePivotControls";
 import { ZapdosTopOverlay } from "./ZapdosTopOverlay";
 import { buildBodyPosePayload, getSceneVisual, setSceneBodyPose } from "./zapdos-scene-api";
 import { applyObjectMatrix, getSceneMaterial, loadSceneMeshResources } from "./zapdos-scene-assets";
-import { ENABLE_ZAPDOS_CAMERAS } from "./zapdos-scene-flags";
 import { applySceneHotkey, clearMissingSelection, isSelectionClick, pickEditableBodyFromHits, shouldApplyBodyPose, shouldReloadSceneRevision, type ZapdosTransformMode } from "./zapdos-scene-state";
 import { getZapdosRuntimeErrorMessage, getZapdosSceneRevision, isZapdosInactivePayload, ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE } from "./zapdos-runtime";
 import { useZapdosAgentTools } from "./useZapdosAgentTools";
@@ -39,6 +38,8 @@ class Counter {
 
 function Cameras({ sess, onRuntimeError }: { sess: string; onRuntimeError: (message: string) => void }) {
   const [cameras, setCameras] = useState([] as string[]);
+  const width = `${90 / cameras.length}%`
+  const marginLeft = `${10 / (cameras.length + 1)}%`
   useEffect(() => {
     fetch(`/python/zapdos/${sess}/call/get_camera`, {
       method: "POST",
@@ -58,7 +59,7 @@ function Cameras({ sess, onRuntimeError }: { sess: string; onRuntimeError: (mess
       className="inline"
       key={ camera }
       src={ `/python/zapdos/${sess}/render/${camera}` }
-      style={ { width: 320, height: 240, marginLeft: 8, marginBottom: 8 } } />
+      style={ { width, marginLeft, marginBottom: 8 } } />
   ))}</div>;
 }
 
@@ -308,7 +309,7 @@ export function ZapdosScene({
         setSse={ setSse }
         setTransformDragging={ setTransformDragging } />
     </Canvas>
-    {ENABLE_ZAPDOS_CAMERAS ? <Cameras onRuntimeError={ onRuntimeError } sess={ sess } /> : null}
+    <Cameras onRuntimeError={ onRuntimeError } sess={ sess } />
     <ZapdosTopOverlay
       activeRobotModelKey={ activeRobotModelKey }
       mode={ mode }

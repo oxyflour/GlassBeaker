@@ -789,6 +789,56 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(err.exception.status_code, 400)
         self.assertIn("assets", err.exception.detail)
 
+    def test_set_scene_assets_rejects_unknown_asset_id(self):
+        session = self.build_pose_edit_session()
+        session.base_scene_usd = Path("scene.usda")
+        session.robot_usd = Path("robot.usda")
+        session.overlay_state = MODULE.default_overlay_state("C:/assets")
+        session.scene_revision = "rev-1"
+        session.overlay_path = Path("overlay.json")
+        session.composed_scene_usd = Path("overlay_scene.usda")
+        session.rebuilding_scene = False
+
+        with mock.patch.object(
+            OVERLAY_COMMANDS_MODULE,
+            "resolve_asset_record",
+            side_effect=KeyError("missing_table"),
+        ):
+            with self.assertRaises(MODULE.HTTPException) as err:
+                MODULE.ZapdosSession.set_scene_assets(session, [{
+                    "asset_id": "missing_table",
+                    "motion": "static",
+                    "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
+                }])
+
+        self.assertEqual(err.exception.status_code, 404)
+        self.assertIn("missing_table", err.exception.detail)
+
+    def test_set_scene_assets_rejects_missing_assets_root(self):
+        session = self.build_pose_edit_session()
+        session.base_scene_usd = Path("scene.usda")
+        session.robot_usd = Path("robot.usda")
+        session.overlay_state = MODULE.default_overlay_state("C:/missing-assets")
+        session.scene_revision = "rev-1"
+        session.overlay_path = Path("overlay.json")
+        session.composed_scene_usd = Path("overlay_scene.usda")
+        session.rebuilding_scene = False
+
+        with mock.patch.object(
+            OVERLAY_COMMANDS_MODULE,
+            "resolve_asset_record",
+            side_effect=FileNotFoundError("GenieSim assets entry not found: C:/missing-assets/__init__.py"),
+        ):
+            with self.assertRaises(MODULE.HTTPException) as err:
+                MODULE.ZapdosSession.set_scene_assets(session, [{
+                    "asset_id": "benchmark_table_000",
+                    "motion": "static",
+                    "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
+                }])
+
+        self.assertEqual(err.exception.status_code, 409)
+        self.assertIn("assets entry", err.exception.detail)
+
     def test_set_scene_assets_authoritatively_replaces_instances_and_pose_overrides(self):
         session = self.build_pose_edit_session()
         session.base_scene_usd = Path("scene.usda")
@@ -844,6 +894,43 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.scene_revision, "rev-1")
         self.assertEqual(session.overlay_state["pose_overrides"]["Scene_Crate"]["pos"], [4.0, 5.0, 6.0])
         save_overlay.assert_called_once()
+
+    def test_set_scene_assets_rejects_broken_existing_overlay_asset(self):
+        session = self.build_pose_edit_session()
+        session.base_scene_usd = Path("scene.usda")
+        session.robot_usd = Path("robot.usda")
+        session.overlay_state = MODULE.default_overlay_state("C:/assets")
+        session.overlay_state["instances"] = [{
+            "id": "Crate",
+            "asset_id": "crate_000",
+            "url": "objects/crate_000/Aligned.usda",
+            "motion": "static",
+            "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
+        }]
+        session.scene_revision = "rev-1"
+        session.overlay_path = Path("overlay.json")
+        session.composed_scene_usd = Path("overlay_scene.usda")
+        session.rebuilding_scene = False
+
+        with mock.patch.object(
+            OVERLAY_COMMANDS_MODULE,
+            "resolve_asset_record",
+            return_value={"asset_id": "benchmark_table_000", "url": "objects/benchmark/table/benchmark_table_000/Aligned.usda", "description": {}},
+        ):
+            with mock.patch.object(
+                SESSION_MODULE,
+                "asset_local_bounds",
+                side_effect=RuntimeError("Failed to open asset stage: C:/assets/objects/crate_000/Aligned.usda"),
+            ):
+                with self.assertRaises(MODULE.HTTPException) as err:
+                    MODULE.ZapdosSession.set_scene_assets(session, [{
+                        "asset_id": "benchmark_table_000",
+                        "motion": "static",
+                        "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
+                    }])
+
+        self.assertEqual(err.exception.status_code, 409)
+        self.assertIn("Crate", err.exception.detail)
 
     def test_remove_asset_from_scene_delegates_to_scene_rebuild_service(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)

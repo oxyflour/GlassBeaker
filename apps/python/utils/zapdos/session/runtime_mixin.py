@@ -27,7 +27,13 @@ class SessionRuntimeMixin:
             top_z = float(session_module.body_world_pose(self.physics.data, body_id)[2, 3])
             instance = instance_by_body.get(body)
             if instance is not None:
-                bounds = session_module.asset_local_bounds(assets_root / instance["url"])
+                try:
+                    bounds = session_module.asset_local_bounds(assets_root / instance["url"])
+                except (FileNotFoundError, OSError, RuntimeError) as exc:
+                    raise session_module.HTTPException(
+                        status_code=409,
+                        detail=f"Existing overlay asset unavailable: {instance['id']}: {exc}",
+                    ) from exc
                 top_z += float(bounds["max"][2])
             infos[body] = {"top_z": top_z}
         return infos

@@ -11,6 +11,15 @@ from utils.zapdos.overlay.overlay_state import default_overlay_state, overlay_bo
 from utils.zapdos.zapdos_asset_library import resolve_asset_record
 
 
+def _require_asset_record(asset_id: str, assets_root) -> dict[str, object]:
+    try:
+        return resolve_asset_record(asset_id, assets_root)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}") from exc
+    except (FileNotFoundError, ImportError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 def build_set_scene_assets_overlay(
     session: Any,
     assets: list[dict[str, object]],
@@ -35,7 +44,7 @@ def build_set_scene_assets_overlay(
             normalized_placement = normalize_placement(placement)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        asset = resolve_asset_record(asset_id, assets_root)
+        asset = _require_asset_record(asset_id, assets_root)
         counts[asset_id] = counts.get(asset_id, 0) + 1
         instance_id = f"{asset_id}_{counts[asset_id]:02d}"
         next_instances.append({
