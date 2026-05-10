@@ -79,18 +79,22 @@ class RLBundleUrdfTest(unittest.TestCase):
         manifest = json.loads((bundle.bundle_dir / "manifest-v1.json").read_text(encoding="utf-8"))
         self.assertEqual(Path(manifest["robot_usd"]).resolve(), MOZ1_USDA.resolve())
 
-    def test_build_render_cameras_synthesizes_main_for_camera_less_moz1_usda(self):
+    def test_build_render_cameras_maps_moz1_camera_link_to_head_camera(self):
         bundle = moz1_bundle()
         model = mujoco.MjModel.from_xml_path(str(bundle.mjcf))  # type: ignore
         body_paths = {body_name: f"MyRobot/{body_name}" for body_name in compiled_moz1_body_names()}
         cameras = build_render_cameras(model, body_paths)
 
-        self.assertEqual([camera.name for camera in cameras], ["main"])
-        self.assertEqual(cameras[0].prim, "/SceneRender/main")
-        self.assertIsNone(cameras[0].body)
+        self.assertEqual([camera.name for camera in cameras], ["head_camera"])
+        self.assertEqual(cameras[0].prim, "/MyRobot/Root_head23/head_camera")
+        self.assertEqual(cameras[0].body, "Root_head23")
 
-    def test_ensure_render_bundle_exposes_main_camera_for_moz1_usda(self):
-        self.assertEqual(moz1_bundle().camera_names(), ["main"])
+    def test_ensure_render_bundle_exposes_head_camera_for_moz1_usda(self):
+        self.assertEqual(moz1_bundle().camera_names(), ["head_camera"])
+
+    def test_robot_wrapper_contains_head_camera_prim_for_moz1_usda(self):
+        stage = Usd.Stage.Open(str(moz1_bundle().robot_wrapper_usda))
+        self.assertTrue(stage.GetPrimAtPath("/MyRobot/Root_head23/head_camera").IsValid())
 
     def test_ensure_render_bundle_wraps_moz1_body_prims_in_robot_wrapper(self):
         bundle = moz1_bundle()

@@ -395,6 +395,12 @@ class USDToMJCFConverter:
             "quat": quat_wxyz_from_axis_angle([0, 1, 0], math.pi),
             "fovy": 45.0,
         },
+        "camera0_link": {
+            "camera_name": "head_camera",
+            "quat": quat_wxyz_from_axis_angle([0, 1, 0], math.pi),
+            "fovy": 45.0,
+            "requires_inertial": False,
+        },
         "left_realsense_link": {
             "camera_name": "left_wrist_camera",
             "quat": quat_wxyz_from_axis_angle([0, 1, 0], math.pi / 2.0),
@@ -1223,12 +1229,13 @@ class USDToMJCFConverter:
         sensor_nodes: Dict[str, BodyNode] = {}
         found_sensor_camera = False
         for path, node in self.nodes.items():
-            if node.inertial is None:
-                continue
-
             link_name = path.rsplit("/", maxsplit=1)[-1]
-            if link_name in self.SENSOR_CAMERA_SPECS:
-                sensor_nodes[link_name] = node
+            spec = self.SENSOR_CAMERA_SPECS.get(link_name)
+            if spec is None:
+                continue
+            if bool(spec.get("requires_inertial", True)) and node.inertial is None:
+                continue
+            sensor_nodes[link_name] = node
 
         for link_name, spec in self.SENSOR_CAMERA_SPECS.items():
             node = sensor_nodes.get(link_name)
