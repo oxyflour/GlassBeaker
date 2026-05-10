@@ -1,9 +1,17 @@
 'use client'
 
 import { Suspense, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { ZapdosScene } from "../../../components/zapdos/ZapdosScene";
+import {
+  buildRobotModelHref,
+  getRobotModelKeyFromUsd,
+  readPersistedRobotModelKey,
+  resolveEffectiveRobotUsd,
+  writePersistedRobotModelKey,
+  type RobotModelKey,
+} from "../../../components/zapdos/robot-model";
 import {
   buildZapdosInitStreamUrl,
   buildZapdosSessionStorageKey,
@@ -21,18 +29,28 @@ function ZapdosStatus({ message }: { message: string }) {
 }
 
 function ZapdosInitContent() {
+  const pathname = usePathname();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const sceneUsd = searchParams.get("scene_usd");
-  const robotUsd = searchParams.get("robot_usd");
-  const storageKey = buildZapdosSessionStorageKey(sceneUsd, robotUsd)
+  const urlRobotUsd = searchParams.get("robot_usd");
+  const effectiveRobotUsd = resolveEffectiveRobotUsd(urlRobotUsd, readPersistedRobotModelKey());
+  const activeRobotModelKey = getRobotModelKeyFromUsd(effectiveRobotUsd);
+  const storageKey = buildZapdosSessionStorageKey(sceneUsd, effectiveRobotUsd)
   const sess = useLocalUUID(storageKey);
   const [state, setState] = useState<{ phase: ZapdosInitPhase; message: string }>({
     phase: "loading",
     message: "loading",
   });
+
+  function handleRobotModelChange(next: RobotModelKey) {
+    writePersistedRobotModelKey(next);
+    router.replace(buildRobotModelHref(pathname, searchParams.toString(), next));
+  }
+
   useEffect(() => {
     setState({ phase: "loading", message: "loading" });
-    const sse = new EventSource(buildZapdosInitStreamUrl(sess, sceneUsd, robotUsd));
+    const sse = new EventSource(buildZapdosInitStreamUrl(sess, sceneUsd, effectiveRobotUsd));
     sse.onmessage = event => {
       const next = parseZapdosInitEvent(event.data);
       setState(next);
@@ -43,9 +61,13 @@ function ZapdosInitContent() {
       sse.close();
     };
     return () => sse.close();
-  }, [robotUsd, sceneUsd, sess]);
+  }, [effectiveRobotUsd, sceneUsd, sess]);
   return state.phase === "started"
-    ? <ZapdosScene onRuntimeError={ message => setState({ phase: "error", message }) } sess={ sess } />
+    ? <ZapdosScene
+      activeRobotModelKey={ activeRobotModelKey }
+      onRobotModelChange={ handleRobotModelChange }
+      onRuntimeError={ message => setState({ phase: "error", message }) }
+      sess={ sess } />
     : <ZapdosStatus message={ state.message } />;
 }
 

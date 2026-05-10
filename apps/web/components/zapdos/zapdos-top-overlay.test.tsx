@@ -5,7 +5,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ZapdosTopOverlay } from "./ZapdosTopOverlay";
 
 test("ZapdosTopOverlay keeps SSE on the left and settings collapsed by default", () => {
-  const html = renderToStaticMarkup(<ZapdosTopOverlay sess="sess-1" sse={12.3456} />);
+  const html = renderToStaticMarkup(
+    <ZapdosTopOverlay
+      activeRobotModelKey="r1pro"
+      onRobotModelChange={ () => undefined }
+      sess="sess-1"
+      sse={12.3456} />
+  );
 
   assert.match(html, /left-8 top-8/);
   assert.match(html, /right-8 top-8/);
@@ -16,18 +22,29 @@ test("ZapdosTopOverlay keeps SSE on the left and settings collapsed by default",
 });
 
 test("ZapdosTopOverlay renders SpaceMouse and camera save controls when settings are open", () => {
-  const html = renderToStaticMarkup(<ZapdosTopOverlay defaultSettingsOpen sess="sess-1" sse={1} />);
+  const html = renderToStaticMarkup(
+    <ZapdosTopOverlay
+      activeRobotModelKey="moz1"
+      defaultSettingsOpen
+      onRobotModelChange={ () => undefined }
+      sess="sess-1"
+      sse={1} />
+  );
 
   assert.match(html, /aria-expanded="true"/);
   assert.match(html, /Add benchmark table/);
   assert.match(html, /Save camera override/);
+  assert.match(html, /Robot model/);
   assert.match(html, /SpaceMouse/);
+  assert.match(html, /option value="moz1" selected="">moz1</);
 });
 
 test("ZapdosTopOverlay shows the selected body and transform mode", () => {
   const html = renderToStaticMarkup(
     <ZapdosTopOverlay
+      activeRobotModelKey="r1pro"
       defaultSettingsOpen={ false }
+      onRobotModelChange={ () => undefined }
       sess="sess-1"
       sse={1}
       selectedBody="Scene_Crate"
