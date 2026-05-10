@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
-from utils.zapdos.bundle import RenderBundle
+if TYPE_CHECKING:
+    from utils.zapdos.bundle import RenderBundle
 
 
 class RendererBackend(Protocol):
@@ -14,7 +15,7 @@ class RendererBackend(Protocol):
 
     def reload_scene(
         self,
-        bundle: RenderBundle,
+        bundle: "RenderBundle",
         timeout: float = 30.0,
     ) -> None: ...
 

@@ -14,15 +14,15 @@ import {
 
 test("resolveEffectiveRobotUsd prefers the URL robot path over persisted state", () => {
   assert.equal(
-    resolveEffectiveRobotUsd("deps/moz01/spirit01_model/urdf/moz1.urdf", "r1pro"),
-    "deps/moz01/spirit01_model/urdf/moz1.urdf"
+    resolveEffectiveRobotUsd("deps/spirit01_model/USD/Moz1_robot_only.usda", "r1pro"),
+    "deps/spirit01_model/USD/Moz1_robot_only.usda"
   );
 });
 
 test("resolveEffectiveRobotUsd falls back to the persisted robot key when the URL is absent", () => {
   assert.equal(
     resolveEffectiveRobotUsd(null, "moz1"),
-    "deps/moz01/spirit01_model/urdf/moz1.urdf"
+    "deps/spirit01_model/USD/Moz1_robot_only.usda"
   );
 });
 
@@ -62,6 +62,6 @@ test("buildRobotModelHref preserves unrelated query params and replaces robot_us
       "scene_usd=C%3A%2Ftmp%2Fscene.usda&view=debug&robot_usd=old-value",
       "moz1"
     ),
-    "/demo/zapdos?scene_usd=C%3A%2Ftmp%2Fscene.usda&view=debug&robot_usd=deps%2Fmoz01%2Fspirit01_model%2Furdf%2Fmoz1.urdf"
+    "/demo/zapdos?scene_usd=C%3A%2Ftmp%2Fscene.usda&view=debug&robot_usd=deps%2Fspirit01_model%2FUSD%2FMoz1_robot_only.usda"
   );
 });

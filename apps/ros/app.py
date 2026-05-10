@@ -25,6 +25,7 @@ threading.Thread(target=wait_for_stdin, daemon=True).start()
 
 sys.path.append(os.path.normpath(f'{__file__}/../../'))
 from python.utils.session import Session
+from ws_bridge import bridge_connect_kwargs, bridge_server_url, dispatch_bridge_request
 
 subs: dict[str, Subscription] = { }
 pubs: dict[str, Publisher] = { }
@@ -68,16 +69,17 @@ class RosSession(Session):
         return super().step_once()
 
     async def connect_once(self):
-        server_url = os.environ.get('WS_ADDR', 'ws://localhost:13001/api/ros/ws')
-        async for sock in websockets.connect(server_url, max_size=None, ping_interval=20, ping_timeout=20):
+        server_url = bridge_server_url()
+        async for sock in websockets.connect(
+            server_url,
+            max_size=None,
+            ping_interval=20,
+            ping_timeout=20,
+            **bridge_connect_kwargs(server_url),
+        ):
             self.sock = sock
             async for data in sock:
-                method, args, call = pickle.loads(data) # type: ignore
-                err, ret = None, None
-                try:
-                    ret = await self.call(method, args)
-                except Exception as exception:
-                    err = exception
+                call, err, ret = await dispatch_bridge_request(self, data)
                 if self.sock:
                     await self.sock.send(pickle.dumps([call, err, ret]), False)
 

@@ -19,6 +19,13 @@ test("getZapdosRuntimeErrorMessage falls back to raw error messages", () => {
   assert.equal(getZapdosRuntimeErrorMessage(new Error("boom")), "boom");
 });
 
+test("getZapdosRuntimeErrorMessage keeps IsaacSim log guidance intact", () => {
+  assert.equal(
+    getZapdosRuntimeErrorMessage(new Error("IsaacSim quit unexpectedly, check C:/tmp/renderer.log")),
+    "IsaacSim quit unexpectedly, check C:/tmp/renderer.log"
+  );
+});
+
 test("isZapdosInactivePayload detects inactive session events", () => {
   assert.equal(isZapdosInactivePayload({ inactive: true }), true);
   assert.equal(isZapdosInactivePayload({ inactive: false }), false);

@@ -21,7 +21,7 @@ def send_control_request(
     payload: dict[str, Any],
     timeout: float,
     refresh_process_state: Callable[[], bool],
-    tail_log: Callable[[], str],
+    quit_message: Callable[[str], str],
     control_lock: threading.Lock,
 ) -> dict[str, Any]:
     req_path = request_path(control_dir)
@@ -45,7 +45,9 @@ def send_control_request(
                         raise RuntimeError(str(response.get("error") or f"renderer {operation} failed"))
                     return response
                 if not refresh_process_state():
-                    raise RuntimeError(tail_log() or f"renderer exited while waiting for {operation}")
+                    raise RuntimeError(
+                        quit_message(f"renderer exited while waiting for {operation}")
+                    )
                 time.sleep(0.02)
         finally:
             res_path.unlink(missing_ok=True)

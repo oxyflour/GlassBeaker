@@ -8,10 +8,11 @@ import { Mesh, Object3D, Vector2 } from "three";
 
 import { SparkRendererBridge, SparkSplat } from "../../utils/three/splat";
 import { SurfacePivotControls } from "./SurfacePivotControls";
+import { ZapdosCameraStrip } from "./ZapdosCameraStrip";
 import { ZapdosTopOverlay } from "./ZapdosTopOverlay";
 import { buildBodyPosePayload, getSceneVisual, setSceneBodyPose } from "./zapdos-scene-api";
 import { applyObjectMatrix, getSceneMaterial, loadSceneMeshResources } from "./zapdos-scene-assets";
-import { applySceneHotkey, clearMissingSelection, isSelectionClick, pickEditableBodyFromHits, shouldApplyBodyPose, shouldReloadSceneRevision, type ZapdosTransformMode } from "./zapdos-scene-state";
+import { applySceneHotkey, clearMissingSelection, getDraggedBodyMatrices, getTransformBodyName, isSelectionClick, pickSelectableBodyFromHits, shouldApplyBodyPose, shouldReloadSceneRevision, type ZapdosBodyState, type ZapdosTransformMode } from "./zapdos-scene-state";
 import { getZapdosRuntimeErrorMessage, getZapdosSceneRevision, isZapdosInactivePayload, ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE } from "./zapdos-runtime";
 import { useZapdosAgentTools } from "./useZapdosAgentTools";
 import type { RobotModelKey } from "./robot-model";
@@ -36,38 +37,6 @@ class Counter {
   }
 }
 
-function Cameras({ sess, onRuntimeError }: { sess: string; onRuntimeError: (message: string) => void }) {
-  const [cameras, setCameras] = useState([] as string[]);
-  const width = `${90 / cameras.length}%`
-  const marginLeft = `${10 / (cameras.length + 1)}%`
-  useEffect(() => {
-    fetch(`/python/zapdos/${sess}/call/get_camera`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify([]),
-    })
-      .then(async response => {
-        if (!response.ok) throw new Error(await response.text());
-        return await response.json() as Record<string, number[]>;
-      })
-      // JUST FOR DEBUG
-      .then(result => setCameras(Object.keys(result).slice(0, 1)))
-      .catch(error => onRuntimeError(getZapdosRuntimeErrorMessage(error)));
-  }, [onRuntimeError, sess]);
-  return <div className="absolute bottom-0 left-0 w-full">
-  {
-    cameras.map(camera => (
-      <img
-        alt={ camera }
-        className="inline"
-        key={ camera }
-        src={ `/python/zapdos/${sess}/render/${camera}` }
-        style={ { width, marginLeft, marginBottom: 8 } } />
-    ))
-  }
-  </div>;
-}
-
 function SceneRuntime({
   mode,
   onRuntimeError,
@@ -89,12 +58,16 @@ function SceneRuntime({
 }) {
   const { camera, gl, raycaster, scene } = useThree();
   const bodyObjectsRef = useRef<Record<string, Object3D>>({});
+  const bodyStateRef = useRef<Record<string, ZapdosBodyState>>({});
+  const dragPreviewBodiesRef = useRef<Record<string, ZapdosBodyState> | null>(null);
   const draggingBodyRef = useRef<string | null>(null);
   const sceneRevisionRef = useRef<string | null>(null);
   const selectedBodyRef = useRef<string | null>(null);
   const selectionPointerRef = useRef<{ pointerId: number; start: Vector2 } | null>(null);
   selectedBodyRef.current = selectedBody;
-  const selectedObject = selectedBody ? bodyObjectsRef.current[selectedBody] ?? null : null;
+  const transformBody = getTransformBodyName(selectedBody, bodyStateRef.current);
+  const selectedObject = transformBody ? bodyObjectsRef.current[transformBody] ?? null : null;
+  const selectedMovableObject = selectedObject?.userData.zapdosMovable === true ? selectedObject : null;
 
   useEffect(() => {
     const element = gl.domElement;
@@ -111,11 +84,14 @@ function SceneRuntime({
           return {
             editable: current.userData.zapdosEditable === true,
             body: typeof current.userData.zapdosBody === "string" ? current.userData.zapdosBody as string : null,
+            selectionBody: typeof current.userData.zapdosSelectionBody === "string"
+              ? current.userData.zapdosSelectionBody as string
+              : null,
           };
         }
         current = current.parent;
       }
-      return { editable: false, body: null };
+      return { editable: false, body: null, selectionBody: null };
     };
     const onKeyDown = (event: KeyboardEvent) => {
       const next = applySceneHotkey({ mode, selectedBody: selectedBodyRef.current }, event.key);
@@ -136,7 +112,7 @@ function SceneRuntime({
       pointer.set(end.x / element.clientWidth * 2 - 1, -(end.y / element.clientHeight) * 2 + 1);
       raycaster.setFromCamera(pointer, camera);
       const hits = raycaster.intersectObjects(root.children, true).map(hit => resolveHit(hit.object));
-      setSelectedBody(pickEditableBodyFromHits(hits));
+      setSelectedBody(pickSelectableBodyFromHits(hits));
     };
     const clearPointer = (event: PointerEvent) => {
       if (selectionPointerRef.current?.pointerId === event.pointerId) {
@@ -175,6 +151,7 @@ function SceneRuntime({
     };
     const clearLoadedVisuals = () => {
       bodyObjectsRef.current = {};
+      bodyStateRef.current = {};
       for (const object of topLevel) {
         root.remove(object);
       }
@@ -186,8 +163,15 @@ function SceneRuntime({
       for (const body of payload.bodies) {
         const group = new Object3D();
         group.name = body.name;
+        bodyStateRef.current[body.name] = {
+          movable: body.movable,
+          selectionBody: body.selectionBody,
+          matrix: [...body.matrix],
+        };
         group.userData.zapdosBody = body.name;
         group.userData.zapdosEditable = body.editable;
+        group.userData.zapdosMovable = body.movable;
+        group.userData.zapdosSelectionBody = body.selectionBody;
         applyObjectMatrix(group, body.matrix);
         bodyObjectsRef.current[body.name] = group;
         topLevel.push(group);
@@ -200,10 +184,15 @@ function SceneRuntime({
         mesh.receiveShadow = true;
         mesh.name = item.name;
         if (item.body) {
+          const owner = bodyObjectsRef.current[item.body];
           mesh.userData.zapdosBody = item.body;
-          mesh.userData.zapdosEditable = bodyObjectsRef.current[item.body]?.userData.zapdosEditable === true;
+          mesh.userData.zapdosEditable = owner?.userData.zapdosEditable === true;
+          mesh.userData.zapdosMovable = owner?.userData.zapdosMovable === true;
+          mesh.userData.zapdosSelectionBody = typeof owner?.userData.zapdosSelectionBody === "string"
+            ? owner.userData.zapdosSelectionBody as string
+            : null;
           applyObjectMatrix(mesh, item.localMatrix as number[]);
-          bodyObjectsRef.current[item.body]?.add(mesh);
+          owner?.add(mesh);
         } else if (item.matrix) {
           applyObjectMatrix(mesh, item.matrix);
           topLevel.push(mesh);
@@ -228,9 +217,15 @@ function SceneRuntime({
       }
       if (!payload.pose) return;
       for (const [name, matrix] of Object.entries(payload.pose)) {
-        if (!shouldApplyBodyPose(name, draggingBodyRef.current)) continue;
+        if (!shouldApplyBodyPose(name, draggingBodyRef.current, bodyStateRef.current)) continue;
         const object = bodyObjectsRef.current[name];
-        if (object) applyObjectMatrix(object, matrix);
+        if (object) {
+          applyObjectMatrix(object, matrix);
+        }
+        const state = bodyStateRef.current[name];
+        if (state) {
+          state.matrix = [...matrix];
+        }
       }
       counter.record();
       if (counter.frame > 100 || Date.now() - counter.start > 1000) setSse(counter.flush());
@@ -247,25 +242,44 @@ function SceneRuntime({
 
   const commitSelection = () => {
     const body = selectedBodyRef.current;
-    if (!body || !selectedObject) return;
-    const pose = buildBodyPosePayload(selectedObject);
+    if (!body || !selectedMovableObject) return;
+    const pose = buildBodyPosePayload(selectedMovableObject);
     void setSceneBodyPose(sess, body, pose)
       .catch(error => onRuntimeError(getZapdosRuntimeErrorMessage(error)))
       .finally(() => {
+        dragPreviewBodiesRef.current = null;
         draggingBodyRef.current = null;
         setTransformDragging(false);
       });
   };
 
-  return selectedObject ? <TransformControls
+  return selectedMovableObject ? <TransformControls
     mode={ mode }
-    object={ selectedObject }
+    object={ selectedMovableObject }
     onMouseDown={ () => {
       draggingBodyRef.current = selectedBodyRef.current;
+      dragPreviewBodiesRef.current = Object.fromEntries(
+        Object.entries(bodyStateRef.current)
+          .filter(([, state]) => state.selectionBody === selectedBodyRef.current)
+          .map(([body, state]) => [body, { ...state, matrix: [...state.matrix] }]),
+      );
       setTransformDragging(true);
     } }
     onMouseUp={ commitSelection }
-    onObjectChange={ () => selectedObject.updateMatrixWorld(true) } /> : null;
+    onObjectChange={ () => {
+      selectedMovableObject.updateMatrixWorld(true);
+      const previewMatrices = getDraggedBodyMatrices(
+        draggingBodyRef.current,
+        selectedMovableObject.matrixWorld.toArray(),
+        dragPreviewBodiesRef.current ?? {},
+      );
+      for (const [body, matrix] of Object.entries(previewMatrices)) {
+        const object = bodyObjectsRef.current[body];
+        if (object) {
+          applyObjectMatrix(object, matrix);
+        }
+      }
+    } } /> : null;
 }
 
 export function ZapdosScene({
@@ -314,7 +328,7 @@ export function ZapdosScene({
         setSse={ setSse }
         setTransformDragging={ setTransformDragging } />
     </Canvas>
-    <Cameras onRuntimeError={ onRuntimeError } sess={ sess } />
+    <ZapdosCameraStrip onRuntimeError={ onRuntimeError } sess={ sess } />
     <ZapdosTopOverlay
       activeRobotModelKey={ activeRobotModelKey }
       mode={ mode }

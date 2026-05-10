@@ -1,15 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Matrix4 } from "three";
 
 import {
   applySceneHotkey,
   clearMissingSelection,
+  getDraggedBodyMatrices,
+  getTransformBodyName,
   isSelectionClick,
-  pickEditableBodyFromHits,
+  pickSelectableBodyFromHits,
   shouldReloadSceneRevision,
   shouldApplyBodyPose,
   type ZapdosSceneState,
 } from "./zapdos-scene-state";
+
+function translationMatrix(x: number, y: number, z: number) {
+  return new Matrix4().makeTranslation(x, y, z).toArray();
+}
 
 test("applySceneHotkey switches transform mode with W and E", () => {
   const state: ZapdosSceneState = { mode: "translate", selectedBody: "Scene_Crate" };
@@ -24,24 +31,67 @@ test("applySceneHotkey clears the current selection on Escape", () => {
   assert.deepEqual(applySceneHotkey(state, "Escape"), { mode: "rotate", selectedBody: null });
 });
 
-test("shouldApplyBodyPose ignores remote updates for the body being dragged", () => {
-  assert.equal(shouldApplyBodyPose("Scene_Crate", "Scene_Crate"), false);
-  assert.equal(shouldApplyBodyPose("RobotLink", "Scene_Crate"), true);
+test("shouldApplyBodyPose ignores remote updates for all bodies linked to the dragged selection", () => {
+  const bodies = {
+    Scene_Crate: { movable: true, selectionBody: "Scene_Crate", matrix: translationMatrix(5, 0, 0) },
+    Root_base_link: { movable: true, selectionBody: "Root_base_link", matrix: translationMatrix(0, 0, 0) },
+    Arm_link: { movable: false, selectionBody: "Root_base_link", matrix: translationMatrix(1, 0, 0) },
+  };
+
+  assert.equal(shouldApplyBodyPose("Root_base_link", "Root_base_link", bodies), false);
+  assert.equal(shouldApplyBodyPose("Arm_link", "Root_base_link", bodies), false);
+  assert.equal(shouldApplyBodyPose("Scene_Crate", "Root_base_link", bodies), true);
 });
 
-test("pickEditableBodyFromHits skips non-editable hits and picks the first editable body", () => {
-  assert.equal(pickEditableBodyFromHits([
-    { editable: false, body: "RobotLink" },
-    { editable: false, body: null },
-    { editable: true, body: "Scene_Crate" },
+test("pickSelectableBodyFromHits skips empty hits and picks the first body", () => {
+  assert.equal(pickSelectableBodyFromHits([
+    { editable: false, body: null, selectionBody: null },
+    { editable: true, body: "Scene_Crate", selectionBody: null },
   ]), "Scene_Crate");
 });
 
-test("pickEditableBodyFromHits returns null when nothing editable is hit", () => {
-  assert.equal(pickEditableBodyFromHits([
-    { editable: false, body: "RobotLink" },
-    { editable: false, body: null },
+test("pickSelectableBodyFromHits returns the mapped selection body before the raw hit body", () => {
+  assert.equal(pickSelectableBodyFromHits([
+    { editable: false, body: "Arm_link", selectionBody: "Root_base_link" },
+    { editable: true, body: "Scene_Crate", selectionBody: null },
+  ]), "Root_base_link");
+});
+
+test("pickSelectableBodyFromHits returns null when no body is hit", () => {
+  assert.equal(pickSelectableBodyFromHits([
+    { editable: false, body: null, selectionBody: null },
+    { editable: true, body: null, selectionBody: null },
   ]), null);
+});
+
+test("getTransformBodyName only returns movable selections", () => {
+  assert.equal(getTransformBodyName("Root_base_link", {
+    Root_base_link: { movable: true, selectionBody: "Root_base_link", matrix: translationMatrix(0, 0, 0) },
+    Arm_link: { movable: false, selectionBody: "Root_base_link", matrix: translationMatrix(1, 0, 0) },
+  }), "Root_base_link");
+  assert.equal(getTransformBodyName("Arm_link", {
+    Arm_link: { movable: false, selectionBody: "Root_base_link", matrix: translationMatrix(1, 0, 0) },
+  }), null);
+  assert.equal(getTransformBodyName(null, {
+    Root_base_link: { movable: true, selectionBody: "Root_base_link", matrix: translationMatrix(0, 0, 0) },
+  }), null);
+});
+
+test("getDraggedBodyMatrices applies the root drag delta to the whole robot selection", () => {
+  const bodies = {
+    Root_base_link: { movable: true, selectionBody: "Root_base_link", matrix: translationMatrix(0, 0, 0) },
+    Arm_link: { movable: false, selectionBody: "Root_base_link", matrix: translationMatrix(1, 0, 0) },
+    Wrist_link: { movable: false, selectionBody: "Root_base_link", matrix: translationMatrix(1, 2, 0) },
+    Scene_Crate: { movable: true, selectionBody: "Scene_Crate", matrix: translationMatrix(9, 0, 0) },
+  };
+
+  const next = getDraggedBodyMatrices("Root_base_link", translationMatrix(3, 0, 0), bodies);
+
+  assert.deepEqual(next, {
+    Root_base_link: translationMatrix(3, 0, 0),
+    Arm_link: translationMatrix(4, 0, 0),
+    Wrist_link: translationMatrix(4, 2, 0),
+  });
 });
 
 test("isSelectionClick stays true for small pointer movement", () => {

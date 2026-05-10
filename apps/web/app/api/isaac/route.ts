@@ -3,6 +3,8 @@ import { createWriteStream, existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
+import { attachIsaacProcessLifecycle } from "./process-events";
+
 export const runtime = "nodejs";
 
 type StartBody = {
@@ -16,7 +18,9 @@ type StartBody = {
 type ManagedProcess = {
   child: ChildProcess;
   exitCode: number | null;
+  id: string;
   logPath: string;
+  stopping: boolean;
 };
 
 const workspaceRoot = resolveWorkspaceDir();
@@ -59,6 +63,7 @@ function waitForClose(child: ChildProcess, timeoutMs: number) {
 }
 
 async function stopProcess(id: string, entry: ManagedProcess) {
+  entry.stopping = true;
   if (entry.exitCode === null) {
     if (process.platform === "win32" && entry.child.pid) {
       await new Promise<void>((resolve) => {
@@ -131,17 +136,16 @@ export async function POST(request: Request) {
     windowsHide: true,
   };
   const child = spawn(cmd[0], cmd.slice(1), options);
-  const entry: ManagedProcess = { child, exitCode: null, logPath };
+  const entry: ManagedProcess = { child, exitCode: null, id, logPath, stopping: false };
   child.stdout?.pipe(logStream, { end: false });
   child.stderr?.pipe(logStream, { end: false });
-  child.once("exit", (code) => {
-    entry.exitCode = code ?? -1;
-    logStream.end();
-  });
-  child.once("error", (error) => {
-    entry.exitCode = -1;
-    logStream.write(`${String(error)}\n`);
-    logStream.end();
+  attachIsaacProcessLifecycle(console, entry, {
+    onError: (message) => {
+      logStream.write(`${message}\n`);
+    },
+    onSettled: () => {
+      logStream.end();
+    },
   });
   processes.set(id, entry);
 

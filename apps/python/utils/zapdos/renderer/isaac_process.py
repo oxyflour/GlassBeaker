@@ -16,6 +16,23 @@ def tail_log(path: Path, lines: int = 40) -> str:
     return "\n".join(path.read_text(encoding="utf-8", errors="ignore").splitlines()[-lines:])
 
 
+def format_isaacsim_failure(
+    summary: str,
+    log_path: Path,
+    detail: str = "",
+    *,
+    lines: int = 40,
+) -> str:
+    parts = [f"{summary}, check {log_path}"]
+    detail = detail.strip()
+    if detail:
+        parts.append(detail)
+    log_tail = tail_log(log_path, lines)
+    if log_tail:
+        parts.append(f"Last log lines:\n{log_tail}")
+    return "\n".join(parts)
+
+
 def _isaac_ros_root() -> Path | None:
     for name in ("jazzy", "humble"):
         root = ISAAC_SITE / name

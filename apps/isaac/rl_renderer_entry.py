@@ -17,13 +17,14 @@ os.environ.setdefault("SIM_REPO_ROOT", str(REPO_ROOT / "deps" / "genie_sim"))
 import geniesim.rl.renderer.rl_renderer as upstream  # type: ignore
 
 from utils.camera_math import fovy_from_focal_length
-from utils.zapdos.isaac_renderer_reload import (
+from utils.zapdos.renderer.control_channel import request_path, response_path
+from utils.zapdos.renderer.frame_policy import should_render_frame
+from utils.zapdos.renderer.isaac_renderer_reload import (
     CameraBinding,
     rebuild_camera_bindings,
     reset_subscriber_caches,
     validate_camera_topology,
 )
-from utils.zapdos.renderer_ipc import request_path, response_path
 
 
 def _noop_spin(self) -> None:
@@ -212,7 +213,10 @@ class LocalRLRenderer(upstream.RLRenderer):
         req_path.unlink(missing_ok=True)
 
     def _render_callback(self, step_size: float):
-        if not any(sub._dirty for sub in self.env_subscribers):
+        if not should_render_frame(
+            self.env_subscribers,
+            int(self.frame_counter[0]),
+        ):
             return
         with upstream.Sdf.ChangeBlock():
             for sub in self.env_subscribers:

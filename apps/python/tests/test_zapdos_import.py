@@ -30,7 +30,7 @@ assert SPEC and SPEC.loader
 SPEC.loader.exec_module(MODULE)
 
 R1PRO_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
-MOZ1_URDF = REPO_ROOT / "deps" / "moz01" / "spirit01_model" / "urdf" / "moz1.urdf"
+MOZ1_USDA = REPO_ROOT / "deps" / "spirit01_model" / "USD" / "Moz1_robot_only.usda"
 
 
 class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
@@ -281,6 +281,32 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    def build_robot_root_pose_edit_session(self):
+        return self.build_physics_session(
+            """
+<mujoco>
+  <worldbody>
+    <geom name="floor" type="plane" size="1 1 0.1"/>
+    <body name="Root_base_link" pos="0 0 0.2">
+      <freejoint name="Root_base_link_freejoint"/>
+      <geom name="root-box" type="box" size="0.1 0.1 0.1" rgba="0 0 1 1"/>
+      <body name="Arm_link" pos="0.3 0 0">
+        <geom name="arm-box" type="box" size="0.05 0.05 0.2" rgba="0 1 0 1"/>
+      </body>
+    </body>
+    <body name="Scene_Crate" pos="1 2 3">
+      <geom name="crate-box" type="box" size="0.2 0.2 0.2" rgba="1 0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+""",
+            {
+                "Root_base_link": "MyRobot/Root_base_link",
+                "Arm_link": "MyRobot/Arm_link",
+                "Scene_Crate": "Crate",
+            },
+        )
+
     def build_nested_pose_edit_session(self):
         return self.build_physics_session(
             """
@@ -335,15 +361,15 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(resolved, scene.resolve())
 
-    async def test_zapdos_session_create_accepts_moz1_urdf_bundle(self):
+    async def test_zapdos_session_create_accepts_moz1_usda_bundle(self):
         create = SESSION_MODULE.ZapdosSession.create
         bundle = SimpleNamespace()
         with mock.patch.object(SESSION_MODULE.asyncio, "to_thread", new=mock.AsyncMock(return_value=bundle)) as to_thread:
             with mock.patch.object(SESSION_MODULE, "ZapdosSession", side_effect=lambda sess, built_bundle: (sess, built_bundle)):
-                result = await create("sess-1", MOZ1_URDF, MODULE.DEFAULT_SCENE_USD)
+                result = await create("sess-1", MOZ1_USDA, MODULE.DEFAULT_SCENE_USD)
 
         self.assertEqual(result, ("sess-1", bundle))
-        to_thread.assert_awaited_once_with(ensure_render_bundle, MOZ1_URDF, MODULE.DEFAULT_SCENE_USD)
+        to_thread.assert_awaited_once_with(ensure_render_bundle, MOZ1_USDA, MODULE.DEFAULT_SCENE_USD)
 
     async def test_get_or_create_session_future_uses_default_r1pro_when_query_is_empty(self):
         req = self.make_request()
@@ -364,16 +390,6 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             await MODULE._await_session_future("sess-r1pro", future)
 
         create.assert_awaited_once_with("sess-r1pro", R1PRO_USD.resolve(), MODULE.DEFAULT_SCENE_USD)
-
-    async def test_get_or_create_session_future_accepts_moz1_urdf_robot_usd(self):
-        req = self.make_request(urlencode({"robot_usd": "deps/moz01/spirit01_model/urdf/moz1.urdf"}))
-        create = mock.AsyncMock(return_value=SimpleNamespace(camera_index={}))
-
-        with mock.patch.object(MODULE.ZapdosSession, "create", new=create):
-            future = MODULE._get_or_create_session_future(req, "sess-moz1")
-            await MODULE._await_session_future("sess-moz1", future)
-
-        create.assert_awaited_once_with("sess-moz1", MOZ1_URDF.resolve(), MODULE.DEFAULT_SCENE_USD)
 
     async def test_failed_bootstrap_is_evicted_and_can_retry(self):
         req = self.make_request()
@@ -565,7 +581,13 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(payload.keys()), ["bodies", "meshes"])
         bodies = {body["name"]: body for body in payload["bodies"]}
         self.assertTrue(bodies["Scene_Crate"]["editable"])
+        self.assertTrue(bodies["Scene_Crate"]["movable"])
+        self.assertTrue(bodies["Scene_Crate"]["selectable"])
+        self.assertEqual(bodies["Scene_Crate"]["selectionBody"], "Scene_Crate")
         self.assertFalse(bodies["RobotLink"]["editable"])
+        self.assertTrue(bodies["RobotLink"]["movable"])
+        self.assertTrue(bodies["RobotLink"]["selectable"])
+        self.assertEqual(bodies["RobotLink"]["selectionBody"], "RobotLink")
         self.assertEqual(bodies["Scene_Crate"]["label"], "Crate")
         attached = [mesh for mesh in payload["meshes"] if mesh.get("body") == "Scene_Crate"]
         self.assertTrue(attached)
@@ -574,6 +596,24 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         static_mesh = next(mesh for mesh in payload["meshes"] if mesh.get("body") is None)
         self.assertIn("matrix", static_mesh)
         self.assertNotIn("localMatrix", static_mesh)
+
+    def test_robot_root_detection_uses_parent_links_for_robot_bodies(self):
+        session = self.build_robot_root_pose_edit_session()
+
+        self.assertEqual(session.physics.robot_root_body_names, {"Root_base_link"})
+        self.assertEqual(session.physics.movable_body_names, {"Root_base_link", "Scene_Crate"})
+
+    def test_get_visual_maps_non_root_robot_body_to_root_selection_body(self):
+        session = self.build_robot_root_pose_edit_session()
+
+        payload = session.call_once("get_visual", ())
+
+        bodies = {body["name"]: body for body in payload["bodies"]}
+        self.assertTrue(bodies["Root_base_link"]["movable"])
+        self.assertEqual(bodies["Root_base_link"]["selectionBody"], "Root_base_link")
+        self.assertFalse(bodies["Arm_link"]["movable"])
+        self.assertTrue(bodies["Arm_link"]["selectable"])
+        self.assertEqual(bodies["Arm_link"]["selectionBody"], "Root_base_link")
 
     def test_get_visual_attaches_descendant_scene_mesh_to_editable_ancestor(self):
         session = self.build_nested_pose_edit_session()
@@ -653,11 +693,16 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.physics.data.xpos[body_id].tolist(), [4.0, 5.0, 6.0])
         self.assertEqual(session.physics.data.qpos[qpos_adr:qpos_adr + 3].tolist(), [4.0, 5.0, 6.0])
 
-    def test_set_body_pose_rejects_robot_and_unknown_bodies(self):
-        session = self.build_pose_edit_session()
+    def test_set_body_pose_accepts_robot_root_and_rejects_non_root_robot_body(self):
+        session = self.build_robot_root_pose_edit_session()
+        root_body_id = mujoco.mj_name2id(session.physics.model, mujoco.mjtObj.mjOBJ_BODY, "Root_base_link")  # type: ignore
+
+        session.call_once("set_body_pose", ("Root_base_link", [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]))
+
+        self.assertEqual(session.physics.data.xpos[root_body_id].tolist(), [4.0, 5.0, 6.0])
 
         with self.assertRaises(MODULE.HTTPException) as robot_error:
-            session.call_once("set_body_pose", ("RobotLink", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))
+            session.call_once("set_body_pose", ("Arm_link", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))
         self.assertEqual(robot_error.exception.status_code, 403)
 
         with self.assertRaises(MODULE.HTTPException) as missing_error:
@@ -1075,6 +1120,55 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(session.renderer, new_renderer)
         self.assertIs(session.physics, new_physics)
 
+    def test_swap_runtime_bundle_replays_pose_overrides_for_movable_robot_roots(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.sess = "sess-1"
+        old_physics = SimpleNamespace(
+            data=SimpleNamespace(qpos=[1.0], ctrl=[2.0]),
+            close=mock.Mock(),
+        )
+        old_renderer = SimpleNamespace(close=mock.Mock())
+        session.physics = old_physics
+        session.renderer = old_renderer
+        session.bundle = SimpleNamespace(cameras=[])
+        session.camera_index = {}
+        session.last_frame_index = {}
+
+        new_physics = SimpleNamespace(
+            model=object(),
+            data=SimpleNamespace(qpos=[0.0], ctrl=[0.0]),
+            editable_body_names=set(),
+            movable_body_names={"Root_base_link"},
+            set_body_pose=mock.Mock(),
+            close=mock.Mock(),
+        )
+        new_renderer = SimpleNamespace(close=mock.Mock())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            body_map_path = Path(tmp) / "render_scene_body_map.json"
+            body_map_path.write_text("{}", encoding="utf-8")
+            bundle = SimpleNamespace(
+                body_map_json=body_map_path,
+                cameras=[SimpleNamespace(name="head_camera")],
+            )
+            overlay_state = {
+                "pose_overrides": {
+                    "Root_base_link": {"pos": [1.0, 2.0, 3.0], "quat": [1.0, 0.0, 0.0, 0.0]},
+                    "Arm_link": {"pos": [9.0, 9.0, 9.0], "quat": [1.0, 0.0, 0.0, 0.0]},
+                },
+            }
+
+            with mock.patch.object(SESSION_MODULE, "ZapdosPhysics", return_value=new_physics):
+                with mock.patch.object(SESSION_MODULE, "IsaacRenderer", return_value=new_renderer):
+                    with mock.patch.object(MODULE.mujoco, "mj_forward"):
+                        session._swap_runtime_bundle(bundle, overlay_state)
+
+        new_physics.set_body_pose.assert_called_once_with(
+            "Root_base_link",
+            [1.0, 2.0, 3.0],
+            [1.0, 0.0, 0.0, 0.0],
+        )
+
     def test_swap_runtime_bundle_closes_new_physics_when_renderer_creation_fails(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         old_physics = SimpleNamespace(
@@ -1362,4 +1456,3 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

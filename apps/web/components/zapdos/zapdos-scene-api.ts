@@ -4,6 +4,9 @@ export interface BodyVisual {
   name: string;
   label: string;
   editable: boolean;
+  selectable: boolean;
+  movable: boolean;
+  selectionBody: string | null;
   matrix: number[];
 }
 

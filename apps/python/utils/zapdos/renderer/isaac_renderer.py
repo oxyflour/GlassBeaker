@@ -25,9 +25,9 @@ from utils.zapdos.renderer.isaac_process import (
     RENDERER_ENTRY,
     REPO_ROOT,
     close_local_renderer,
+    format_isaacsim_failure,
     setup_renderer_env,
     spawn_local_renderer,
-    tail_log,
 )
 
 if TYPE_CHECKING:
@@ -245,7 +245,11 @@ class IsaacRenderer:
         while time.time() < deadline:
             if not self._refresh_process_state():
                 try:
-                    raise RuntimeError(tail_log(self.log_path) or f"renderer exited before creating shared memory '{self.shm_name}'")
+                    raise RuntimeError(format_isaacsim_failure(
+                        "IsaacSim failed to start",
+                        self.log_path,
+                        f"renderer exited before creating shared memory '{self.shm_name}'",
+                    ))
                 finally:
                     self.close()
             try:
@@ -254,7 +258,11 @@ class IsaacRenderer:
             except FileNotFoundError:
                 await asyncio.sleep(5)
         try:
-            raise TimeoutError(f"renderer did not create shared memory '{self.shm_name}' in {timeout:.0f}s")
+            raise TimeoutError(format_isaacsim_failure(
+                "IsaacSim did not become ready",
+                self.log_path,
+                f"renderer did not create shared memory '{self.shm_name}' in {timeout:.0f}s",
+            ))
         finally:
             self.close()
 
@@ -293,7 +301,11 @@ class IsaacRenderer:
             payload=payload,
             timeout=timeout,
             refresh_process_state=self._refresh_process_state,
-            tail_log=lambda: tail_log(self.log_path),
+            quit_message=lambda detail: format_isaacsim_failure(
+                "IsaacSim quit unexpectedly",
+                self.log_path,
+                detail,
+            ),
             control_lock=self._control_lock,
         )
 

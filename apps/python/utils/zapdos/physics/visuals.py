@@ -8,6 +8,9 @@ class BodyVisual(TypedDict):
     name: str
     label: str
     editable: bool
+    selectable: bool
+    movable: bool
+    selectionBody: str | None
     matrix: list[float]
 
 
@@ -37,11 +40,18 @@ def serialize_body(
     render_path: str,
     editable: bool,
     matrix: list[float],
+    *,
+    selectable: bool,
+    movable: bool,
+    selection_body: str | None,
 ) -> BodyVisual:
     return {
         "name": name,
         "label": body_label(render_path),
         "editable": editable,
+        "selectable": selectable,
+        "movable": movable,
+        "selectionBody": selection_body,
         "matrix": matrix,
     }
 

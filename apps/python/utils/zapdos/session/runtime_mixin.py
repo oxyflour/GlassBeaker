@@ -69,7 +69,7 @@ class SessionRuntimeMixin:
                 new_physics.data.ctrl[:ctrl_count] = snapshot_ctrl[:ctrl_count]
             session_module.mujoco.mj_forward(new_physics.model, new_physics.data)  # type: ignore
             for body, pose in overlay_state["pose_overrides"].items():
-                if body in new_physics.editable_body_names:
+                if body in new_physics.movable_body_names:
                     new_physics.set_body_pose(body, pose["pos"], pose["quat"])
             reload_scene = getattr(old_renderer, "reload_scene", None)
             if callable(reload_scene):

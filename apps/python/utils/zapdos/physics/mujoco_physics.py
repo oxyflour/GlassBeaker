@@ -10,6 +10,7 @@ import mujoco.viewer
 import numpy as np
 from fastapi import HTTPException
 
+from utils.zapdos.physics.body_capabilities import build_body_capabilities
 from utils.zapdos.physics.mujoco_tools import (
     body_world_pose,
     decode_mesh_path,
@@ -55,7 +56,12 @@ class MujocoPhysics:
         self.geoms = self._build_geometry(bundle.mjcf.parent)
         self.body_map = body_map
         self.body_labels = {name: path.rsplit("/", 1)[-1] for name, path in body_map.items()}
-        self.editable_body_names = {name for name, path in body_map.items() if not str(path).startswith("MyRobot/")}
+        capabilities = build_body_capabilities(self.model, body_map)
+        self.editable_body_names = capabilities.editable_body_names
+        self.robot_body_names = capabilities.robot_body_names
+        self.robot_root_body_names = capabilities.robot_root_body_names
+        self.movable_body_names = capabilities.movable_body_names
+        self.selection_body_by_name = capabilities.selection_body_by_name
         self.actuator_name_to_id = self._actuator_map()
         self.joint_name_to_actuator = self._joint_command_map()
         self.data.ctrl[:] = 0
@@ -154,7 +160,15 @@ class MujocoPhysics:
     def get_visual(self) -> SceneVisuals:
         body_matrices = self._body_matrices()
         bodies = [
-            serialize_body(name, self.body_map.get(name, name), name in self.editable_body_names, flatten_matrix(matrix))
+            serialize_body(
+                name,
+                self.body_map.get(name, name),
+                name in self.editable_body_names,
+                flatten_matrix(matrix),
+                selectable=name in self.selection_body_by_name,
+                movable=name in self.movable_body_names,
+                selection_body=self.selection_body_by_name.get(name),
+            )
             for name, matrix in body_matrices.items()
         ]
         meshes = []
@@ -193,8 +207,8 @@ class MujocoPhysics:
         body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
         if body_id < 0:
             raise HTTPException(status_code=404, detail=f"Body not found: {body}")
-        if body not in self.editable_body_names:
-            raise HTTPException(status_code=403, detail=f"Body is not editable: {body}")
+        if body not in self.movable_body_names:
+            raise HTTPException(status_code=403, detail=f"Body is not movable: {body}")
         if len(pos) != 3 or len(quat) != 4:
             raise HTTPException(status_code=400, detail="Expected pos[3] and quat[4]")
         quat_vec = np.array(quat, dtype=float)

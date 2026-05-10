@@ -3,9 +3,9 @@ from fastapi import WebSocket, WebSocketDisconnect
 from utils.ros_bridge import bridge
 
 async def _ws_(ws: WebSocket) -> None:
-    bridge.conns.add(ws)
     try:
         await ws.accept()
+        bridge.conns.add(ws)
         while True:
             data = await ws.receive_bytes()
             call, err, ret = pickle.loads(data)
@@ -13,4 +13,4 @@ async def _ws_(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        bridge.conns.remove(ws)
+        bridge.conns.discard(ws)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import tempfile
@@ -254,6 +255,41 @@ class IsaacRendererReadTest(unittest.TestCase):
         self.assertIn("reload failed", str(err.exception))
         self.assertIs(renderer.bundle, old_bundle)
         self.assertEqual(renderer.camera_index, {"old_camera": 0})
+
+    def test_wait_ready_reports_log_path_when_renderer_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            renderer = IsaacRenderer.__new__(IsaacRenderer)
+            renderer.log_path = Path(tmp) / "renderer.log"
+            renderer.log_path.write_text("renderer traceback", encoding="utf-8")
+            renderer.shm_name = "glassbeaker_renderer_frames"
+            renderer._refresh_process_state = lambda: False
+            renderer.close = mock.Mock()
+
+            with self.assertRaises(RuntimeError) as err:
+                asyncio.run(renderer.wait_ready(timeout=0.1))
+
+        self.assertIn("IsaacSim failed to start, check", str(err.exception))
+        self.assertIn(str(renderer.log_path), str(err.exception))
+        self.assertIn("renderer traceback", str(err.exception))
+        renderer.close.assert_called_once()
+
+    def test_snapshot_cameras_reports_log_path_when_renderer_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            renderer = IsaacRenderer.__new__(IsaacRenderer)
+            renderer._running = True
+            renderer.proc_id = "renderer"
+            renderer.proc = None
+            renderer.control_dir = Path(tmp)
+            renderer.log_path = Path(tmp) / "renderer.log"
+            renderer.log_path.write_text("renderer exited during snapshot", encoding="utf-8")
+            renderer._refresh_process_state = lambda: False
+
+            with self.assertRaises(RuntimeError) as err:
+                renderer.snapshot_cameras(timeout=0.1)
+
+        self.assertIn("IsaacSim quit unexpectedly, check", str(err.exception))
+        self.assertIn(str(renderer.log_path), str(err.exception))
+        self.assertIn("renderer exited during snapshot", str(err.exception))
 
     def test_close_can_skip_remote_delete(self):
         renderer = IsaacRenderer.__new__(IsaacRenderer)

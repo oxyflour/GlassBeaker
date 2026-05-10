@@ -37,18 +37,19 @@ class Session:
         self.proc.start()
     
     async def call(self, method: str, *args):
-        res = asyncio.Future()
+        res = asyncio.get_running_loop().create_future()
         self.calls.put_nowait((method, args, res))
         return await res
 
     def proc_once(self):
         method, args, res = self.calls.get(False)
+        loop = res.get_loop()
         self.active = time.time()
         try:
             ret = self.call_once(method, args)
-            self.loop.call_soon_threadsafe(res.set_result, ret)
+            loop.call_soon_threadsafe(res.set_result, ret)
         except Exception as err:
-            self.loop.call_soon_threadsafe(res.set_exception, err)
+            loop.call_soon_threadsafe(res.set_exception, err)
     
     def proc_calls(self):
         while not self.calls.empty():

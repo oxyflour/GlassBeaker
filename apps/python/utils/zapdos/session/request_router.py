@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from fastapi import HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 
 type SessionFutureResolver = Callable[[str], asyncio.Future]
@@ -134,6 +134,17 @@ def build_name_handler(
         if action == "render":
             return StreamingResponse(
                 session.render(require_camera_name(session, name)),
+                media_type="multipart/x-mixed-replace; boundary=frame",
+            )
+        if action == "snapshot":
+            return Response(
+                content=session.snapshot(require_camera_name(session, name)),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+            )
+        if action == "multicam" and name == "stream":
+            return StreamingResponse(
+                session.render_multi_camera(),
                 media_type="multipart/x-mixed-replace; boundary=frame",
             )
         if action == "asset":
