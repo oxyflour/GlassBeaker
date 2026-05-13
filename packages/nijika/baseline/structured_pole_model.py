@@ -23,6 +23,7 @@ class StructuredPoleResiduePredictor(nn.Module):
         num_poles: int = 12,
         max_cuts: int = MAX_CUTS,
         max_nibs: int = MAX_NIBS,
+        use_pair_pole_offsets: bool = False,
     ):
         super().__init__()
         self.port_count = port_count
@@ -31,6 +32,7 @@ class StructuredPoleResiduePredictor(nn.Module):
         self.num_poles = num_poles
         self.freq_bins = len(freq_grid)
         self.pairs = _upper_triangle_pairs(port_count)
+        self.use_pair_pole_offsets = use_pair_pole_offsets
         self.frame_encoder = nn.Sequential(nn.Linear(6, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
         self.cut_encoder = nn.Sequential(nn.Linear(7, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
         self.nib_encoder = nn.Sequential(nn.Linear(8, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
@@ -73,6 +75,10 @@ class StructuredPoleResiduePredictor(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim * 2, 4 + num_poles * 2),
         )
+        if use_pair_pole_offsets:
+            self.pair_pole_offset_head = nn.Linear(hidden_dim, num_poles * 2)
+            nn.init.zeros_(self.pair_pole_offset_head.weight)
+            nn.init.zeros_(self.pair_pole_offset_head.bias)
         self.register_buffer("freq_grid", torch.as_tensor(freq_grid, dtype=torch.float32), persistent=False)
 
     def _port_features(self, ports: torch.Tensor, geom: torch.Tensor) -> torch.Tensor:
@@ -95,11 +101,7 @@ class StructuredPoleResiduePredictor(nn.Module):
         return (tokens * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
 
     def _type_features(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        type_ids = torch.tensor(
-            [0] + [1] * self.max_cuts + [2] * self.max_nibs + [3] * self.port_count,
-            dtype=torch.long,
-            device=device,
-        )
+        type_ids = torch.tensor([0] + [1] * self.max_cuts + [2] * self.max_nibs + [3] * self.port_count, dtype=torch.long, device=device)
         return self.token_type(type_ids).unsqueeze(0).expand(batch_size, -1, -1)
 
     def _normalized_s(self) -> torch.Tensor:
@@ -107,13 +109,24 @@ class StructuredPoleResiduePredictor(nn.Module):
         freq = (freq - freq.min()) / (freq.max() - freq.min() + 1e-6)
         return torch.complex(torch.zeros_like(freq), freq)
 
-    def _build_poles(self, global_latent: torch.Tensor) -> torch.Tensor:
+    def _build_shared_poles(self, global_latent: torch.Tensor) -> torch.Tensor:
         raw = self.pole_head(global_latent).view(global_latent.size(0), self.num_poles, 2)
         damping = F.softplus(raw[..., 0]) + 0.02
         omega = F.softplus(raw[..., 1])
         return torch.complex(-damping, omega)
 
+    def _build_pair_poles(self, shared_poles: torch.Tensor, pair_latent: torch.Tensor) -> torch.Tensor:
+        pair_poles = shared_poles.unsqueeze(1).expand(-1, len(self.pairs), -1)
+        if not self.use_pair_pole_offsets:
+            return pair_poles
+        raw_offset = self.pair_pole_offset_head(pair_latent).view(pair_latent.size(0), len(self.pairs), self.num_poles, 2)
+        damping = (-pair_poles.real).clamp_min(0.02) * (1.0 + 0.25 * torch.tanh(raw_offset[..., 0]))
+        omega = pair_poles.imag + 0.25 * torch.tanh(raw_offset[..., 1])
+        return torch.complex(-damping.clamp_min(0.02), omega)
+
     def _decode_pairs(self, pair_latent: torch.Tensor, poles: torch.Tensor) -> torch.Tensor:
+        if poles.dim() == 2:
+            poles = poles.unsqueeze(1)
         raw = self.param_head(pair_latent)
         direct = torch.complex(raw[..., 0], raw[..., 1])
         slope = 0.05 * torch.complex(raw[..., 2], raw[..., 3])
@@ -121,8 +134,8 @@ class StructuredPoleResiduePredictor(nn.Module):
         residues = 0.05 * torch.complex(residue_raw[..., 0], residue_raw[..., 1])
         s = self._normalized_s().view(1, self.freq_bins, 1, 1)
         response = direct.unsqueeze(1) + s.squeeze(-1) * slope.unsqueeze(1)
-        response = response + (residues.unsqueeze(1) / (s - poles.unsqueeze(1).unsqueeze(1))).sum(dim=-1)
-        response = response + (residues.conj().unsqueeze(1) / (s - poles.conj().unsqueeze(1).unsqueeze(1))).sum(dim=-1)
+        response = response + (residues.unsqueeze(1) / (s - poles.unsqueeze(1))).sum(dim=-1)
+        response = response + (residues.conj().unsqueeze(1) / (s - poles.conj().unsqueeze(1))).sum(dim=-1)
         return torch.stack([response.real, response.imag], dim=-1)
 
     def forward(
@@ -158,21 +171,16 @@ class StructuredPoleResiduePredictor(nn.Module):
         tokens = self.token_mixer(tokens, src_key_padding_mask=token_mask)
         geometry_latent = self._masked_mean(tokens[:, : 1 + self.max_cuts + self.max_nibs], geom_mask)
         global_latent = self.global_context(torch.cat([geometry_latent, frame, geom[:, 3:]], dim=1))
-        poles = self._build_poles(global_latent)
+        poles = self._build_shared_poles(global_latent)
         port_tokens = tokens[:, -ports.size(1) :]
         port_tokens = self.port_refiner(torch.cat([port_tokens, global_latent.unsqueeze(1).expand_as(port_tokens)], dim=-1))
         pair_tokens = []
         for row, col in self.pairs:
             row_token = port_tokens[:, row]
             col_token = port_tokens[:, col]
-            pair_tokens.append(
-                torch.cat(
-                    [row_token, col_token, torch.abs(row_token - col_token), row_token * col_token, global_latent],
-                    dim=1,
-                )
-            )
+            pair_tokens.append(torch.cat([row_token, col_token, torch.abs(row_token - col_token), row_token * col_token, global_latent], dim=1))
         pair_latent = self.pair_mlp(torch.stack(pair_tokens, dim=1))
-        pair_output = self._decode_pairs(pair_latent, poles)
+        pair_output = self._decode_pairs(pair_latent, self._build_pair_poles(poles, pair_latent))
         full = torch.zeros(
             frame.size(0),
             self.freq_bins,

@@ -33,11 +33,14 @@ def forward_model(
     nibs: torch.Tensor,
     device: torch.device,
     graph_tensors: dict[str, torch.Tensor] | None = None,
+    temporal: torch.Tensor | None = None,
 ) -> torch.Tensor:
     kwargs = {}
     if graph_tensors is not None and uses_graph_features(model):
         needed = set(graph_feature_keys(model))
         kwargs = {key: value.to(device) for key, value in graph_tensors.items() if key in needed}
+    if temporal is not None:
+        kwargs["temporal"] = temporal.to(device)
     return model(
         points.to(device),
         ports.to(device),
@@ -139,6 +142,7 @@ def evaluate(
     target_std: torch.Tensor,
     port_count: int,
     loss_config: dict[str, float],
+    has_temporal: bool = False,
 ) -> tuple[dict[str, float | list[float]], torch.Tensor, torch.Tensor]:
     model.eval()
     losses = []
@@ -148,7 +152,12 @@ def evaluate(
     std_device = target_std.to(device)
     with torch.no_grad():
         for batch in loader:
-            points, ports, geom, frame, cuts, nibs, target, *graph_extra = batch
+            points, ports, geom, frame, cuts, nibs, target, *rest = batch
+            temporal_batch = None
+            graph_extra = rest
+            if has_temporal:
+                temporal_batch = rest[0]
+                graph_extra = rest[1:]
             graph_tensors = None
             if graph_extra:
                 graph_tensors = {key: tensor for key, tensor in zip(GRAPH_KEYS, graph_extra, strict=False)}
@@ -162,6 +171,7 @@ def evaluate(
                 nibs=nibs,
                 device=device,
                 graph_tensors=graph_tensors,
+                temporal=temporal_batch,
             )
             target_device = target.to(device)
             losses.append(
@@ -180,4 +190,6 @@ def evaluate(
     truth_all = torch.cat(truths, dim=0)
     metrics = summarize_prediction_metrics(pred_all, truth_all, port_count=port_count)
     metrics["loss"] = float(np.mean(losses))
+    metrics["reciprocity_mse"] = float(reciprocity_loss(pred_all, port_count).item())
+    metrics["passivity_mse"] = float(passivity_loss(pred_all, port_count).item())
     return metrics, pred_all, truth_all

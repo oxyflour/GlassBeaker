@@ -23,13 +23,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("tmp/nijika-baseline"))
     parser.add_argument(
         "--model-kind",
-        choices=["graph_topology_spectral_head", "structured_pair_coupling_freq_head", "structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_pair_topology_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "legacy_global_head"],
+        choices=["graph_topology_spectral_head", "structured_pair_coupling_freq_head", "structured_pair_pole_offset_residue_head", "structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_pair_topology_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "temporal_pair_spectral_head", "transolver_pair_spectral_head", "legacy_global_head"],
         default="structured_pair_spectral_head",
     )
     parser.add_argument("--epochs", type=int, default=400)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--freq-bins", type=int, default=201)
     parser.add_argument("--points", type=int, default=128)
+    parser.add_argument("--max-temporal-steps", type=int, default=0)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--hidden-dim", type=int, default=160)
     parser.add_argument("--num-poles", type=int, default=12)
@@ -49,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-epochs", type=int, default=10)
     parser.add_argument("--reciprocity-weight", type=float, default=0.0, help="Weight for reciprocity constraint loss (S_ij = S_ji)")
     parser.add_argument("--passivity-weight", type=float, default=0.0, help="Weight for passivity constraint loss (|S| <= 1)")
+    parser.add_argument("--physics", action="store_true", default=False, help="Enable physics-aware training: sets reciprocity/passivity weights to 0.1 and uses physics-combined model scoring")
     return parser.parse_args()
 
 def set_seed(seed: int) -> None:
@@ -103,19 +105,29 @@ def scheduled_loss_config(
     return {key: base_config[key] + alpha * (final_config[key] - base_config[key]) for key in base_config}
 
 
-def build_dataset(tensors: dict[str, torch.Tensor], target: torch.Tensor, use_graph: bool) -> TensorDataset:
+def build_dataset(tensors: dict[str, torch.Tensor], target: torch.Tensor, use_graph: bool, has_temporal: bool = False) -> TensorDataset:
     items = [tensors["points"], tensors["ports"], tensors["geom"], tensors["frame"], tensors["cuts"], tensors["nibs"], target]
+    if has_temporal:
+        items.append(tensors["temporal"])
     if use_graph:
         items.extend(tensors[key] for key in GRAPH_KEYS)
     return TensorDataset(*items)
 
 def main() -> None:
     args = parse_args()
+    if args.physics:
+        if args.reciprocity_weight == 0.0:
+            args.reciprocity_weight = 0.1
+        if args.passivity_weight == 0.0:
+            args.passivity_weight = 0.1
     set_seed(args.seed)
+    # Disable memory-efficient SDP to avoid NaN with fully-masked tokens in transformer
+    if torch.cuda.is_available():
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loss_config = build_loss_config(args)
     final_loss_config = build_final_loss_config(args, loss_config)
-    bundle = load_dataset(args.dataset_root, n_points=args.points, freq_bins=args.freq_bins)
+    bundle = load_dataset(args.dataset_root, n_points=args.points, freq_bins=args.freq_bins, max_temporal_steps=args.max_temporal_steps)
     train_records, val_records = split_records(bundle.records, seed=args.seed)
     train_tensors = stack_records(train_records)
     val_tensors = stack_records(val_records)
@@ -133,13 +145,14 @@ def main() -> None:
         model_config=model_config,
     ).to(device)
     use_graph = uses_graph_features(model)
+    has_temporal = "temporal" in train_tensors
     train_loader = DataLoader(
-        build_dataset(train_tensors, train_target, use_graph),
+        build_dataset(train_tensors, train_target, use_graph, has_temporal),
         batch_size=min(args.batch_size, len(train_records)),
         shuffle=True,
     )
     val_loader = DataLoader(
-        build_dataset(val_tensors, val_target, use_graph),
+        build_dataset(val_tensors, val_target, use_graph, has_temporal),
         batch_size=min(args.batch_size, len(val_records)),
         shuffle=False,
     )
@@ -164,7 +177,12 @@ def main() -> None:
         model.train()
         batch_losses = []
         for batch in train_loader:
-            points, ports, geom, frame, cuts, nibs, target, *graph_extra = batch
+            points, ports, geom, frame, cuts, nibs, target, *rest = batch
+            temporal_batch = None
+            graph_extra = rest
+            if has_temporal:
+                temporal_batch = rest[0]
+                graph_extra = rest[1:]
             graph_tensors = None
             if graph_extra:
                 graph_tensors = {key: tensor for key, tensor in zip(GRAPH_KEYS, graph_extra, strict=False)}
@@ -179,6 +197,7 @@ def main() -> None:
                 nibs=nibs,
                 device=device,
                 graph_tensors=graph_tensors,
+                temporal=temporal_batch,
             )
             loss = composite_loss(
                 pred,
@@ -200,16 +219,22 @@ def main() -> None:
             target_std=target_std,
             port_count=bundle.port_count,
             loss_config=epoch_loss_config,
+            has_temporal=has_temporal,
         )
         score = float(val_metrics["db_mae"])
+        if args.physics:
+            score = score + 0.5 * (float(val_metrics["reciprocity_mse"]) * 100.0 + float(val_metrics["passivity_mse"]) * 100.0)
         if score < best["score"]:
-            best = {"epoch": epoch, "score": score, "state": copy.deepcopy(model.state_dict()), "metrics": val_metrics}
+            best = {"epoch": epoch, "score": score, "state": copy.deepcopy(model.state_dict()), "opt_state": copy.deepcopy(optimizer.state_dict()), "metrics": val_metrics}
         if epoch == 1 or epoch % 50 == 0:
-            print(
-                f"epoch={epoch:03d} train_loss={np.mean(batch_losses):.4f} "
-                f"val_rmse={val_metrics['rmse']:.4f} val_db_mae={val_metrics['db_mae']:.4f} "
-                f"lr={optimizer.param_groups[0]['lr']:.2e} device={device.type}"
-            )
+            parts = [
+                f"epoch={epoch:03d} train_loss={np.mean(batch_losses):.4f}",
+                f"val_rmse={val_metrics['rmse']:.4f} val_db_mae={val_metrics['db_mae']:.4f}",
+                f"lr={optimizer.param_groups[0]['lr']:.2e} device={device.type}",
+            ]
+            if args.physics:
+                parts.insert(-1, f"recip={val_metrics['reciprocity_mse']:.2e} passiv={val_metrics['passivity_mse']:.2e}")
+            print(" ".join(parts))
     model.load_state_dict(best["state"])
     final_metrics, val_pred, val_truth = evaluate(
         model=model,
@@ -225,6 +250,7 @@ def main() -> None:
             start_epoch=args.loss_ramp_start_epoch,
             end_epoch=args.loss_ramp_end_epoch,
         ),
+        has_temporal=has_temporal,
     )
     example = val_records[0]
     plot_path = args.output_dir / f"{example.name}_matrix_db.png"
@@ -241,6 +267,8 @@ def main() -> None:
     torch.save(
         {
             "state_dict": model.state_dict(),
+            "opt_state_dict": optimizer.state_dict(),
+            "epoch": best["epoch"],
             "freq_grid": bundle.freq_grid.tolist(),
             "port_count": bundle.port_count,
             "target_mean": target_mean.squeeze(0).squeeze(0).tolist(),
@@ -257,14 +285,6 @@ def main() -> None:
         },
         model_path,
     )
-    # Compute physics constraint violation metrics on validation set
-    from baseline.training_utils import reciprocity_loss, passivity_loss
-    model.eval()
-    with torch.no_grad():
-        val_pred_denorm = val_pred  # Already denormalized in evaluate()
-        recip_violation = reciprocity_loss(val_pred_denorm, bundle.port_count).item()
-        pass_violation = passivity_loss(val_pred_denorm, bundle.port_count).item()
-
     metrics = {
         "device": device.type,
         "train_samples": len(train_records),
@@ -274,8 +294,8 @@ def main() -> None:
         "val_rmse": final_metrics["rmse"],
         "val_db_mae": final_metrics["db_mae"],
         "val_db_rmse": final_metrics["db_rmse"],
-        "val_reciprocity_mse": recip_violation,
-        "val_passivity_mse": pass_violation,
+        "val_reciprocity_mse": final_metrics["reciprocity_mse"],
+        "val_passivity_mse": final_metrics["passivity_mse"],
         "example_sample": example.name,
         "example_rmse": final_metrics["sample_rmse"][0],
         "example_db_mae": final_metrics["sample_db_mae"][0],

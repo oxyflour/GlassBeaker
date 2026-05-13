@@ -9,6 +9,8 @@ from baseline.structured_coupling_freq_model import StructuredCouplingFreqPredic
 from baseline.structured_pole_model import StructuredPoleResiduePredictor
 from baseline.structured_spectral_model import StructuredSpectralPredictor
 from baseline.structured_model import StructuredAntennaPredictor
+from baseline.temporal_model import TemporalSpectralPredictor
+from baseline.transolver_model import TransolverSpectralPredictor
 
 def _pair_indices(port_count: int) -> list[tuple[int, int]]:
     return [(row, col) for row in range(port_count) for col in range(row, port_count)]
@@ -216,6 +218,33 @@ def create_model(*, freq_grid: Sequence[float] | torch.Tensor, port_count: int, 
             hidden_dim=hidden_dim,
             dropout=dropout,
             num_poles=int(config.get("num_poles", 12)),
+        )
+    if model_kind == "structured_pair_pole_offset_residue_head":
+        return StructuredPoleResiduePredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            num_poles=int(config.get("num_poles", 12)),
+            use_pair_pole_offsets=True,
+        )
+    if model_kind == "temporal_pair_spectral_head":
+        return TemporalSpectralPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            num_slices=int(config.get("num_slices", 32)),
+            num_encoder_layers=int(config.get("num_encoder_layers", 3)),
+        )
+    if model_kind == "transolver_pair_spectral_head":
+        return TransolverSpectralPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            num_slices=int(config.get("num_slices", 32)),
+            num_encoder_layers=int(config.get("num_encoder_layers", 3)),
         )
     if model_kind == "graph_topology_spectral_head":
         return GraphTopologySpectralPredictor(
