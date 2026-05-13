@@ -2,11 +2,13 @@
 
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
-import { Environment, Lightformer, TransformControls } from "@react-three/drei";
+import { Environment, TransformControls, useEnvironment } from "@react-three/drei";
 import { EffectComposer, N8AO } from "@react-three/postprocessing";
+import { SparkRenderer } from "@sparkjsdev/spark";
 import { Mesh, Object3D, Vector2 } from "three";
 
 import { SparkRendererBridge, SparkSplat } from "../../utils/three/splat";
+import { SparkEnvironmentMap } from "./SparkEnvironmentMap";
 import { SurfacePivotControls } from "./SurfacePivotControls";
 import { ZapdosCameraStrip } from "./ZapdosCameraStrip";
 import { ZapdosTopOverlay } from "./ZapdosTopOverlay";
@@ -21,6 +23,8 @@ import { Group, Panel } from "react-resizable-panels";
 import { CopilotChat } from "@copilotkit/react-core/v2";
 
 const PIVOT_PICK_ROOT = "surface-pivot-content";
+const SPARK_ENV_WORLD_CENTER = [0, 0, 2] as const;
+const SPARK_ENV_HDR = "/studio_small_03_1k.hdr";
 
 class Counter {
   frame = 0;
@@ -35,6 +39,23 @@ class Counter {
   record() {
     this.frame += 1;
   }
+}
+
+function SceneEnvironment({ spark, splatReady, splatRoot }: {
+  spark: SparkRenderer | null;
+  splatRoot: Object3D | null;
+  splatReady: boolean;
+}) {
+  const hdr = useEnvironment({ files: SPARK_ENV_HDR });
+  return <>
+    <Environment map={ hdr } />
+    {spark && splatRoot && splatReady ? <SparkEnvironmentMap
+      captureBackground={ hdr }
+      captureEnvironment={ hdr }
+      includeObjects={ [splatRoot] }
+      spark={ spark }
+      worldCenter={ SPARK_ENV_WORLD_CENTER } /> : null}
+  </>;
 }
 
 function SceneRuntime({
@@ -296,6 +317,9 @@ export function ZapdosScene({
   const [mode, setMode] = useState<ZapdosTransformMode>("translate");
   const [selectedBody, setSelectedBody] = useState<string | null>(null);
   const [sse, setSse] = useState(0);
+  const [spark, setSpark] = useState<SparkRenderer | null>(null);
+  const [splatRoot, setSplatRoot] = useState<Object3D | null>(null);
+  const [splatReady, setSplatReady] = useState(false);
   const [transformDragging, setTransformDragging] = useState(false);
   useZapdosAgentTools(sess);
   return <Group>
@@ -308,14 +332,14 @@ export function ZapdosScene({
         far: 100,
     } } className="h-full w-full">
       <Perf />
-      <SparkRendererBridge />
+      <SparkRendererBridge ref={ setSpark } />
+      <SceneEnvironment spark={ spark } splatReady={ splatReady } splatRoot={ splatRoot } />
       <ambientLight intensity={ 1.2 } />
       <SurfacePivotControls enabled={ !transformDragging } pickRootName={ PIVOT_PICK_ROOT } />
       <EffectComposer multisampling={ 8 }><N8AO aoRadius={ 1 } distanceFalloff={ 1 } intensity={ 4 } /></EffectComposer>
-      <Environment files="/studio_small_03_1k.hdr" />
       <group name={ PIVOT_PICK_ROOT }>
-        <group position={ [0, 0, 2] }>
-          <SparkSplat url="/tmp/butterfly.spz" />
+        <group position={ [0, 2, 1.2] } rotation={ [-Math.PI*0.55, 0, 0] } ref={ setSplatRoot }>
+          <SparkSplat onReadyChange={ setSplatReady } url="/tmp/point_cloud.ply" />
         </group>
       </group>
       <SceneRuntime

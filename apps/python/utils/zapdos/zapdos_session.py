@@ -11,6 +11,7 @@ from utils.session import Session, Timer
 from utils.zapdos.bundle import DEFAULT_SCENE_USD, RenderBundle, ensure_render_bundle
 from utils.zapdos.bundle.camera_specs import image_topic
 from utils.zapdos.editor.zapdos_editor import ZapdosEditor
+from utils.zapdos.manipulation.runtime import ManipulationRuntime
 from utils.zapdos.physics.mujoco_physics import ZapdosPhysics
 from utils.zapdos.renderer import ZapdosRenderer
 from utils.zapdos.renderer.isaac_renderer import IsaacRenderer, tf_message
@@ -40,6 +41,7 @@ class ZapdosSession(Session):
             default_robot_usd=DEFAULT_ROBOT_USD,
             default_scene_usd=DEFAULT_SCENE_USD,
         )
+        self.runtime = ManipulationRuntime(self)
         super().__init__()
         self.timers.append(Timer(ROS_DT, self.send_sse))
         asyncio.run_coroutine_threadsafe(self.send_ros(), self.loop)
@@ -69,12 +71,16 @@ class ZapdosSession(Session):
             return self.physics.get_camera()
         if method == "list_scene_bodies":
             return self.editor.list_scene_bodies()
+        if method == "list_scene_objects":
+            return self.runtime.list_scene_objects()
         if method == "set_scene_assets":
             return self.editor.set_scene_assets(*args)
         if method == "remove_asset_from_scene":
             return self.editor.remove_asset_from_scene(*args)
         if method == "set_body_pose":
             return self.editor.set_body_pose(*args)
+        if method == "pick_object":
+            return self.runtime.pick_object(*args)
         if method == "save_camera_override":
             return self.save_camera_override()
         return super().call_once(method, args)

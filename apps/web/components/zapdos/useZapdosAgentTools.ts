@@ -14,6 +14,11 @@ import {
   searchAssetsToolArgsSchema,
   setSceneAssetsToolArgsSchema,
 } from "./zapdos-agent-tool-schemas";
+import {
+  listSceneObjectsToolArgsSchema,
+  pickObjectToolArgsSchema,
+} from "./zapdos-manipulation-tool-schemas";
+import { listSceneObjects, pickObject } from "./zapdos-manipulation-tool-api";
 import { listSceneBodies, removeAssetFromScene, setSceneAssets } from "./zapdos-tool-api";
 import { useTypedTool } from "../../utils/agent/tool";
 
@@ -48,6 +53,22 @@ export function useZapdosAgentTools(sess: string) {
     followUp: true,
     parameters: listSceneBodiesToolArgsSchema,
     handler: async () => await listSceneBodies(sess),
+  }, [sess]);
+
+  useTypedTool({
+    name: "list_scene_objects",
+    description: "List scene objects so you can resolve ambiguous natural-language pick targets and supports.",
+    followUp: true,
+    parameters: listSceneObjectsToolArgsSchema,
+    handler: async () => await listSceneObjects(sess),
+  }, [sess]);
+
+  useTypedTool({
+    name: "pick_object",
+    description: "Execute a natural-language pick command. Use directly for simple picks; include support_query when needed.",
+    followUp: true,
+    parameters: pickObjectToolArgsSchema,
+    handler: async (args) => await pickObject(sess, args),
   }, [sess]);
 
   useTypedTool({
