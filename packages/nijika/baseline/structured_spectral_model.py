@@ -23,12 +23,14 @@ class StructuredSpectralPredictor(nn.Module):
         max_nibs: int = MAX_NIBS,
         split_decoder: bool = False,
         use_pair_topology: bool = False,
+        ffs_coeff_dim: int = 0,
     ):
         super().__init__()
         self.port_count = port_count
         self.max_cuts = max_cuts
         self.max_nibs = max_nibs
         self.freq_bins = len(freq_grid)
+        self.ffs_coeff_dim = ffs_coeff_dim
         self.pairs = _upper_triangle_pairs(port_count)
         self.split_decoder = split_decoder
         self.use_pair_topology = use_pair_topology
@@ -108,6 +110,14 @@ class StructuredSpectralPredictor(nn.Module):
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim * 2, self.freq_bins * 2),
             )
+        self.ffs_decoder = None
+        if ffs_coeff_dim > 0:
+            self.ffs_decoder = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, ffs_coeff_dim),
+            )
 
     def _port_features(self, ports: torch.Tensor, geom: torch.Tensor) -> torch.Tensor:
         start = ports[..., :3]
@@ -136,7 +146,7 @@ class StructuredSpectralPredictor(nn.Module):
         )
         return self.token_type(type_ids).unsqueeze(0).expand(batch_size, -1, -1)
 
-    def forward(
+    def _predict_outputs(
         self,
         points: torch.Tensor,
         ports: torch.Tensor,
@@ -145,7 +155,7 @@ class StructuredSpectralPredictor(nn.Module):
         cuts: torch.Tensor | None = None,
         nibs: torch.Tensor | None = None,
         pair_topology: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
         del points
         if frame is None or cuts is None or nibs is None:
             raise ValueError("StructuredSpectralPredictor requires frame/cuts/nibs features")
@@ -209,4 +219,31 @@ class StructuredSpectralPredictor(nn.Module):
         for idx, (row, col) in enumerate(self.pairs):
             full[:, :, row, col] = pair_output[:, :, idx]
             full[:, :, col, row] = pair_output[:, :, idx]
-        return full.view(frame.size(0), self.freq_bins, self.port_count * self.port_count * 2)
+        outputs = {"s_pred": full.view(frame.size(0), self.freq_bins, self.port_count * self.port_count * 2)}
+        if self.ffs_decoder is not None:
+            outputs["ffs_coeff_pred"] = self.ffs_decoder(global_latent)
+        return outputs
+
+    def forward(
+        self,
+        points: torch.Tensor,
+        ports: torch.Tensor,
+        geom: torch.Tensor,
+        frame: torch.Tensor | None = None,
+        cuts: torch.Tensor | None = None,
+        nibs: torch.Tensor | None = None,
+        pair_topology: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self._predict_outputs(points, ports, geom, frame, cuts, nibs, pair_topology)["s_pred"]
+
+    def forward_with_aux(
+        self,
+        points: torch.Tensor,
+        ports: torch.Tensor,
+        geom: torch.Tensor,
+        frame: torch.Tensor | None = None,
+        cuts: torch.Tensor | None = None,
+        nibs: torch.Tensor | None = None,
+        pair_topology: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        return self._predict_outputs(points, ports, geom, frame, cuts, nibs, pair_topology)

@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--match-threshold-db", type=float, default=-10.0)
     parser.add_argument("--ground-admittance", type=float, default=1e6)
     parser.add_argument("--open-admittance", type=float, default=1e-6)
+    parser.add_argument("--efficiency-mode", choices=["rez", "farfield"], default="rez")
     return parser.parse_args()
 
 
@@ -42,7 +43,10 @@ def main() -> None:
     args = parse_args()
     checkpoint, model = load_checkpoint_model(args.model_path)
     config = json.loads(args.config_path.read_text())
-    result = optimize_model(model=model, checkpoint=checkpoint, config=config, output_dir=args.output_dir, steps=args.steps, lr=args.lr, top_k=args.top_k, band_min=args.band_min, band_max=args.band_max, match_weight=args.match_weight, isolation_weight=args.isolation_weight, bandwidth_weight=args.bandwidth_weight, match_threshold_db=args.match_threshold_db, ground_admittance=args.ground_admittance, open_admittance=args.open_admittance)
+    if args.efficiency_mode == "farfield":
+        if "ffs_codec" not in checkpoint or "ffs_metadata" not in checkpoint:
+            raise ValueError("Farfield mode requires a checkpoint with FFS codec and metadata")
+    result = optimize_model(model=model, checkpoint=checkpoint, config=config, output_dir=args.output_dir, steps=args.steps, lr=args.lr, top_k=args.top_k, band_min=args.band_min, band_max=args.band_max, match_weight=args.match_weight, isolation_weight=args.isolation_weight, bandwidth_weight=args.bandwidth_weight, match_threshold_db=args.match_threshold_db, ground_admittance=args.ground_admittance, open_admittance=args.open_admittance, efficiency_mode=args.efficiency_mode)
     print(json.dumps({"trace_steps": len(result["trace"]), "best_score": result["ranking"][0]["score"], "output_dir": str(args.output_dir)}, indent=2))
 
 

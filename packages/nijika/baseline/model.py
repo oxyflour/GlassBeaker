@@ -187,6 +187,17 @@ def create_model(*, freq_grid: Sequence[float] | torch.Tensor, port_count: int, 
             hidden_dim=hidden_dim,
             dropout=dropout,
         )
+    if model_kind == "structured_pair_spectral_ffs_head":
+        ffs_coeff_dim = int(config.get("ffs_coeff_dim", 0))
+        if ffs_coeff_dim <= 0:
+            raise ValueError("structured_pair_spectral_ffs_head requires model_config['ffs_coeff_dim'] > 0")
+        return StructuredSpectralPredictor(
+            freq_grid=freq_grid,
+            port_count=port_count,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            ffs_coeff_dim=ffs_coeff_dim,
+        )
     if model_kind == "structured_pair_topology_spectral_head":
         return StructuredSpectralPredictor(
             freq_grid=freq_grid,
