@@ -182,7 +182,35 @@ class FfsTrainPredictTest(unittest.TestCase):
             )
             metadata, field = load_ffs_sample(exported[0])
             self.assertEqual(field.shape[0], len(metadata.frequencies_hz))
-            self.assertTrue((metadata.radiated_power_w > 0.0).all())
+            angle_grid = torch.tensor(metadata.angles_deg, dtype=torch.float64).view(
+                metadata.phi_count,
+                metadata.theta_count,
+                2,
+            )
+            phi = torch.deg2rad(angle_grid[:, 0, 0])
+            theta = torch.deg2rad(angle_grid[0, :, 1])
+            has_phi_closure = bool(
+                metadata.phi_count > 1
+                and torch.isclose(phi[-1], phi[0] + 2.0 * torch.pi, atol=1e-9, rtol=0.0)
+            )
+            if has_phi_closure:
+                phi = phi[:-1]
+            recomputed_power = integrate_decoded_ffs_power(
+                torch.tensor(field, dtype=torch.float32).unsqueeze(0).unsqueeze(0),
+                phi=phi,
+                theta=theta,
+                phi_count=metadata.phi_count,
+                theta_count=metadata.theta_count,
+                has_phi_closure=has_phi_closure,
+            )[0, 0]
+            self.assertTrue(
+                torch.allclose(
+                    recomputed_power,
+                    torch.tensor(metadata.radiated_power_w, dtype=recomputed_power.dtype),
+                    rtol=1e-5,
+                    atol=1e-7,
+                )
+            )
 
     def test_trained_ffs_checkpoint_runs_farfield_optimizer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
