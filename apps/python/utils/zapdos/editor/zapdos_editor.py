@@ -74,6 +74,7 @@ class ZapdosEditor:
                     "label": self.session.physics.body_labels.get(body, body),
                     "matrix": flatten_matrix(body_world_pose(self.session.physics.data, body_id)),
                     "support": support_infos.get(body),
+                    "world_aabb": self.session.physics.body_world_aabb(body),
                 }
             )
         return {
@@ -121,17 +122,23 @@ class ZapdosEditor:
         }
         for body in self.session.physics.editable_body_names:
             body_id = mujoco.mj_name2id(self.session.physics.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
-            top_z = float(body_world_pose(self.session.physics.data, body_id)[2, 3])
             instance = instance_by_body.get(body)
             if instance is not None:
                 try:
-                    bounds = asset_local_bounds(assets_root / instance["url"])
+                    asset_local_bounds(assets_root / instance["url"])
                 except (FileNotFoundError, OSError, RuntimeError) as exc:
                     raise HTTPException(
                         status_code=409,
                         detail=f"Existing overlay asset unavailable: {instance['id']}: {exc}",
                     ) from exc
-                top_z += float(bounds["max"][2])
+            world_aabb = self.session.physics.body_world_aabb(body)
+            if world_aabb is not None:
+                top_z = float(world_aabb["max"][2])
+            else:
+                top_z = float(body_world_pose(self.session.physics.data, body_id)[2, 3])
+                if instance is not None:
+                    bounds = asset_local_bounds(assets_root / instance["url"])
+                    top_z += float(bounds["max"][2])
             infos[body] = {"top_z": top_z}
         return infos
 

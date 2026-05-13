@@ -353,6 +353,29 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             {"Scene_Crate": "Crate"},
         )
 
+    def build_attachment_session(self):
+        return self.build_physics_session(
+            """
+<mujoco>
+  <option gravity="0 0 0"/>
+  <worldbody>
+    <body name="Root_base_link" pos="0 0 0.5">
+      <freejoint name="Root_base_link_freejoint"/>
+      <geom name="root-box" type="box" size="0.1 0.1 0.1" rgba="0 0 1 1"/>
+    </body>
+    <body name="Scene_Crate" pos="1 0 0.5">
+      <freejoint name="Scene_Crate_freejoint"/>
+      <geom name="crate-box" type="box" size="0.1 0.1 0.1" rgba="1 0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+""",
+            {
+                "Root_base_link": "MyRobot/Root_base_link",
+                "Scene_Crate": "Scene/Crate",
+            },
+        )
+
     def test_input_path_accepts_absolute_scene_usd(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene = Path(tmp) / "scene.usda"
@@ -641,6 +664,29 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "max": [0.35, 0.1, 0.4],
         })
 
+    def test_list_scene_bodies_includes_world_aabb_for_editable_bodies(self):
+        session = self.build_pose_edit_session()
+
+        payload = session.call_once("list_scene_bodies", ())
+
+        self.assertEqual(payload["items"][0]["body"], "Scene_Crate")
+        self.assertEqual(payload["items"][0]["world_aabb"], {
+            "min": [0.8, 1.8, 2.8],
+            "max": [1.2, 2.2, 3.2],
+        })
+        self.assertEqual(payload["items"][0]["support"], {"top_z": 3.2})
+
+    def test_list_scene_bodies_includes_descendant_geom_world_aabb_for_editable_body(self):
+        session = self.build_nested_pose_edit_session()
+
+        payload = session.call_once("list_scene_bodies", ())
+
+        self.assertEqual(payload["items"][0]["body"], "Scene_Crate")
+        self.assertEqual(payload["items"][0]["world_aabb"], {
+            "min": [1.3, 1.8, 2.8],
+            "max": [1.7, 2.2, 3.2],
+        })
+
     def test_get_visual_attaches_descendant_scene_mesh_to_editable_ancestor(self):
         session = self.build_nested_pose_edit_session()
 
@@ -718,6 +764,18 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(session.physics.data.xpos[body_id].tolist(), [4.0, 5.0, 6.0])
         self.assertEqual(session.physics.data.qpos[qpos_adr:qpos_adr + 3].tolist(), [4.0, 5.0, 6.0])
+
+    def test_attachment_updates_attached_body_pose_during_step(self):
+        session = self.build_attachment_session()
+
+        attached = session.physics.attach_body("Root_base_link", "Scene_Crate")
+        session.call_once("set_body_pose", ("Root_base_link", [2.0, 0.0, 0.5], [1.0, 0.0, 0.0, 0.0]))
+        session.physics.step()
+
+        pose = session.physics.get_pose()["Scene_Crate"]
+        self.assertEqual(attached["parent_body"], "Root_base_link")
+        self.assertEqual(pose[12:15], [3.0, 0.0, 0.5])
+        self.assertEqual(session.physics.get_attachment("Scene_Crate")["child_body"], "Scene_Crate")
 
     def test_set_body_pose_accepts_robot_root_and_rejects_non_root_robot_body(self):
         session = self.build_robot_root_pose_edit_session()
@@ -1331,6 +1389,161 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"ok": True, "op_id": "op-1"})
         session.editor.set_scene_assets.assert_called_once_with([{"asset_id": "table_000"}])
+
+    def test_call_once_dispatches_manipulation_runtime_methods(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.runtime = mock.Mock(
+            list_scene_objects=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}], "scene_revision": "rev-1"}),
+            pick_object=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-1"}),
+        )
+
+        listed = MODULE.ZapdosSession.call_once(session, "list_scene_objects", ())
+        picked = MODULE.ZapdosSession.call_once(session, "pick_object", ({"target_query": "crate"},))
+
+        self.assertEqual(listed["items"][0]["body"], "Scene_Crate")
+        self.assertEqual(picked["target_body"], "Scene_Crate")
+        session.runtime.list_scene_objects.assert_called_once_with()
+        session.runtime.pick_object.assert_called_once_with({"target_query": "crate"})
+
+    def test_manipulation_runtime_executes_grounded_pick_plan(self):
+        from utils.zapdos.manipulation.runtime import ManipulationRuntime
+
+        session = SimpleNamespace(
+            editor=SimpleNamespace(
+                scene_revision="rev-1",
+                overlay_state={},
+                list_scene_bodies=mock.Mock(return_value={"items": []}),
+            ),
+            bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
+            physics=mock.Mock(),
+        )
+        executor = mock.Mock(
+            current_pose=mock.Mock(return_value={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
+            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate"}),
+        )
+        catalog_loader = mock.Mock(return_value=[{"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}])
+        grounder = mock.Mock(return_value={"target": {"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}, "support": None})
+        planner = mock.Mock(return_value={"kind": "pick", "target_body": "Scene_Crate"})
+
+        runtime = ManipulationRuntime(
+            session,
+            catalog_loader=catalog_loader,
+            grounding_fn=grounder,
+            planning_fn=planner,
+            executor=executor,
+        )
+        result = runtime.pick_object({"target_query": "crate"})
+
+        self.assertEqual(result["target_body"], "Scene_Crate")
+        self.assertEqual(result["scene_revision"], "rev-1")
+        session.editor.list_scene_bodies.assert_called_once_with()
+        catalog_loader.assert_called_once_with({"items": []}, {})
+        grounder.assert_called_once_with(catalog_loader.return_value, target_query="crate", support_query=None)
+        planner.assert_called_once_with(
+            grounder.return_value["target"],
+            support=grounder.return_value["support"],
+            scene_objects=catalog_loader.return_value,
+            arm="left",
+            start_pose={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+        )
+        executor.execute.assert_called_once_with({"kind": "pick", "target_body": "Scene_Crate", "arm": "left"})
+
+    def test_manipulation_runtime_passes_start_pose_and_scene_objects_to_planner(self):
+        from utils.zapdos.manipulation.runtime import ManipulationRuntime
+
+        session = SimpleNamespace(
+            editor=SimpleNamespace(
+                scene_revision="rev-1",
+                overlay_state={},
+                list_scene_bodies=mock.Mock(return_value={"items": []}),
+            ),
+            bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
+            physics=mock.Mock(name="physics"),
+        )
+        catalog_loader = mock.Mock(return_value=[{
+            "body": "Scene_Crate",
+            "label": "crate",
+            "asset_id": None,
+            "motion": "dynamic",
+            "tags": ["crate"],
+            "support_body": None,
+            "position": [0.2, 0.0, 0.2],
+            "matrix": None,
+            "top_z": 0.25,
+            "bounds_min": [-0.05, -0.05, -0.05],
+            "bounds_max": [0.05, 0.05, 0.05],
+            "world_aabb": {"min": [0.15, -0.05, 0.15], "max": [0.25, 0.05, 0.25]},
+        }])
+        grounder = mock.Mock(return_value={"target": catalog_loader.return_value[0], "support": None})
+        planner_call: dict[str, object] = {}
+
+        def planner(target, *, support, scene_objects, arm, start_pose):
+            planner_call.update(
+                target=target,
+                support=support,
+                scene_objects=scene_objects,
+                arm=arm,
+                start_pose=start_pose,
+            )
+            return {"kind": "pick", "target_body": "Scene_Crate", "stages": []}
+
+        executor = mock.Mock(
+            current_pose=mock.Mock(return_value={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
+            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate"}),
+        )
+
+        runtime = ManipulationRuntime(
+            session,
+            catalog_loader=catalog_loader,
+            grounding_fn=grounder,
+            planning_fn=planner,
+            executor=executor,
+        )
+        runtime.pick_object({"target_query": "crate"})
+
+        self.assertEqual(planner_call, {
+            "target": grounder.return_value["target"],
+            "support": grounder.return_value["support"],
+            "scene_objects": catalog_loader.return_value,
+            "arm": "left",
+            "start_pose": {"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+        })
+
+    def test_pick_plan_keeps_stages_optional_for_unstaged_default_planner(self):
+        from utils.zapdos.manipulation.types import PickPlan
+
+        self.assertNotIn("stages", PickPlan.__required_keys__)
+
+    def test_manipulation_runtime_rebinds_executor_to_current_session_state(self):
+        from utils.zapdos.manipulation.runtime import ManipulationRuntime
+
+        session = SimpleNamespace(
+            editor=SimpleNamespace(
+                scene_revision="rev-2",
+                overlay_state={},
+                list_scene_bodies=mock.Mock(return_value={"items": []}),
+            ),
+            bundle=SimpleNamespace(scene_usd=Path("next-scene.usda"), robot_usd=Path("robot.usda")),
+            physics=mock.Mock(name="physics"),
+        )
+        executor = SimpleNamespace(
+            physics="stale-physics",
+            bundle="stale-bundle",
+            current_pose=mock.Mock(return_value={"position": [0.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
+            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate"}),
+        )
+        runtime = ManipulationRuntime(
+            session,
+            catalog_loader=mock.Mock(return_value=[{"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}]),
+            grounding_fn=mock.Mock(return_value={"target": {"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}, "support": None}),
+            planning_fn=mock.Mock(return_value={"kind": "pick", "target_body": "Scene_Crate"}),
+            executor=executor,
+        )
+
+        runtime.pick_object({"target_query": "crate"})
+
+        self.assertIs(executor.physics, session.physics)
+        self.assertIs(executor.bundle, session.bundle)
 
     def test_run_overlay_rebuild_background_queues_completion_without_nested_session_call(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)

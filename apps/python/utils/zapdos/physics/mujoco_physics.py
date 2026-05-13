@@ -10,6 +10,7 @@ import mujoco.viewer
 import numpy as np
 from fastapi import HTTPException
 
+from utils.zapdos.physics.attachment import BodyAttachment, attachment_world_pose, create_attachment
 from utils.zapdos.physics.body_capabilities import build_body_capabilities
 from utils.zapdos.physics.mujoco_tools import (
     body_world_pose,
@@ -64,6 +65,7 @@ class MujocoPhysics:
         self.selection_body_by_name = capabilities.selection_body_by_name
         self.actuator_name_to_id = self._actuator_map()
         self.joint_name_to_actuator = self._joint_command_map()
+        self.attachments: dict[str, BodyAttachment] = {}
         self.data.ctrl[:] = 0
         for joint_name, actuator_id in self.joint_name_to_actuator.items():
             actuator_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id) or ""  # type: ignore
@@ -145,6 +147,12 @@ class MujocoPhysics:
         self.data.qpos[qpos_adr + 3:qpos_adr + 7] = np.asarray(quat, dtype=float)
         self.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
 
+    def _body_id(self, body: str) -> int:
+        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
+        if body_id < 0:
+            raise HTTPException(status_code=404, detail=f"Body not found: {body}")
+        return body_id
+
     def _mesh_anchor_body(self, body_name: str, body_matrices: dict[str, np.ndarray]) -> str | None:
         if body_name not in body_matrices:
             return None
@@ -221,10 +229,57 @@ class MujocoPhysics:
             return None
         return {"min": bounds_min.astype(float).tolist(), "max": bounds_max.astype(float).tolist()}
 
+    def body_world_aabb(self, body_name: str) -> dict[str, list[float]] | None:
+        body_id = self._body_id(body_name)
+        subtree_body_ids = {body_id}
+        for candidate_body_id in range(self.model.nbody):
+            current_body_id = candidate_body_id
+            while current_body_id > 0:
+                if current_body_id == body_id:
+                    subtree_body_ids.add(candidate_body_id)
+                    break
+                current_body_id = int(self.model.body_parentid[current_body_id])
+        bounds_min = None
+        bounds_max = None
+        for geom_id in range(self.model.ngeom):
+            if int(self.model.geom_bodyid[geom_id]) not in subtree_body_ids:
+                continue
+            geom_bounds = self._geom_world_bounds(geom_id)
+            if geom_bounds is None:
+                continue
+            geom_min, geom_max = geom_bounds
+            bounds_min = geom_min if bounds_min is None else np.minimum(bounds_min, geom_min)
+            bounds_max = geom_max if bounds_max is None else np.maximum(bounds_max, geom_max)
+        if bounds_min is None or bounds_max is None:
+            return None
+        return {
+            "min": bounds_min.astype(float).round(6).tolist(),
+            "max": bounds_max.astype(float).round(6).tolist(),
+        }
+
+    def attach_body(self, parent_body: str, child_body: str) -> dict[str, object]:
+        parent_id = self._body_id(parent_body)
+        child_id = self._body_id(child_body)
+        if self._body_freejoint_id(child_id) is None:
+            raise HTTPException(status_code=400, detail=f"Body is not attachable: {child_body}")
+        attachment = create_attachment(
+            parent_body,
+            child_body,
+            body_world_pose(self.data, parent_id),
+            body_world_pose(self.data, child_id),
+        )
+        self.attachments[child_body] = attachment
+        return attachment.to_payload()
+
+    def detach_body(self, child_body: str) -> dict[str, object]:
+        return {"ok": self.attachments.pop(child_body, None) is not None}
+
+    def get_attachment(self, child_body: str) -> dict[str, object] | None:
+        attachment = self.attachments.get(child_body)
+        return None if attachment is None else attachment.to_payload()
+
     def set_body_pose(self, body: str, pos: list[float], quat: list[float]) -> dict[str, object]:
-        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
-        if body_id < 0:
-            raise HTTPException(status_code=404, detail=f"Body not found: {body}")
+        body_id = self._body_id(body)
         if body not in self.movable_body_names:
             raise HTTPException(status_code=403, detail=f"Body is not movable: {body}")
         if len(pos) != 3 or len(quat) != 4:
@@ -272,9 +327,24 @@ class MujocoPhysics:
         self.data.ctrl[:] = ctrl
 
     def step(self) -> None:
+        self._update_attachments()
         mujoco.mj_step(self.model, self.data)  # type: ignore
+        self._update_attachments()
         if self.viewer:
             self.viewer.sync()
+
+    def _update_attachments(self) -> None:
+        if not self.attachments:
+            return
+        changed = False
+        for attachment in self.attachments.values():
+            parent_id = self._body_id(attachment.parent_body)
+            child_id = self._body_id(attachment.child_body)
+            pos, quat = attachment_world_pose(attachment, body_world_pose(self.data, parent_id))
+            self._set_freejoint_pose(child_id, pos, quat)
+            changed = True
+        if changed:
+            mujoco.mj_forward(self.model, self.data)  # type: ignore
 
     def _geom_world_bounds(self, geom_id: int) -> tuple[np.ndarray, np.ndarray] | None:
         kind = PRIMITIVE_TYPES.get(int(self.model.geom_type[geom_id])) or ""
