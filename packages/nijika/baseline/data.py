@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,7 +9,10 @@ import numpy as np
 import torch
 
 from baseline.antenna_features import extract_antenna_features
+from baseline.ffs_io import FfsMetadata, load_ffs_group
 from baseline.models.graph import build_graph_features_np
+
+_FFS_FILE_RE = re.compile(r"^(?P<port>\d+)-\[f=(?P<freq>\d+)\]\.ffs$")
 
 
 @dataclass
@@ -23,6 +27,10 @@ class SampleRecord:
     graph: dict[str, np.ndarray] | None
     target: np.ndarray
     temporal: np.ndarray | None = None
+    ffs: np.ndarray | None = None
+    ffs_radiated_power: np.ndarray | None = None
+    ffs_stimulated_power: np.ndarray | None = None
+    ffs_coeff: np.ndarray | None = None
 
 
 @dataclass
@@ -30,6 +38,7 @@ class DatasetBundle:
     records: list[SampleRecord]
     freq_grid: np.ndarray
     port_count: int
+    ffs_metadata: FfsMetadata | None = None
 
 
 def _read_complex_curve(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -209,7 +218,63 @@ def _build_frequency_grid(sample_dirs: list[Path], freq_bins: int) -> np.ndarray
     return np.linspace(max(mins), min(maxs), freq_bins, dtype=np.float32)
 
 
-def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201, max_temporal_steps: int = 0) -> DatasetBundle:
+def _same_ffs_layout(left: FfsMetadata, right: FfsMetadata) -> bool:
+    return (
+        left.phi_count == right.phi_count
+        and left.theta_count == right.theta_count
+        and np.allclose(left.frequencies_hz, right.frequencies_hz, rtol=0.0, atol=1e-6)
+        and np.allclose(left.angles_deg, right.angles_deg, rtol=0.0, atol=1e-6)
+        and np.allclose(left.position_m, right.position_m, rtol=0.0, atol=1e-9)
+        and np.allclose(left.z_axis, right.z_axis, rtol=0.0, atol=1e-9)
+        and np.allclose(left.x_axis, right.x_axis, rtol=0.0, atol=1e-9)
+    )
+
+
+def _load_sample_ffs(
+    sample_dir: Path,
+    port_count: int,
+) -> tuple[FfsMetadata, np.ndarray, np.ndarray, np.ndarray]:
+    grouped: dict[int, list[tuple[int, Path]]] = {port: [] for port in range(1, port_count + 1)}
+    for path in sample_dir.glob("*.ffs"):
+        match = _FFS_FILE_RE.match(path.name)
+        if match is None:
+            continue
+        port = int(match.group("port"))
+        if port not in grouped:
+            continue
+        grouped[port].append((int(match.group("freq")), path))
+    if any(not items for items in grouped.values()):
+        raise FileNotFoundError(f"Incomplete FFS export in {sample_dir}")
+    sample_metadata = None
+    port_fields = []
+    port_radiated_power = []
+    port_stimulated_power = []
+    for port in range(1, port_count + 1):
+        ordered_paths = [path for _, path in sorted(grouped[port], key=lambda item: item[0])]
+        metadata, field = load_ffs_group(ordered_paths)
+        if sample_metadata is None:
+            sample_metadata = metadata
+        elif not _same_ffs_layout(sample_metadata, metadata):
+            raise ValueError(f"Inconsistent FFS layout across ports in {sample_dir}")
+        port_fields.append(field.astype(np.float32, copy=False))
+        port_radiated_power.append(metadata.radiated_power_w.astype(np.float32, copy=False))
+        port_stimulated_power.append(metadata.stimulated_power_w.astype(np.float32, copy=False))
+    assert sample_metadata is not None
+    return (
+        sample_metadata,
+        np.stack(port_fields, axis=0),
+        np.stack(port_radiated_power, axis=0),
+        np.stack(port_stimulated_power, axis=0),
+    )
+
+
+def load_dataset(
+    root: Path,
+    n_points: int = 128,
+    freq_bins: int = 201,
+    max_temporal_steps: int = 0,
+    include_ffs: bool = False,
+) -> DatasetBundle:
     sample_dirs = sorted(path for path in root.iterdir() if path.is_dir())
     if not sample_dirs:
         raise FileNotFoundError(f"No sample directories found in {root}")
@@ -232,6 +297,7 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201, max_temp
     freq_grid = _build_frequency_grid(valid_sample_dirs, freq_bins)
     records: list[SampleRecord] = []
     port_count = 0
+    ffs_metadata = None
     for sample_dir in valid_sample_dirs:
         config_path = root / f"{sample_dir.name}.json"
         _, points, ports, geom, frame, cuts, nibs = _build_input_sample(config_path, n_points=n_points)
@@ -246,6 +312,17 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201, max_temp
         temporal = None
         if max_temporal_steps > 0:
             temporal = _load_temporal_signals(sample_dir, len(ports), max_temporal_steps)
+        ffs = None
+        ffs_radiated_power = None
+        ffs_stimulated_power = None
+        if include_ffs:
+            sample_ffs_metadata, ffs, ffs_radiated_power, ffs_stimulated_power = _load_sample_ffs(
+                sample_dir, len(ports)
+            )
+            if ffs_metadata is None:
+                ffs_metadata = sample_ffs_metadata
+            elif not _same_ffs_layout(ffs_metadata, sample_ffs_metadata):
+                raise ValueError(f"Inconsistent FFS layout across samples in {root}")
         records.append(
             SampleRecord(
                 name=sample_dir.name,
@@ -258,11 +335,14 @@ def load_dataset(root: Path, n_points: int = 128, freq_bins: int = 201, max_temp
                 graph=graph,
                 target=target,
                 temporal=temporal,
+                ffs=ffs,
+                ffs_radiated_power=ffs_radiated_power,
+                ffs_stimulated_power=ffs_stimulated_power,
             )
         )
     if not records:
         raise RuntimeError(f"No complete samples found in {root}")
-    return DatasetBundle(records=records, freq_grid=freq_grid, port_count=port_count)
+    return DatasetBundle(records=records, freq_grid=freq_grid, port_count=port_count, ffs_metadata=ffs_metadata)
 
 
 def load_inference_input(config_path: Path, n_points: int) -> dict[str, np.ndarray | str]:
@@ -313,4 +393,18 @@ def stack_records(records: list[SampleRecord]) -> dict[str, torch.Tensor]:
             stacked[key] = torch.tensor(np.stack([record.graph[key] for record in records]), dtype=torch.float32)
     if records and records[0].temporal is not None:
         stacked["temporal"] = torch.tensor(np.stack([record.temporal for record in records]), dtype=torch.float32)
+    if records and records[0].ffs is not None:
+        stacked["ffs"] = torch.tensor(np.stack([record.ffs for record in records]), dtype=torch.float32)
+    if records and records[0].ffs_radiated_power is not None:
+        stacked["ffs_radiated_power"] = torch.tensor(
+            np.stack([record.ffs_radiated_power for record in records]),
+            dtype=torch.float32,
+        )
+    if records and records[0].ffs_stimulated_power is not None:
+        stacked["ffs_stimulated_power"] = torch.tensor(
+            np.stack([record.ffs_stimulated_power for record in records]),
+            dtype=torch.float32,
+        )
+    if records and records[0].ffs_coeff is not None:
+        stacked["ffs_coeff"] = torch.tensor(np.stack([record.ffs_coeff for record in records]), dtype=torch.float32)
     return stacked
