@@ -8,10 +8,13 @@ import numpy as np
 import torch
 
 from baseline.data import load_dataset, load_inference_input, load_truth_target, split_records, stack_records
+from baseline.ffs_codec import TorchFfsCodec, codec_state_from_payload
+from baseline.ffs_io import FfsMetadata, write_ffs_sample
 from baseline.metrics import summarize_prediction_metrics
 from baseline.model import create_model
 from baseline.plotting import save_matrix_plot
 from baseline.training_utils import forward_model, uses_graph_features
+from optimizer_torch_farfield import integrate_decoded_ffs_power
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,6 +50,100 @@ def denormalize(pred: torch.Tensor, checkpoint: dict[str, object]) -> np.ndarray
     return (pred.cpu() * std + mean).numpy()
 
 
+def _ffs_metadata(checkpoint: dict[str, object]) -> FfsMetadata | None:
+    payload = checkpoint.get("ffs_metadata")
+    if payload is None:
+        return None
+    return FfsMetadata(
+        frequencies_hz=np.asarray(payload["frequencies_hz"], dtype=np.float64),
+        angles_deg=np.asarray(payload["angles_deg"], dtype=np.float64),
+        radiated_power_w=np.asarray(payload.get("radiated_power_w", np.zeros(len(payload["frequencies_hz"]))), dtype=np.float64),
+        accepted_power_w=np.asarray(payload.get("accepted_power_w", np.zeros(len(payload["frequencies_hz"]))), dtype=np.float64),
+        stimulated_power_w=np.asarray(payload.get("stimulated_power_w", np.full(len(payload["frequencies_hz"]), 0.5)), dtype=np.float64),
+        position_m=np.asarray(payload["position_m"], dtype=np.float64),
+        z_axis=np.asarray(payload["z_axis"], dtype=np.float64),
+        x_axis=np.asarray(payload["x_axis"], dtype=np.float64),
+        phi_count=int(payload["phi_count"]),
+        theta_count=int(payload["theta_count"]),
+    )
+
+
+def _farfield_grid_from_metadata(
+    metadata: FfsMetadata,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor, bool]:
+    angle_grid = torch.as_tensor(metadata.angles_deg, dtype=dtype, device=device).view(
+        metadata.phi_count,
+        metadata.theta_count,
+        2,
+    )
+    phi = torch.deg2rad(angle_grid[:, 0, 0])
+    theta = torch.deg2rad(angle_grid[0, :, 1])
+    has_phi_closure = bool(
+        metadata.phi_count > 1 and torch.isclose(phi[-1], phi[0] + 2.0 * torch.pi, atol=1e-9, rtol=0.0)
+    )
+    if has_phi_closure:
+        phi = phi[:-1]
+    return phi, theta, has_phi_closure
+
+
+def _export_predicted_ffs(
+    *,
+    output_dir: Path,
+    sample_name: str,
+    checkpoint: dict[str, object],
+    coeff_pred: torch.Tensor,
+) -> Path | None:
+    payload = checkpoint.get("ffs_codec")
+    metadata = _ffs_metadata(checkpoint)
+    if payload is None or metadata is None:
+        return None
+    codec = TorchFfsCodec.from_state(
+        codec_state_from_payload(payload),
+        dtype=coeff_pred.dtype,
+        device=coeff_pred.device,
+    )
+    decoded = codec.decode(coeff_pred)
+    phi, theta, has_phi_closure = _farfield_grid_from_metadata(
+        metadata,
+        device=decoded.device,
+        dtype=decoded.real.dtype,
+    )
+    radiated_power = integrate_decoded_ffs_power(
+        decoded,
+        phi=phi,
+        theta=theta,
+        phi_count=metadata.phi_count,
+        theta_count=metadata.theta_count,
+        has_phi_closure=has_phi_closure,
+    )[0]
+    ffs_dir = output_dir / f"{sample_name}_predicted_ffs"
+    stimulated_power = np.maximum(metadata.stimulated_power_w, 1e-9)
+    decoded_sample = decoded[0]
+    for port_idx in range(decoded_sample.shape[0]):
+        for freq_idx, freq_hz in enumerate(metadata.frequencies_hz):
+            header = FfsMetadata(
+                frequencies_hz=np.asarray([freq_hz], dtype=np.float64),
+                angles_deg=metadata.angles_deg.copy(),
+                radiated_power_w=radiated_power[port_idx, freq_idx : freq_idx + 1].detach().cpu().numpy(),
+                accepted_power_w=np.zeros((1,), dtype=np.float64),
+                stimulated_power_w=np.asarray([stimulated_power[freq_idx]], dtype=np.float64),
+                position_m=metadata.position_m.copy(),
+                z_axis=metadata.z_axis.copy(),
+                x_axis=metadata.x_axis.copy(),
+                phi_count=metadata.phi_count,
+                theta_count=metadata.theta_count,
+            )
+            write_ffs_sample(
+                ffs_dir / f"{port_idx + 1}-[f={int(round(float(freq_hz)))}].ffs",
+                header,
+                decoded_sample[port_idx, freq_idx : freq_idx + 1].detach().cpu().numpy(),
+            )
+    return ffs_dir
+
+
 def save_prediction_artifact(
     *,
     output_dir: Path,
@@ -55,6 +152,7 @@ def save_prediction_artifact(
     truth: np.ndarray | None,
     pred: np.ndarray,
     port_count: int,
+    predicted_ffs_dir: Path | None = None,
 ) -> dict[str, object]:
     plot_path = output_dir / f"{sample_name}_matrix_db.png"
     save_matrix_plot(
@@ -73,6 +171,8 @@ def save_prediction_artifact(
         "plot_path": str(plot_path),
         "npz_path": str(npz_path),
     }
+    if predicted_ffs_dir is not None:
+        result["predicted_ffs_dir"] = str(predicted_ffs_dir)
     if truth is not None:
         metrics = summarize_prediction_metrics(pred[np.newaxis, ...], truth[np.newaxis, ...], port_count=port_count)
         result["rmse"] = metrics["rmse"]
@@ -90,8 +190,9 @@ def predict_split(args: argparse.Namespace, checkpoint: dict[str, object], model
     graph_tensors = None
     if uses_graph_features(model):
         graph_tensors = {key: tensors[key] for key in ("graph_inner", "graph_segment", "graph_port", "graph_mask", "graph_adj", "graph_edge_attr", "pair_topology")}
+    has_ffs = checkpoint.get("ffs_codec") is not None and _ffs_metadata(checkpoint) is not None
     with torch.no_grad():
-        pred = forward_model(
+        output = forward_model(
             model,
             points=tensors["points"],
             ports=tensors["ports"],
@@ -101,12 +202,29 @@ def predict_split(args: argparse.Namespace, checkpoint: dict[str, object], model
             nibs=tensors["nibs"],
             device=torch.device("cpu"),
             graph_tensors=graph_tensors,
+            return_aux=has_ffs,
         )
+    if has_ffs:
+        assert isinstance(output, dict)
+        pred = output["s_pred"]
+        coeff_pred = output.get("ffs_coeff_pred")
+    else:
+        assert isinstance(output, torch.Tensor)
+        pred = output
+        coeff_pred = None
     pred_np = denormalize(pred, checkpoint)
     truth_np = tensors["target"].numpy()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results = []
     for idx, record in enumerate(selected):
+        ffs_dir = None
+        if coeff_pred is not None:
+            ffs_dir = _export_predicted_ffs(
+                output_dir=args.output_dir,
+                sample_name=record.name,
+                checkpoint=checkpoint,
+                coeff_pred=coeff_pred[idx : idx + 1],
+            )
         results.append(
             save_prediction_artifact(
                 output_dir=args.output_dir,
@@ -115,6 +233,7 @@ def predict_split(args: argparse.Namespace, checkpoint: dict[str, object], model
                 truth=truth_np[idx],
                 pred=pred_np[idx],
                 port_count=bundle.port_count,
+                predicted_ffs_dir=ffs_dir,
             )
         )
     summary = summarize_prediction_metrics(pred_np, truth_np, port_count=bundle.port_count)
@@ -133,8 +252,9 @@ def predict_single(args: argparse.Namespace, checkpoint: dict[str, object], mode
     graph_tensors = None
     if uses_graph_features(model):
         graph_tensors = {key: torch.tensor(sample["graph"][key], dtype=torch.float32).unsqueeze(0) for key in ("graph_inner", "graph_segment", "graph_port", "graph_mask", "graph_adj", "graph_edge_attr", "pair_topology")}
+    has_ffs = checkpoint.get("ffs_codec") is not None and _ffs_metadata(checkpoint) is not None
     with torch.no_grad():
-        pred = forward_model(
+        output = forward_model(
             model,
             points=torch.tensor(sample["points"], dtype=torch.float32).unsqueeze(0),
             ports=torch.tensor(sample["ports"], dtype=torch.float32).unsqueeze(0),
@@ -144,11 +264,28 @@ def predict_single(args: argparse.Namespace, checkpoint: dict[str, object], mode
             nibs=torch.tensor(sample["nibs"], dtype=torch.float32).unsqueeze(0),
             device=torch.device("cpu"),
             graph_tensors=graph_tensors,
+            return_aux=has_ffs,
         )
+    if has_ffs:
+        assert isinstance(output, dict)
+        pred = output["s_pred"]
+        coeff_pred = output.get("ffs_coeff_pred")
+    else:
+        assert isinstance(output, torch.Tensor)
+        pred = output
+        coeff_pred = None
     pred_np = denormalize(pred, checkpoint)[0]
     args.output_dir.mkdir(parents=True, exist_ok=True)
     sample_name = str(sample["name"])
     truth = load_truth_target(args.dataset_root / sample_name, port_count=int(checkpoint["port_count"]), freq_grid=freq_grid)
+    ffs_dir = None
+    if coeff_pred is not None:
+        ffs_dir = _export_predicted_ffs(
+            output_dir=args.output_dir,
+            sample_name=sample_name,
+            checkpoint=checkpoint,
+            coeff_pred=coeff_pred,
+        )
     result = save_prediction_artifact(
         output_dir=args.output_dir,
         sample_name=sample_name,
@@ -156,6 +293,7 @@ def predict_single(args: argparse.Namespace, checkpoint: dict[str, object], mode
         truth=truth,
         pred=pred_np,
         port_count=int(checkpoint["port_count"]),
+        predicted_ffs_dir=ffs_dir,
     )
     result["config_path"] = str(config_path)
     (args.output_dir / f"{sample_name}_prediction.json").write_text(json.dumps(result, indent=2))

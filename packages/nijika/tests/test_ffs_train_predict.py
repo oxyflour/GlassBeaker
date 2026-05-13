@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from baseline import predict as predict_module  # noqa: E402
 from baseline import train as train_module  # noqa: E402
 from baseline.ffs_codec import TorchFfsCodec, encode_ffs, fit_ffs_codec  # noqa: E402
+from baseline.ffs_io import load_ffs_sample  # noqa: E402
 from baseline.training_utils import ffs_aux_loss  # noqa: E402
 from optimize_baseline import load_checkpoint_model, optimize_model  # noqa: E402
 from optimizer_torch_farfield import integrate_decoded_ffs_power  # noqa: E402
@@ -174,9 +175,14 @@ class FfsTrainPredictTest(unittest.TestCase):
                 predict_module.main()
 
             ffs_dir = predict_output / "antenna_000_predicted_ffs"
-            self.assertTrue((ffs_dir / "port_01.ffs").exists())
-            self.assertTrue((ffs_dir / "port_02.ffs").exists())
-            self.assertTrue((ffs_dir / "port_03.ffs").exists())
+            exported = sorted(ffs_dir.glob("*.ffs"))
+            self.assertEqual(
+                len(exported),
+                int(checkpoint["port_count"]) * len(checkpoint["ffs_metadata"]["frequencies_hz"]),
+            )
+            metadata, field = load_ffs_sample(exported[0])
+            self.assertEqual(field.shape[0], len(metadata.frequencies_hz))
+            self.assertTrue((metadata.radiated_power_w > 0.0).all())
 
     def test_trained_ffs_checkpoint_runs_farfield_optimizer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
