@@ -124,10 +124,12 @@ def _export_predicted_ffs(
     decoded_sample = decoded[0]
     for port_idx in range(decoded_sample.shape[0]):
         for freq_idx, freq_hz in enumerate(metadata.frequencies_hz):
+            radiated_power_np = radiated_power[port_idx, freq_idx : freq_idx + 1].detach().cpu().numpy()
+            field_np = decoded_sample[port_idx, freq_idx : freq_idx + 1].detach().cpu().numpy()
             header = FfsMetadata(
                 frequencies_hz=np.asarray([freq_hz], dtype=np.float64),
                 angles_deg=metadata.angles_deg.copy(),
-                radiated_power_w=radiated_power[port_idx, freq_idx : freq_idx + 1].detach().cpu().numpy(),
+                radiated_power_w=radiated_power_np,
                 accepted_power_w=np.zeros((1,), dtype=np.float64),
                 stimulated_power_w=np.asarray([stimulated_power[freq_idx]], dtype=np.float64),
                 position_m=metadata.position_m.copy(),
@@ -139,7 +141,7 @@ def _export_predicted_ffs(
             write_ffs_sample(
                 ffs_dir / f"{port_idx + 1}-[f={int(round(float(freq_hz)))}].ffs",
                 header,
-                decoded_sample[port_idx, freq_idx : freq_idx + 1].detach().cpu().numpy(),
+                field_np,
             )
     return ffs_dir
 
