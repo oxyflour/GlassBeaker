@@ -147,6 +147,11 @@ def _predict_aux_from_inputs(model: torch.nn.Module, tensors: dict[str, Any], de
     return aux
 
 
+def _complex_s_from_flat_output(pred: torch.Tensor, port_count: int) -> torch.Tensor:
+    pair = pred.view(pred.shape[0], port_count, port_count, 2)
+    return torch.complex(pair[..., 0], pair[..., 1])
+
+
 def _mc_predict_s_matrix(
     model: torch.nn.Module,
     tensors: dict[str, Any],
@@ -182,9 +187,8 @@ def _mc_predict_s_matrix(
     return mean_s, std_mag
 
 
-def _candidate_loss(s_matrix: torch.Tensor, feed_index: int, terminations: list[str], *, z0: float = 50.0) -> float:
-    term_dict = {i: terminations[i] for i in range(len(terminations))}
-    eta = antenna_efficiency(s_matrix, feed_index, terminations=term_dict, z0=z0)
+def _candidate_loss(s_matrix: torch.Tensor, feed_index: int, terminations: dict[int, str], *, z0: float = 50.0) -> float:
+    eta = antenna_efficiency(s_matrix, feed_index, terminations=terminations, z0=z0)
     return float((-eta.mean()).item())
 
 
@@ -381,21 +385,20 @@ def _farfield_objective(
 def _candidate_loss_farfield(
     s_matrix: torch.Tensor,
     feed_index: int,
-    terminations: list[str],
+    terminations: dict[int, str],
     *,
     ffs_basis: torch.Tensor,
     phi: torch.Tensor,
     theta: torch.Tensor,
     z0: float = 50.0,
 ) -> float:
-    term_dict = {i: terminations[i] for i in range(len(terminations))}
     eta = _farfield_efficiency(
         s_matrix,
         ffs_basis=ffs_basis,
         phi=phi,
         theta=theta,
         feed_index=feed_index,
-        terminations=term_dict,
+        terminations=terminations,
         z0=z0,
     )
     return float((-eta.mean()).item())
@@ -489,11 +492,17 @@ def optimize_model(
         s_mean, s_std = _mc_predict_s_matrix(model, model_inputs, device, n_samples=8)
         if efficiency_mode == "farfield":
             aux = _predict_aux_from_inputs(model, model_inputs, device)
-            if "ffs_coeff_pred" not in aux:
-                raise ValueError("Farfield mode requires a model with FFS coefficient outputs")
+            if "ffs_coeff_pred" not in aux or "s_pred" not in aux:
+                raise ValueError("Farfield mode requires aux S-parameter and FFS coefficient outputs")
             decoded = _decode_ffs_coefficients(aux["ffs_coeff_pred"], checkpoint)
             ffs_basis, _, _ = _decoded_ffs_basis(decoded, checkpoint["ffs_metadata"])
-            s_mean = _interpolate_frequency_axis(s_mean, farfield_lower, farfield_upper, farfield_alpha)[farfield_mask]
+            port_count = int(checkpoint["port_count"])
+            s_mean = _interpolate_frequency_axis(
+                _complex_s_from_flat_output(aux["s_pred"][0], port_count),
+                farfield_lower,
+                farfield_upper,
+                farfield_alpha,
+            )[farfield_mask]
             s_std = _interpolate_frequency_axis(s_std, farfield_lower, farfield_upper, farfield_alpha)[farfield_mask]
             basis_view = ffs_basis[0][:, farfield_mask]
             eff_loss, detail = _farfield_objective(
@@ -539,8 +548,8 @@ def optimize_model(
     final_tensors = _build_tensors(final_config, points=points, geom=geom)
     if efficiency_mode == "farfield":
         final_aux = _predict_aux(model, final_tensors, device)
-        if "ffs_coeff_pred" not in final_aux:
-            raise ValueError("Farfield mode requires a model with FFS coefficient outputs")
+        if "ffs_coeff_pred" not in final_aux or "s_pred" not in final_aux:
+            raise ValueError("Farfield mode requires aux S-parameter and FFS coefficient outputs")
         decoded = _decode_ffs_coefficients(final_aux["ffs_coeff_pred"], checkpoint)
         final_basis, _, _ = _decoded_ffs_basis(decoded, checkpoint["ffs_metadata"])
         port_count = int(checkpoint["port_count"])
@@ -554,7 +563,7 @@ def optimize_model(
         final_s = _predict_s_matrix(model, final_tensors, device)[mask]
     ranked = []
     for candidate in enumerate_role_assignments(port_count=len(nibs)):
-        terms = [role["termination"] for role in candidate["roles"] if not role["feed"]]
+        terms = {int(role["port"]): str(role["termination"]) for role in candidate["roles"] if not role["feed"]}
         if efficiency_mode == "farfield":
             score = _candidate_loss_farfield(
                 final_s,
