@@ -6,6 +6,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from baseline.metrics import summarize_prediction_metrics
+from optimizer_torch_farfield import integrate_decoded_ffs_power
 
 
 GRAPH_KEYS = ("graph_inner", "graph_segment", "graph_port", "graph_mask", "graph_adj", "graph_edge_attr", "pair_topology")
@@ -34,22 +35,27 @@ def forward_model(
     device: torch.device,
     graph_tensors: dict[str, torch.Tensor] | None = None,
     temporal: torch.Tensor | None = None,
-) -> torch.Tensor:
+    return_aux: bool = False,
+) -> torch.Tensor | dict[str, torch.Tensor]:
     kwargs = {}
     if graph_tensors is not None and uses_graph_features(model):
         needed = set(graph_feature_keys(model))
         kwargs = {key: value.to(device) for key, value in graph_tensors.items() if key in needed}
     if temporal is not None:
         kwargs["temporal"] = temporal.to(device)
-    return model(
+    args = (
         points.to(device),
         ports.to(device),
         geom.to(device),
         frame.to(device),
         cuts.to(device),
         nibs.to(device),
-        **kwargs,
     )
+    if return_aux:
+        if hasattr(model, "forward_with_aux"):
+            return model.forward_with_aux(*args, **kwargs)
+        return {"s_pred": model(*args, **kwargs)}
+    return model(*args, **kwargs)
 
 
 def _weighted_mean(error: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -132,6 +138,47 @@ def composite_loss(
         + loss_config["db_weight"] * db_loss
         + phys_loss
     )
+
+
+def ffs_aux_loss(
+    *,
+    pred_coeff: torch.Tensor,
+    target_coeff: torch.Tensor,
+    target_field: torch.Tensor,
+    target_radiated_power: torch.Tensor,
+    codec: nn.Module,
+    phi: torch.Tensor,
+    theta: torch.Tensor,
+    phi_count: int,
+    theta_count: int,
+    has_phi_closure: bool,
+    loss_weights: dict[str, float],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    target_coeff = target_coeff.to(device=pred_coeff.device, dtype=pred_coeff.dtype)
+    coeff_loss = torch.nn.functional.mse_loss(pred_coeff, target_coeff)
+    pred_field = codec.decode(pred_coeff)
+    target_field = target_field.to(device=pred_field.device, dtype=pred_field.dtype)
+    field_loss = torch.nn.functional.mse_loss(pred_field, target_field)
+    pred_power = integrate_decoded_ffs_power(
+        pred_field,
+        phi=phi.to(device=pred_field.device),
+        theta=theta.to(device=pred_field.device),
+        phi_count=phi_count,
+        theta_count=theta_count,
+        has_phi_closure=has_phi_closure,
+    )
+    target_radiated_power = target_radiated_power.to(device=pred_power.device, dtype=pred_power.dtype)
+    power_loss = torch.nn.functional.mse_loss(pred_power, target_radiated_power)
+    total = (
+        float(loss_weights.get("coeff", 1.0)) * coeff_loss
+        + float(loss_weights.get("field", 1.0)) * field_loss
+        + float(loss_weights.get("power", 1.0)) * power_loss
+    )
+    return total, {
+        "ffs_coeff_loss": coeff_loss.detach(),
+        "ffs_field_loss": field_loss.detach(),
+        "ffs_power_loss": power_loss.detach(),
+    }
 
 
 def evaluate(

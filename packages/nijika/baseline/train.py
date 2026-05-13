@@ -13,9 +13,10 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from baseline.data import load_dataset, split_records, stack_records
+from baseline.ffs_codec import TorchFfsCodec, encode_ffs, fit_ffs_codec
 from baseline.model import create_model
 from baseline.plotting import save_matrix_plot
-from baseline.training_utils import GRAPH_KEYS, composite_loss, evaluate, forward_model, uses_graph_features
+from baseline.training_utils import GRAPH_KEYS, composite_loss, evaluate, ffs_aux_loss, forward_model, uses_graph_features
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the Nijika S-parameter baseline.")
@@ -23,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("tmp/nijika-baseline"))
     parser.add_argument(
         "--model-kind",
-        choices=["graph_topology_spectral_head", "structured_pair_coupling_freq_head", "structured_pair_pole_offset_residue_head", "structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_split_decoder", "structured_pair_topology_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "temporal_pair_spectral_head", "transolver_pair_spectral_head", "legacy_global_head"],
+        choices=["graph_topology_spectral_head", "structured_pair_coupling_freq_head", "structured_pair_pole_offset_residue_head", "structured_pair_pole_residue_head", "structured_pair_spectral_head", "structured_pair_spectral_ffs_head", "structured_pair_split_decoder", "structured_pair_topology_spectral_head", "structured_token_decoder", "symmetric_freq_decoder", "temporal_pair_spectral_head", "transolver_pair_spectral_head", "legacy_global_head"],
         default="structured_pair_spectral_head",
     )
     parser.add_argument("--epochs", type=int, default=400)
@@ -48,6 +49,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--loss-ramp-start-epoch", type=int, default=0)
     parser.add_argument("--loss-ramp-end-epoch", type=int, default=0)
     parser.add_argument("--warmup-epochs", type=int, default=10)
+    parser.add_argument("--ffs-rank", type=int, default=16)
+    parser.add_argument("--ffs-loss-weight", type=float, default=1.0)
+    parser.add_argument("--ffs-field-loss-weight", type=float, default=1.0)
+    parser.add_argument("--ffs-power-loss-weight", type=float, default=0.25)
     parser.add_argument("--reciprocity-weight", type=float, default=0.0, help="Weight for reciprocity constraint loss (S_ij = S_ji)")
     parser.add_argument("--passivity-weight", type=float, default=0.0, help="Weight for passivity constraint loss (|S| <= 1)")
     parser.add_argument("--physics", action="store_true", default=False, help="Enable physics-aware training: sets reciprocity/passivity weights to 0.1 and uses physics-combined model scoring")
@@ -105,8 +110,22 @@ def scheduled_loss_config(
     return {key: base_config[key] + alpha * (final_config[key] - base_config[key]) for key in base_config}
 
 
-def build_dataset(tensors: dict[str, torch.Tensor], target: torch.Tensor, use_graph: bool, has_temporal: bool = False) -> TensorDataset:
+def build_dataset(
+    tensors: dict[str, torch.Tensor],
+    target: torch.Tensor,
+    use_graph: bool,
+    has_temporal: bool = False,
+    ffs_coeff: torch.Tensor | None = None,
+    ffs_field: torch.Tensor | None = None,
+    ffs_radiated_power: torch.Tensor | None = None,
+) -> TensorDataset:
     items = [tensors["points"], tensors["ports"], tensors["geom"], tensors["frame"], tensors["cuts"], tensors["nibs"], target]
+    if ffs_coeff is not None:
+        items.append(ffs_coeff)
+    if ffs_field is not None:
+        items.append(ffs_field)
+    if ffs_radiated_power is not None:
+        items.append(ffs_radiated_power)
     if has_temporal:
         items.append(tensors["temporal"])
     if use_graph:
@@ -127,7 +146,8 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loss_config = build_loss_config(args)
     final_loss_config = build_final_loss_config(args, loss_config)
-    bundle = load_dataset(args.dataset_root, n_points=args.points, freq_bins=args.freq_bins, max_temporal_steps=args.max_temporal_steps)
+    use_ffs = args.model_kind == "structured_pair_spectral_ffs_head"
+    bundle = load_dataset(args.dataset_root, n_points=args.points, freq_bins=args.freq_bins, max_temporal_steps=args.max_temporal_steps, include_ffs=use_ffs)
     train_records, val_records = split_records(bundle.records, seed=args.seed)
     train_tensors = stack_records(train_records)
     val_tensors = stack_records(val_records)
@@ -137,7 +157,38 @@ def main() -> None:
     target_std_device = target_std.to(device)
     train_target = (train_tensors["target"] - target_mean) / target_std
     val_target = (val_tensors["target"] - target_mean) / target_std
+    ffs_codec_state = None
+    ffs_codec = None
+    train_ffs_coeff = None
+    val_ffs_coeff = None
+    phi = None
+    theta = None
+    phi_count = 0
+    theta_count = 0
+    has_phi_closure = False
     model_config = {"hidden_dim": args.hidden_dim, "dropout": 0.1, "freq_bands": 8, "num_poles": args.num_poles}
+    if use_ffs:
+        if "ffs" not in train_tensors or bundle.ffs_metadata is None:
+            raise ValueError("FFS model kind requires dataset FFS tensors and metadata")
+        ffs_codec_state = fit_ffs_codec(train_tensors["ffs"].numpy(), rank=args.ffs_rank)
+        ffs_codec = TorchFfsCodec.from_state(ffs_codec_state, dtype=torch.float32, device=device)
+        train_ffs_coeff = torch.tensor(encode_ffs(train_tensors["ffs"].numpy(), ffs_codec_state), dtype=torch.float32)
+        val_ffs_coeff = torch.tensor(encode_ffs(val_tensors["ffs"].numpy(), ffs_codec_state), dtype=torch.float32)
+        model_config["ffs_coeff_dim"] = int(ffs_codec_state.config.rank)
+        phi_count = int(bundle.ffs_metadata.phi_count)
+        theta_count = int(bundle.ffs_metadata.theta_count)
+        angle_grid = torch.tensor(bundle.ffs_metadata.angles_deg, dtype=torch.float64, device=device).view(
+            phi_count,
+            theta_count,
+            2,
+        )
+        phi = torch.deg2rad(angle_grid[:, 0, 0])
+        theta = torch.deg2rad(angle_grid[0, :, 1])
+        has_phi_closure = bool(
+            phi_count > 1 and torch.isclose(phi[-1], phi[0] + 2.0 * torch.pi, atol=1e-9, rtol=0.0)
+        )
+        if has_phi_closure:
+            phi = phi[:-1]
     model = create_model(
         freq_grid=bundle.freq_grid,
         port_count=bundle.port_count,
@@ -147,7 +198,15 @@ def main() -> None:
     use_graph = uses_graph_features(model)
     has_temporal = "temporal" in train_tensors
     train_loader = DataLoader(
-        build_dataset(train_tensors, train_target, use_graph, has_temporal),
+        build_dataset(
+            train_tensors,
+            train_target,
+            use_graph,
+            has_temporal,
+            train_ffs_coeff,
+            train_tensors.get("ffs"),
+            train_tensors.get("ffs_radiated_power"),
+        ),
         batch_size=min(args.batch_size, len(train_records)),
         shuffle=True,
     )
@@ -178,6 +237,14 @@ def main() -> None:
         batch_losses = []
         for batch in train_loader:
             points, ports, geom, frame, cuts, nibs, target, *rest = batch
+            ffs_coeff_target = None
+            ffs_field_target = None
+            ffs_radiated_power_target = None
+            if use_ffs:
+                ffs_coeff_target = rest[0]
+                ffs_field_target = rest[1]
+                ffs_radiated_power_target = rest[2]
+                rest = rest[3:]
             temporal_batch = None
             graph_extra = rest
             if has_temporal:
@@ -187,7 +254,7 @@ def main() -> None:
             if graph_extra:
                 graph_tensors = {key: tensor for key, tensor in zip(GRAPH_KEYS, graph_extra, strict=False)}
             optimizer.zero_grad(set_to_none=True)
-            pred = forward_model(
+            output = forward_model(
                 model,
                 points=points,
                 ports=ports,
@@ -198,7 +265,14 @@ def main() -> None:
                 device=device,
                 graph_tensors=graph_tensors,
                 temporal=temporal_batch,
+                return_aux=use_ffs,
             )
+            if use_ffs:
+                assert isinstance(output, dict)
+                pred = output["s_pred"]
+            else:
+                assert isinstance(output, torch.Tensor)
+                pred = output
             loss = composite_loss(
                 pred,
                 target.to(device),
@@ -207,6 +281,26 @@ def main() -> None:
                 target_std=target_std_device,
                 loss_config=epoch_loss_config,
             )
+            if use_ffs:
+                assert ffs_codec is not None and phi is not None and theta is not None
+                ffs_loss, _ = ffs_aux_loss(
+                    pred_coeff=output["ffs_coeff_pred"],
+                    target_coeff=ffs_coeff_target,
+                    target_field=ffs_field_target,
+                    target_radiated_power=ffs_radiated_power_target,
+                    codec=ffs_codec,
+                    phi=phi,
+                    theta=theta,
+                    phi_count=phi_count,
+                    theta_count=theta_count,
+                    has_phi_closure=has_phi_closure,
+                    loss_weights={
+                        "coeff": args.ffs_loss_weight,
+                        "field": args.ffs_field_loss_weight,
+                        "power": args.ffs_power_loss_weight,
+                    },
+                )
+                loss = loss + ffs_loss
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -281,6 +375,25 @@ def main() -> None:
                 "final_loss_config": final_loss_config,
                 "start_epoch": args.loss_ramp_start_epoch,
                 "end_epoch": args.loss_ramp_end_epoch,
+            },
+            "ffs_codec": None if ffs_codec_state is None else {
+                "field_shape": list(ffs_codec_state.config.field_shape),
+                "flat_dim": int(ffs_codec_state.config.flat_dim),
+                "rank": int(ffs_codec_state.config.rank),
+                "mean": ffs_codec_state.mean.tolist(),
+                "basis": ffs_codec_state.basis.tolist(),
+            },
+            "ffs_metadata": None if bundle.ffs_metadata is None else {
+                "frequencies_hz": bundle.ffs_metadata.frequencies_hz.tolist(),
+                "angles_deg": bundle.ffs_metadata.angles_deg.tolist(),
+                "radiated_power_w": bundle.ffs_metadata.radiated_power_w.tolist(),
+                "accepted_power_w": bundle.ffs_metadata.accepted_power_w.tolist(),
+                "stimulated_power_w": bundle.ffs_metadata.stimulated_power_w.tolist(),
+                "position_m": bundle.ffs_metadata.position_m.tolist(),
+                "z_axis": bundle.ffs_metadata.z_axis.tolist(),
+                "x_axis": bundle.ffs_metadata.x_axis.tolist(),
+                "phi_count": int(bundle.ffs_metadata.phi_count),
+                "theta_count": int(bundle.ffs_metadata.theta_count),
             },
         },
         model_path,
