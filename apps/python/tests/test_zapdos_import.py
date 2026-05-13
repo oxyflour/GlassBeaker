@@ -630,6 +630,17 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bodies["Arm_link"]["selectable"])
         self.assertEqual(bodies["Arm_link"]["selectionBody"], "Root_base_link")
 
+    def test_list_scene_bodies_returns_top_level_robot_bounds(self):
+        session = self.build_robot_root_pose_edit_session()
+
+        payload = session.call_once("list_scene_bodies", ())
+
+        self.assertEqual([item["body"] for item in payload["items"]], ["Scene_Crate"])
+        self.assertEqual(payload["robot_bounds"], {
+            "min": [-0.1, -0.1, 0.0],
+            "max": [0.35, 0.1, 0.4],
+        })
+
     def test_get_visual_attaches_descendant_scene_mesh_to_editable_ancestor(self):
         session = self.build_nested_pose_edit_session()
 

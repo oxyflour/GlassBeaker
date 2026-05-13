@@ -3,6 +3,12 @@ import type { SetSceneAssetsToolArgs } from "./zapdos-agent-tool-schemas";
 export type SetSceneAssetsInput = SetSceneAssetsToolArgs;
 export type SceneToolOperationStart = { ok: true; op_id: string };
 export type SceneOperationStreamFactory = (url: string) => SceneOperationStream;
+export type Bounds3 = { min: number[]; max: number[] };
+export type ListSceneBodiesResult = {
+  items: unknown[];
+  robot_bounds: Bounds3 | null;
+  scene_revision: string;
+};
 
 export interface SceneOperationStream {
   addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void;
@@ -31,7 +37,7 @@ export async function listSceneBodies(sess: string) {
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return await response.json() as { items: unknown[]; scene_revision: string };
+  return await response.json() as ListSceneBodiesResult;
 }
 
 function defaultSceneOperationStreamFactory(url: string): SceneOperationStream {

@@ -76,7 +76,11 @@ class ZapdosEditor:
                     "support": support_infos.get(body),
                 }
             )
-        return {"items": items, "scene_revision": self.scene_revision}
+        return {
+            "items": items,
+            "robot_bounds": self.session.physics.robot_bounds(),
+            "scene_revision": self.scene_revision,
+        }
 
     def set_scene_assets(self, assets: list[dict[str, object]]) -> dict[str, object]:
         next_overlay, items = build_set_scene_assets_overlay(self, assets)

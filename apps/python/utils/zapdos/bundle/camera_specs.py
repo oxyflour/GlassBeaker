@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 
-import mujoco  # type: ignore
-
 SCENE_CAMERA_ROOT = "/SceneRender"
 CAMERA_CLIPPING_RANGE = [0.01, 100.0]
 CAMERA_HORIZONTAL_APERTURE = 32.0
@@ -83,6 +81,8 @@ def fallback_main_camera() -> RenderCamera:
 
 
 def build_render_cameras(model, body_paths: dict[str, str]) -> list[RenderCamera]:
+    import mujoco  # type: ignore
+
     cameras: list[RenderCamera] = []
     for cam_id in range(model.ncam):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_CAMERA, cam_id)  # type: ignore

@@ -203,6 +203,24 @@ class MujocoPhysics:
             cameras[name] = flatten_matrix(mat4)
         return cameras
 
+    def robot_bounds(self) -> dict[str, list[float]] | None:
+        bounds_min = None
+        bounds_max = None
+        for geom_id in range(self.model.ngeom):
+            body_id = int(self.model.geom_bodyid[geom_id])
+            body_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id)  # type: ignore
+            if body_name not in self.robot_body_names:
+                continue
+            geom_bounds = self._geom_world_bounds(geom_id)
+            if geom_bounds is None:
+                continue
+            geom_min, geom_max = geom_bounds
+            bounds_min = geom_min if bounds_min is None else np.minimum(bounds_min, geom_min)
+            bounds_max = geom_max if bounds_max is None else np.maximum(bounds_max, geom_max)
+        if bounds_min is None or bounds_max is None:
+            return None
+        return {"min": bounds_min.astype(float).tolist(), "max": bounds_max.astype(float).tolist()}
+
     def set_body_pose(self, body: str, pos: list[float], quat: list[float]) -> dict[str, object]:
         body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
         if body_id < 0:
@@ -257,6 +275,31 @@ class MujocoPhysics:
         mujoco.mj_step(self.model, self.data)  # type: ignore
         if self.viewer:
             self.viewer.sync()
+
+    def _geom_world_bounds(self, geom_id: int) -> tuple[np.ndarray, np.ndarray] | None:
+        kind = PRIMITIVE_TYPES.get(int(self.model.geom_type[geom_id])) or ""
+        if kind == "plane" or not kind:
+            return None
+        half_extents = self._geom_half_extents(geom_id, kind)
+        rotation = np.abs(np.array(self.data.geom_xmat[geom_id], dtype=float).reshape(3, 3))
+        center = np.array(self.data.geom_xpos[geom_id], dtype=float)
+        extents = rotation @ half_extents
+        return center - extents, center + extents
+
+    def _geom_half_extents(self, geom_id: int, kind: str) -> np.ndarray:
+        size = np.array(self.model.geom_size[geom_id], dtype=float)
+        if kind == "sphere":
+            return np.array([size[0], size[0], size[0]], dtype=float)
+        if kind == "capsule":
+            return np.array([size[0], size[0], size[1] + size[0]], dtype=float)
+        if kind == "cylinder":
+            return np.array([size[0], size[0], size[1]], dtype=float)
+        if kind in {"box", "ellipsoid"}:
+            return size[:3]
+        if kind == "mesh":
+            radius = float(self.model.geom_rbound[geom_id])
+            return np.array([radius, radius, radius], dtype=float)
+        raise ValueError(f"Unsupported geom kind for bounds: {kind}")
 
     def close(self) -> None:
         if self.viewer:

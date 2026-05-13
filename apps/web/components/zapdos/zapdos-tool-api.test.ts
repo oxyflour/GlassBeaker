@@ -32,7 +32,11 @@ test("listSceneBodies posts to the zapdos route", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
     calls.push({ input, init });
-    return new Response(JSON.stringify({ items: [], scene_revision: "rev-1" }), {
+    return new Response(JSON.stringify({
+      items: [],
+      robot_bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+      scene_revision: "rev-1",
+    }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
@@ -41,6 +45,7 @@ test("listSceneBodies posts to the zapdos route", async () => {
   try {
     const payload = await listSceneBodies("sess-1");
     assert.equal(payload.scene_revision, "rev-1");
+    assert.deepEqual(payload.robot_bounds, { min: [0, 0, 0], max: [1, 1, 1] });
     assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/list_scene_bodies");
     assert.deepEqual(calls[0]?.init, createSceneToolRequest([]));
   } finally {
