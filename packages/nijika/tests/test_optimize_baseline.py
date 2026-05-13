@@ -153,6 +153,19 @@ class _GeometryDrivenToyFfsSurrogate(_ToySurrogate):
         self.register_buffer("base_coeff", base_coeff, persistent=False)
         self.register_buffer("delta_coeff", delta_coeff, persistent=False)
 
+    def forward(
+        self,
+        points: torch.Tensor,
+        ports: torch.Tensor,
+        geom: torch.Tensor,
+        frame: torch.Tensor,
+        cuts: torch.Tensor,
+        nibs: torch.Tensor,
+    ) -> torch.Tensor:
+        del points, ports, geom, frame, nibs
+        zeros = torch.zeros((cuts.size(0),), dtype=cuts.dtype, device=cuts.device)
+        return _pair_spectrum(zeros, diag=(0.2, 0.25, 0.3), coupling_01=0.05, coupling_02=0.1, coupling_12=0.04)
+
     def forward_with_aux(
         self,
         points: torch.Tensor,
@@ -345,10 +358,51 @@ class OptimizeBaselineTest(unittest.TestCase):
         high_fields = _toy_ffs_fields((1.0, 1.2, 2.0))
         checkpoint, low_coeff = self._farfield_checkpoint(low_fields, sample_fields=[low_fields, mid_fields, high_fields])
         high_coeff = _checkpoint_codec_payload(high_fields, sample_fields=[low_fields, mid_fields, high_fields])[1]
+        model = _GeometryDrivenToyFfsSurrogate(low_coeff, high_coeff - low_coeff)
+        device = next(model.buffers()).device
+        config = _toy_config()
+        points = _sample_points(config, int(checkpoint["sample_points"]))
+        geom = mesh_geom(config)
+        start_inputs = build_optimizer_inputs(
+            config,
+            points=points,
+            geom=geom,
+            cut_distances=torch.tensor([18.0], dtype=torch.float32, device=device),
+            nib_distances=torch.tensor([15.0, -18.0, 12.0], dtype=torch.float32, device=device),
+            device=device,
+            include_graph=False,
+        )
+        moved_inputs = build_optimizer_inputs(
+            config,
+            points=points,
+            geom=geom,
+            cut_distances=torch.tensor([28.0], dtype=torch.float32, device=device),
+            nib_distances=torch.tensor([15.0, -18.0, 24.0], dtype=torch.float32, device=device),
+            device=device,
+            include_graph=False,
+        )
+        start_aux = model.forward_with_aux(
+            start_inputs["points"],
+            start_inputs["ports"],
+            start_inputs["geom"],
+            start_inputs["frame"],
+            start_inputs["cuts"],
+            start_inputs["nibs"],
+        )
+        moved_aux = model.forward_with_aux(
+            moved_inputs["points"],
+            moved_inputs["ports"],
+            moved_inputs["geom"],
+            moved_inputs["frame"],
+            moved_inputs["cuts"],
+            moved_inputs["nibs"],
+        )
+        self.assertTrue(torch.allclose(start_aux["s_pred"], moved_aux["s_pred"]))
+        self.assertFalse(torch.allclose(start_aux["ffs_coeff_pred"], moved_aux["ffs_coeff_pred"]))
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             result = optimize_model(
-                model=_GeometryDrivenToyFfsSurrogate(low_coeff, high_coeff - low_coeff),
+                model=model,
                 checkpoint=checkpoint,
                 config=_toy_config(),
                 output_dir=output_dir,
