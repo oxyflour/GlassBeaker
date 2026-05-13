@@ -132,7 +132,7 @@ class OptimizerTorchFarfieldTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(s_matrix.grad).all().item())
         self.assertGreater(float(s_matrix.grad.abs().max()), 1e-12)
 
-    def test_integrate_decoded_ffs_power_returns_batch_port_freq_tensor(self):
+    def test_integrate_decoded_ffs_power_matches_manual_reference_path(self):
         decoded = torch.tensor(
             [
                 [
@@ -178,6 +178,19 @@ class OptimizerTorchFarfieldTest(unittest.TestCase):
         )
         phi = torch.tensor([0.0, torch.pi], dtype=torch.float64)
         theta = torch.tensor([0.0, torch.pi / 2.0], dtype=torch.float64)
+        complex_grid = decoded.view(1, 2, 2, 3, 2, 4)
+        manual_fields = torch.stack(
+            [
+                torch.complex(complex_grid[..., 0], complex_grid[..., 1]),
+                torch.complex(complex_grid[..., 2], complex_grid[..., 3]),
+            ],
+            dim=3,
+        )[..., :-1, :]
+        expected = integrate_farfield_efficiency(
+            manual_fields.reshape(-1, 2, phi.numel(), theta.numel()),
+            phi,
+            theta,
+        ).view(1, 2, 2)
 
         power = integrate_decoded_ffs_power(
             decoded,
@@ -189,7 +202,7 @@ class OptimizerTorchFarfieldTest(unittest.TestCase):
         )
 
         self.assertEqual(tuple(power.shape), (1, 2, 2))
-        self.assertTrue(torch.isfinite(power).all().item())
+        torch.testing.assert_close(power, expected)
 
 
 if __name__ == "__main__":

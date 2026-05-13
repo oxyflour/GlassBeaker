@@ -161,8 +161,8 @@ def ffs_aux_loss(
     field_loss = torch.nn.functional.mse_loss(pred_field, target_field)
     pred_power = integrate_decoded_ffs_power(
         pred_field,
-        phi=phi.to(device=pred_field.device),
-        theta=theta.to(device=pred_field.device),
+        phi=phi.to(device=pred_field.device, dtype=pred_field.real.dtype),
+        theta=theta.to(device=pred_field.device, dtype=pred_field.real.dtype),
         phi_count=phi_count,
         theta_count=theta_count,
         has_phi_closure=has_phi_closure,

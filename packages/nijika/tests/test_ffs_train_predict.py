@@ -69,10 +69,10 @@ class FfsTrainPredictTest(unittest.TestCase):
     def test_ffs_aux_loss_backpropagates_field_and_power_terms(self) -> None:
         fields = _synthetic_ffs_samples()
         state = fit_ffs_codec(fields.numpy(), rank=2)
-        codec = TorchFfsCodec.from_state(state, dtype=torch.float64)
-        target_field = fields[:1]
-        target_coeff = torch.tensor(encode_ffs(target_field.numpy(), state), dtype=torch.float64)
-        pred_coeff = (target_coeff + torch.tensor([[0.2, -0.15]], dtype=torch.float64)).requires_grad_(True)
+        codec = TorchFfsCodec.from_state(state, dtype=torch.float32)
+        target_field = fields[:1].to(dtype=torch.float32)
+        target_coeff = torch.tensor(encode_ffs(target_field.numpy(), state), dtype=torch.float32)
+        pred_coeff = (target_coeff + torch.tensor([[0.2, -0.15]], dtype=torch.float32)).requires_grad_(True)
         phi = torch.tensor([0.0, torch.pi], dtype=torch.float64)
         theta = torch.tensor([0.0, torch.pi / 2.0], dtype=torch.float64)
         target_radiated_power = integrate_decoded_ffs_power(
@@ -95,12 +95,16 @@ class FfsTrainPredictTest(unittest.TestCase):
             phi_count=3,
             theta_count=2,
             has_phi_closure=True,
-            loss_weights={"coeff": 1.0, "field": 0.5, "power": 0.25},
+            loss_weights={"coeff": 0.0, "field": 1.0, "power": 1.0},
         )
         loss.backward()
 
         self.assertIn("ffs_field_loss", parts)
         self.assertIn("ffs_power_loss", parts)
+        self.assertGreater(parts["ffs_field_loss"].item(), 0.0)
+        self.assertGreater(parts["ffs_power_loss"].item(), 0.0)
+        self.assertEqual(parts["ffs_power_loss"].dtype, pred_coeff.dtype)
+        self.assertEqual(loss.dtype, pred_coeff.dtype)
         self.assertIsNotNone(pred_coeff.grad)
         assert pred_coeff.grad is not None
         self.assertTrue(torch.isfinite(pred_coeff.grad).all().item())
