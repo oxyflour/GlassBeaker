@@ -186,11 +186,14 @@ class OptimizerTorchFarfieldTest(unittest.TestCase):
             ],
             dim=3,
         )[..., :-1, :]
-        expected = integrate_farfield_efficiency(
-            manual_fields.reshape(-1, 2, phi.numel(), theta.numel()),
+        density = (torch.abs(manual_fields[..., 0, :, :]) ** 2 + torch.abs(manual_fields[..., 1, :, :]) ** 2) * torch.sin(
+            theta
+        ).view(1, 1, 1, 1, theta.numel())
+        expected = TORCH_TRAPEZOID(
+            TORCH_TRAPEZOID(density, theta, dim=4),
             phi,
-            theta,
-        ).view(1, 2, 2)
+            dim=3,
+        ) / (2.0 * ETA0)
 
         power = integrate_decoded_ffs_power(
             decoded,
