@@ -56,6 +56,18 @@ def bundle_revision(robot_usd: Path, scene_usd: Path, state: OverlayState) -> st
     return _digest(["bundle", _fingerprint(robot_usd), _fingerprint(scene_usd), _normalized_instances(state)])
 
 
+def load_overlay_state(path: Path) -> OverlayState:
+    from utils.zapdos.editor.repository import load_overlay_state as _load_overlay_state
+
+    return _load_overlay_state(path)
+
+
+def save_overlay_state(path: Path, state: OverlayState) -> None:
+    from utils.zapdos.editor.repository import save_overlay_state as _save_overlay_state
+
+    _save_overlay_state(path, state)
+
+
 def _normalized_instances(state: OverlayState) -> list[dict[str, object]]:
     return sorted(
         [
@@ -80,18 +92,6 @@ def _fingerprint(path: Path) -> dict[str, object]:
 def _digest(parts: list[object]) -> str:
     payload = json.dumps(parts, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
-
-
-def load_overlay_state(path: Path) -> OverlayState:
-    from utils.zapdos.overlay.overlay_repository import load_overlay_state as _load_overlay_state
-
-    return _load_overlay_state(path)
-
-
-def save_overlay_state(path: Path, state: OverlayState) -> None:
-    from utils.zapdos.overlay.overlay_repository import save_overlay_state as _save_overlay_state
-
-    _save_overlay_state(path, state)
 
 
 __all__ = [

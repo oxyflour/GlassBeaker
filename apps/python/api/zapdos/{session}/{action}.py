@@ -1,24 +1,13 @@
 import asyncio
-from concurrent.futures import Future as ConcurrentFuture
 from pathlib import Path
 
-import mujoco  # type: ignore
 from fastapi import HTTPException, Request
 
 from utils.ros_bridge import bridge
-from utils.session import Session
 from utils.session_registry import AsyncSessionRegistry
-from utils.zapdos.bundle import DEFAULT_SCENE_USD, RenderBundle
-from utils.zapdos.overlay.overlay_state import default_overlay_state
-from utils.zapdos.physics.mujoco_physics import MujocoPhysics as ZapdosPhysics
-from utils.zapdos.rebuild.scene_rebuild_manager import (
-    OverlayRebuildCompletion,
-    PreparedOverlayRebuild,
-    SceneRebuildJob,
-    stream_scene_rebuild_job as _stream_scene_rebuild_job,
-)
-from utils.zapdos.session import request_router
-from utils.zapdos.session.zapdos_session import DEFAULT_ROBOT_USD, ZapdosSession
+from utils.zapdos.bundle import DEFAULT_SCENE_USD
+from utils.zapdos import request_router
+from utils.zapdos.zapdos_session import DEFAULT_ROBOT_USD, ZapdosSession
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 INIT_STREAM_HEARTBEAT_SEC = 1.0
@@ -67,8 +56,8 @@ async def _init_stream(sess: str, future: asyncio.Future[ZapdosSession]):
         yield chunk
 
 
-def _require_camera_name(session: ZapdosSession, camera_name: str) -> str:
-    return request_router.require_camera_name(session, camera_name)
+def _require_camera_name(camera_index: dict[str, int], camera_name: str) -> str:
+    return request_router.require_camera_name(camera_index, camera_name)
 
 
 def _require_active_session(sess: str, future: asyncio.Future[ZapdosSession], session: ZapdosSession) -> ZapdosSession:
@@ -78,6 +67,10 @@ def _require_active_session(sess: str, future: asyncio.Future[ZapdosSession], se
         session,
         session_registry.discard,
     )
+
+
+def _stream_scene_rebuild_job(session: ZapdosSession, op_id: str):
+    return session.editor.stream_rebuild_job(op_id)
 
 
 _name_ = request_router.build_name_handler(

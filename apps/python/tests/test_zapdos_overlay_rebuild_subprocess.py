@@ -11,9 +11,9 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-import utils.zapdos.session.zapdos_session as SESSION_MODULE
+import utils.zapdos.editor.rebuild_manager as EDITOR_REBUILD_MANAGER
+from utils.zapdos.editor.state import default_overlay_state
 
-ACTION_PATH = REPO_ROOT / "apps" / "python" / "api" / "zapdos" / "{session}" / "{action}.py"
 SCRIPT_PATH = REPO_ROOT / "apps" / "python" / "scripts" / "prepare_zapdos_overlay_rebuild.py"
 
 
@@ -24,17 +24,14 @@ def _load_module(path: Path, name: str):
     spec.loader.exec_module(module)
     return module
 
-
-ACTION = _load_module(ACTION_PATH, "zapdos_overlay_rebuild_action_test")
-
-
 class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
     def _build_session(self, root: Path):
-        session = ACTION.ZapdosSession.__new__(ACTION.ZapdosSession)
-        session.session_dir = root
-        session.base_scene_usd = root / "base_scene.usda"
-        session.robot_usd = root / "robot.usda"
-        session.composed_scene_usd = root / "scene-overlay.usda"
+        session = SimpleNamespace(
+            session_dir=root,
+            base_scene_usd=root / "base_scene.usda",
+            robot_usd=root / "robot.usda",
+            composed_scene_usd=root / "scene-overlay.usda",
+        )
         session.base_scene_usd.write_text("#usda 1.0\n", encoding="utf-8")
         session.robot_usd.write_text("#usda 1.0\n", encoding="utf-8")
         return session
@@ -42,7 +39,7 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
     def test_prepare_overlay_rebuild_runs_inline_without_spawning_subprocess(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = self._build_session(Path(tmp))
-            next_overlay = ACTION.default_overlay_state("C:/assets")
+            next_overlay = default_overlay_state("C:/assets")
             next_overlay["instances"] = [{
                 "id": "table_000_01",
                 "asset_id": "table_000",
@@ -50,7 +47,7 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
                 "motion": "static",
                 "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
             }]
-            previous_overlay = ACTION.default_overlay_state("C:/assets")
+            previous_overlay = default_overlay_state("C:/assets")
             fake_bundle = SimpleNamespace(bundle_dir=Path("bundle"))
             payload = {
                 "bundle": {"bundle_dir": "bundle", "cameras": []},
@@ -59,16 +56,12 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
 
             with mock.patch("subprocess.Popen") as popen:
                 with mock.patch.object(
-                    SESSION_MODULE.rebuild_manager,
+                    EDITOR_REBUILD_MANAGER,
                     "_run_overlay_rebuild_inline",
                     return_value=payload,
                 ) as run_inline:
-                    with mock.patch.object(
-                        SESSION_MODULE.rebuild_manager.RenderBundle,
-                        "from_json",
-                        return_value=fake_bundle,
-                    ) as from_json:
-                        prepared = ACTION.ZapdosSession._prepare_overlay_rebuild(
+                    with mock.patch.object(EDITOR_REBUILD_MANAGER.RenderBundle, "from_json", return_value=fake_bundle) as from_json:
+                        prepared = EDITOR_REBUILD_MANAGER.prepare_overlay_rebuild(
                             session,
                             next_overlay,
                             {"Scene_table_000_01": {"top_z": 0.75}},
@@ -122,6 +115,11 @@ class ZapdosOverlayRebuildSubprocessTest(unittest.TestCase):
 
         runner.assert_called_once_with(request, script._log_stage)
         self.assertEqual(result, expected)
+
+    def test_prepare_overlay_rebuild_script_imports_editor_runner(self):
+        source = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("from utils.zapdos.editor.rebuild_runner import prepare_overlay_rebuild_request", source)
 
 
 if __name__ == "__main__":

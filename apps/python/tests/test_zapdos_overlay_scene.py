@@ -11,10 +11,10 @@ from pxr import Gf, Usd, UsdGeom
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
+from utils.zapdos.editor.placement import normalize_placement
+from utils.zapdos.editor.scene_writer import resolve_instance_pose, write_overlay_scene
+from utils.zapdos.editor.state import default_overlay_state
 from utils.zapdos.zapdos_asset_library import asset_local_bounds, resolve_asset_record
-from utils.zapdos.overlay.overlay_placement import normalize_placement
-from utils.zapdos.overlay.overlay_scene_writer import resolve_instance_pose, write_overlay_scene
-from utils.zapdos.overlay.overlay_state import default_overlay_state
 
 
 class ZapdosOverlaySceneTest(unittest.TestCase):
@@ -43,15 +43,15 @@ class ZapdosOverlaySceneTest(unittest.TestCase):
         )
         return assets_root
 
-    def test_overlay_package_owns_placement_and_scene_writer_without_legacy_imports(self):
+    def test_editor_package_owns_placement_and_scene_writer_without_overlay_imports(self):
         placement_source = (
             REPO_ROOT
             / "apps"
             / "python"
             / "utils"
             / "zapdos"
-            / "overlay"
-            / "overlay_placement.py"
+            / "editor"
+            / "placement.py"
         ).read_text(encoding="utf-8")
         writer_source = (
             REPO_ROOT
@@ -59,14 +59,14 @@ class ZapdosOverlaySceneTest(unittest.TestCase):
             / "python"
             / "utils"
             / "zapdos"
-            / "overlay"
-            / "overlay_scene_writer.py"
+            / "editor"
+            / "scene_writer.py"
         ).read_text(encoding="utf-8")
 
         self.assertIn("def normalize_placement", placement_source)
         self.assertIn("def write_overlay_scene", writer_source)
-        self.assertNotIn("from utils.zapdos.zapdos_overlay_scene import", placement_source)
-        self.assertNotIn("from utils.zapdos.zapdos_overlay_scene import", writer_source)
+        self.assertNotIn("from utils.zapdos.overlay.overlay_placement import", placement_source)
+        self.assertNotIn("from utils.zapdos.overlay.overlay_scene_writer import", writer_source)
 
     def test_resolve_asset_record_and_bounds(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -9,9 +9,8 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-import utils.zapdos.session.zapdos_session as session_module
 import utils.ros_bridge as ros_bridge_module
-from utils.zapdos.session.streaming_mixin import SessionStreamingMixin
+import utils.zapdos.zapdos_session as session_module
 
 BridgeUnavailable = getattr(ros_bridge_module, "BridgeUnavailable", RuntimeError)
 
@@ -35,7 +34,9 @@ class _BridgeStub:
         return {"ok": True}
 
 
-class _FakeSession(SessionStreamingMixin):
+class _FakeSession:
+    send_ros = session_module.ZapdosSession.send_ros
+
     pass
 
 
@@ -50,7 +51,13 @@ class ZapdosSendRosTest(unittest.IsolatedAsyncioTestCase):
         async def fake_sleep(_: float):
             active["value"] = False
 
-        session.renderer = SimpleNamespace(wait_ready=fake_wait_ready)
+        session.renderer = SimpleNamespace(
+            wait_ready=fake_wait_ready,
+            should_publish_camera_images=mock.Mock(return_value=False),
+            image_messages=mock.Mock(return_value=[
+                (session_module.image_topic("head_camera"), {"data": b"rgb"}),
+            ]),
+        )
         session.physics = SimpleNamespace(
             joint_state_msg=lambda: {"name": ["joint"], "position": [0.0]},
             model=object(),
@@ -60,9 +67,6 @@ class ZapdosSendRosTest(unittest.IsolatedAsyncioTestCase):
         session.command_subscribed = False
         session.on_message = mock.Mock()
         session.is_active = lambda: active["value"]
-        session._image_messages = mock.Mock(return_value=[
-            (session_module.image_topic("head_camera"), {"data": b"rgb"}),
-        ])
         self.sleep_patch = mock.patch.object(session_module.asyncio, "sleep", side_effect=fake_sleep)
         return session
 
@@ -82,12 +86,12 @@ class ZapdosSendRosTest(unittest.IsolatedAsyncioTestCase):
                 session_module.TF_RENDER_TOPIC,
             ],
         )
-        session._image_messages.assert_not_called()
+        session.renderer.image_messages.assert_not_called()
 
-    async def test_send_ros_publishes_images_when_local_subscriber_exists(self):
+    async def test_send_ros_publishes_images_when_renderer_allows_publish(self):
         session = self.make_session()
         bridge = _BridgeStub()
-        bridge.subs[session_module.image_topic("head_camera")] = {object()}
+        session.renderer.should_publish_camera_images.return_value = True
 
         with self.sleep_patch:
             with mock.patch.object(session_module, "bridge", bridge):
@@ -102,7 +106,7 @@ class ZapdosSendRosTest(unittest.IsolatedAsyncioTestCase):
                 session_module.image_topic("head_camera"),
             ],
         )
-        session._image_messages.assert_called_once_with()
+        session.renderer.image_messages.assert_called_once_with()
 
     async def test_send_ros_suppresses_traceback_for_bridge_disconnect(self):
         session = self.make_session()

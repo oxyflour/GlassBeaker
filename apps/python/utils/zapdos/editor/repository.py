@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from utils.zapdos.overlay.overlay_state import default_overlay_state
+from utils.zapdos.editor.state import default_overlay_state
 
 
 def load_overlay_state(path: Path) -> dict[str, object]:

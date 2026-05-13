@@ -9,19 +9,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from utils.zapdos.overlay import overlay_state as zapdos_overlay
+from utils.zapdos.editor import state as zapdos_editor_state
 
 
 class ZapdosOverlayTest(unittest.TestCase):
-    def test_overlay_package_owns_state_and_repository_without_legacy_imports(self):
+    def test_editor_package_owns_state_and_repository_without_legacy_imports(self):
         state_source = (
             REPO_ROOT
             / "apps"
             / "python"
             / "utils"
             / "zapdos"
-            / "overlay"
-            / "overlay_state.py"
+            / "editor"
+            / "state.py"
         ).read_text(encoding="utf-8")
         repository_source = (
             REPO_ROOT
@@ -29,20 +29,20 @@ class ZapdosOverlayTest(unittest.TestCase):
             / "python"
             / "utils"
             / "zapdos"
-            / "overlay"
-            / "overlay_repository.py"
+            / "editor"
+            / "repository.py"
         ).read_text(encoding="utf-8")
 
         self.assertIn("def default_overlay_state", state_source)
         self.assertIn("def load_overlay_state", repository_source)
-        self.assertNotIn("from utils.zapdos.zapdos_overlay import", state_source)
-        self.assertNotIn("from utils.zapdos.zapdos_overlay import", repository_source)
+        self.assertNotIn("from utils.zapdos.overlay.overlay_state import", state_source)
+        self.assertNotIn("from utils.zapdos.overlay.overlay_repository import", repository_source)
 
     def test_scene_revision_ignores_pose_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene = Path(tmp) / "scene.usda"
             scene.write_text("#usda 1.0\n", encoding="utf-8")
-            base = zapdos_overlay.default_overlay_state("C:/assets")
+            base = zapdos_editor_state.default_overlay_state("C:/assets")
             base["instances"] = [{
                 "id": "table_000_01",
                 "asset_id": "table_000",
@@ -57,8 +57,8 @@ class ZapdosOverlayTest(unittest.TestCase):
             }
 
             self.assertEqual(
-                zapdos_overlay.scene_revision(scene, base),
-                zapdos_overlay.scene_revision(scene, edited),
+                zapdos_editor_state.scene_revision(scene, base),
+                zapdos_editor_state.scene_revision(scene, edited),
             )
 
     def test_bundle_revision_changes_when_robot_changes(self):
@@ -69,16 +69,16 @@ class ZapdosOverlayTest(unittest.TestCase):
             for path in (robot_a, robot_b, scene):
                 path.write_text("#usda 1.0\n", encoding="utf-8")
 
-            overlay = zapdos_overlay.default_overlay_state("C:/assets")
+            overlay = zapdos_editor_state.default_overlay_state("C:/assets")
             self.assertNotEqual(
-                zapdos_overlay.bundle_revision(robot_a, scene, overlay),
-                zapdos_overlay.bundle_revision(robot_b, scene, overlay),
+                zapdos_editor_state.bundle_revision(robot_a, scene, overlay),
+                zapdos_editor_state.bundle_revision(robot_b, scene, overlay),
             )
 
     def test_save_and_load_overlay_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "overlay.json"
-            overlay = zapdos_overlay.default_overlay_state("C:/assets")
+            overlay = zapdos_editor_state.default_overlay_state("C:/assets")
             overlay["instances"].append({
                 "id": "crate_001_01",
                 "asset_id": "crate_001",
@@ -91,10 +91,10 @@ class ZapdosOverlayTest(unittest.TestCase):
                 },
             })
 
-            zapdos_overlay.save_overlay_state(path, overlay)
+            zapdos_editor_state.save_overlay_state(path, overlay)
 
-            self.assertEqual(zapdos_overlay.load_overlay_state(path), overlay)
-            self.assertEqual(zapdos_overlay.overlay_body_name("crate_001_01"), "Scene_crate_001_01")
+            self.assertEqual(zapdos_editor_state.load_overlay_state(path), overlay)
+            self.assertEqual(zapdos_editor_state.overlay_body_name("crate_001_01"), "Scene_crate_001_01")
 
 
 if __name__ == "__main__":

@@ -7,8 +7,8 @@ from typing import TypedDict
 
 from pxr import Gf, Sdf, Usd, UsdGeom
 
-from utils.zapdos.overlay.overlay_placement import normalize_placement
-from utils.zapdos.overlay.overlay_state import OverlayInstance, OverlayPoseOverride, OverlayState, overlay_body_name
+from utils.zapdos.editor.placement import normalize_placement
+from utils.zapdos.editor.state import OverlayInstance, OverlayPoseOverride, OverlayState, overlay_body_name
 
 
 class SupportInfo(TypedDict):
@@ -26,27 +26,15 @@ def resolve_instance_pose(
     placement = normalize_placement(instance["placement"])
     if body_name in pose_overrides:
         override = pose_overrides[body_name]
-        return {
-            "pos": list(override["pos"]),
-            "quat": list(override["quat"]),
-            "payload_quat": _payload_quat(placement),
-        }
+        return {"pos": list(override["pos"]), "quat": list(override["quat"]), "payload_quat": _payload_quat(placement)}
     if placement["kind"] == "world_pose":
-        return {
-            "pos": list(placement["pos"]),
-            "quat": list(placement["quat"]),
-            "payload_quat": _payload_quat(placement),
-        }
+        return {"pos": list(placement["pos"]), "quat": list(placement["quat"]), "payload_quat": _payload_quat(placement)}
     quat = _placement_quat(placement)
     payload_quat = _payload_quat(placement)
     min_z, _ = _rotated_asset_z_bounds(asset_bounds, _quat_mul(quat, payload_quat))
     if placement["kind"] == "floor_at_xy":
         return {
-            "pos": [
-                float(placement["xy"][0]),
-                float(placement["xy"][1]),
-                float(placement.get("z_offset", 0.0)) - min_z,
-            ],
+            "pos": [float(placement["xy"][0]), float(placement["xy"][1]), float(placement.get("z_offset", 0.0)) - min_z],
             "quat": quat,
             "payload_quat": payload_quat,
         }
@@ -74,20 +62,16 @@ def write_overlay_scene(
     base_stage = Usd.Stage.Open(base_scene_usd.as_posix())
     up_axis = UsdGeom.GetStageUpAxis(base_stage) if base_stage is not None else UsdGeom.Tokens.z
     meters_per_unit = UsdGeom.GetStageMetersPerUnit(base_stage) if base_stage is not None else 1.0
-    resolved_support_infos = {
-        body: {"top_z": float(info["top_z"])}
-        for body, info in support_infos.items()
-    }
+    resolved_support_infos = {body: {"top_z": float(info["top_z"])} for body, info in support_infos.items()}
     stage = Usd.Stage.CreateNew(output_path.as_posix())
     UsdGeom.SetStageUpAxis(stage, up_axis)
     UsdGeom.SetStageMetersPerUnit(stage, float(meters_per_unit))
     world = UsdGeom.Xform.Define(stage, "/World")
     world.GetPrim().GetReferences().AddReference(str(base_scene_usd.resolve()))
     for instance in overlay_state["instances"]:
-        asset_bounds = asset_bounds_by_instance[instance["id"]]
         pose = resolve_instance_pose(
             instance,
-            asset_bounds=asset_bounds,
+            asset_bounds=asset_bounds_by_instance[instance["id"]],
             support_infos=resolved_support_infos,
             pose_overrides=overlay_state["pose_overrides"],
         )
@@ -106,23 +90,17 @@ def write_overlay_scene(
         quat = pose["quat"]
         xform.AddOrientOp().Set(Gf.Quatf(quat[0], quat[1], quat[2], quat[3]))
         xform.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
-        payload_xform = UsdGeom.Xformable(payload_prim)
         payload_quat = pose["payload_quat"]
-        payload_xform.AddOrientOp().Set(Gf.Quatf(
-            payload_quat[0],
-            payload_quat[1],
-            payload_quat[2],
-            payload_quat[3],
-        ))
-        object_prim.CreateAttribute("physics:kinematicEnabled", Sdf.ValueTypeNames.Bool).Set(
-            instance["motion"] == "static"
-        )
+        payload_xform = UsdGeom.Xformable(payload_prim)
+        payload_xform.AddOrientOp().Set(Gf.Quatf(payload_quat[0], payload_quat[1], payload_quat[2], payload_quat[3]))
+        object_prim.CreateAttribute("physics:kinematicEnabled", Sdf.ValueTypeNames.Bool).Set(instance["motion"] == "static")
         if instance["motion"] == "dynamic":
             object_prim.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Double).Set(1.0)
-        _, max_z = _rotated_asset_z_bounds(asset_bounds, _quat_mul(pose["quat"], pose["payload_quat"]))
-        resolved_support_infos[overlay_body_name(instance["id"])] = {
-            "top_z": float(pose["pos"][2]) + max_z,
-        }
+        _, max_z = _rotated_asset_z_bounds(
+            asset_bounds_by_instance[instance["id"]],
+            _quat_mul(pose["quat"], pose["payload_quat"]),
+        )
+        resolved_support_infos[overlay_body_name(instance["id"])] = {"top_z": float(pose["pos"][2]) + max_z}
     stage.SetDefaultPrim(world.GetPrim())
     stage.GetRootLayer().Save()
     return output_path

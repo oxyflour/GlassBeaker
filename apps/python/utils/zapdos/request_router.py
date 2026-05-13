@@ -49,8 +49,8 @@ async def init_stream(
     yield "data: started\n\n"
 
 
-def require_camera_name(session, camera_name: str) -> str:
-    if camera_name not in session.camera_index:
+def require_camera_name(camera_index: dict[str, int], camera_name: str) -> str:
+    if camera_name not in camera_index:
         raise HTTPException(status_code=404, detail=f"Camera not found: {camera_name}")
     return camera_name
 
@@ -75,9 +75,18 @@ def build_name_handler(
     require_session_future: SessionFutureResolver,
     await_session_future: SessionFutureAwaiter,
     require_active_session: SessionValidator,
-    require_camera_name: Callable[[object, str], str],
+    require_camera_name: Callable[[dict[str, int], str], str],
     stream_scene_rebuild_job: StreamFactory,
 ):
+    def _camera_index_for(session) -> dict[str, int]:
+        camera_index = getattr(session.renderer, "camera_index", None)
+        if isinstance(camera_index, dict):
+            return camera_index
+        return {
+            camera.name: index
+            for index, camera in enumerate(getattr(session.renderer.bundle, "cameras", ()))
+        }
+
     async def _name_(req: Request):
         sess = req.path_params["session"]
         action = req.path_params["action"]
@@ -133,18 +142,18 @@ def build_name_handler(
             return await session.call(name, *args)
         if action == "render":
             return StreamingResponse(
-                session.render(require_camera_name(session, name)),
+                session.renderer.render(require_camera_name(_camera_index_for(session), name)),
                 media_type="multipart/x-mixed-replace; boundary=frame",
             )
         if action == "snapshot":
             return Response(
-                content=session.snapshot(require_camera_name(session, name)),
+                content=session.renderer.snapshot(require_camera_name(_camera_index_for(session), name)),
                 media_type="image/jpeg",
                 headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
             )
         if action == "multicam" and name == "stream":
             return StreamingResponse(
-                session.render_multi_camera(),
+                session.renderer.render_multi_camera(),
                 media_type="multipart/x-mixed-replace; boundary=frame",
             )
         if action == "asset":
@@ -155,4 +164,3 @@ def build_name_handler(
         raise HTTPException(status_code=404, detail="Action not found")
 
     return _name_
-

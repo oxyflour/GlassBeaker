@@ -4,7 +4,6 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 from fastapi import HTTPException
 
@@ -19,11 +18,11 @@ SPEC.loader.exec_module(MODULE)
 
 class ZapdosRenderCameraTest(unittest.TestCase):
     def test_require_camera_name_returns_exact_match_only(self):
-        session = SimpleNamespace(camera_index={"head_camera": 0})
+        camera_index = {"head_camera": 0}
 
-        self.assertEqual(MODULE._require_camera_name(session, "head_camera"), "head_camera")
+        self.assertEqual(MODULE._require_camera_name(camera_index, "head_camera"), "head_camera")
         with self.assertRaises(HTTPException) as ctx:
-            MODULE._require_camera_name(session, "HEAD_CAMERA")
+            MODULE._require_camera_name(camera_index, "HEAD_CAMERA")
 
         self.assertEqual(ctx.exception.status_code, 404)
 

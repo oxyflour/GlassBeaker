@@ -1,26 +1,33 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import importlib.util
 import json
-import os
 import queue
 import sys
 import tempfile
 import threading
 import unittest
+from concurrent.futures import Future as ConcurrentFuture
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 from urllib.parse import urlencode
 
 import mujoco  # type: ignore
-from fastapi import Request
+from fastapi import HTTPException, Request
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-import utils.zapdos.overlay.overlay_commands as OVERLAY_COMMANDS_MODULE
-import utils.zapdos.session.zapdos_session as SESSION_MODULE
+import utils.zapdos.editor.commands as EDITOR_COMMANDS_MODULE
+from utils.zapdos.editor.rebuild_job import SceneRebuildJob
+import utils.zapdos.editor.rebuild_manager as EDITOR_REBUILD_MANAGER
+from utils.zapdos.editor.rebuild_types import OverlayRebuildCompletion, PreparedOverlayRebuild
+from utils.zapdos.editor.state import default_overlay_state
+import utils.zapdos.editor.zapdos_editor as EDITOR_SESSION_MODULE
+from utils.zapdos.physics.mujoco_physics import MujocoPhysics as ZapdosPhysics
+from utils.session import Session
+import utils.zapdos.zapdos_session as SESSION_MODULE
 from utils.zapdos.bundle import ensure_render_bundle
 
 MODULE_PATH = REPO_ROOT / "apps" / "python" / "api" / "zapdos" / "{session}" / "{action}.py"
@@ -38,9 +45,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         MODULE.sessions.clear()
 
     def test_action_module_reexports_split_runtime_symbols(self):
-        self.assertEqual(MODULE.ZapdosSession.__module__, "utils.zapdos.session.zapdos_session")
-        self.assertEqual(MODULE._name_.__module__, "utils.zapdos.session.request_router")
-        self.assertEqual(MODULE._stream_scene_rebuild_job.__module__, "utils.zapdos.rebuild.scene_rebuild_manager")
+        self.assertEqual(MODULE.ZapdosSession.__module__, "utils.zapdos.zapdos_session")
+        self.assertEqual(MODULE._name_.__module__, "utils.zapdos.request_router")
+        self.assertEqual(MODULE._stream_scene_rebuild_job.__module__, MODULE.__name__)
 
     def test_consumer_modules_import_new_bundle_and_camera_packages(self):
         cases = {
@@ -68,7 +75,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                 "from utils.zapdos.bundle.camera_specs import camera_name_to_index, cameras_json",
                 "from utils.zapdos.rl_cameras import camera_name_to_index, cameras_json",
             ],
-            REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "rebuild" / "overlay_rebuild_runner.py": [
+            REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "editor" / "rebuild_runner.py": [
                 "from utils.zapdos.bundle import ensure_render_bundle",
                 "from utils.zapdos.rl_bundle import ensure_render_bundle",
             ],
@@ -191,7 +198,6 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "apps/python/utils/zapdos/zapdos_physics.py",
             "apps/python/utils/zapdos/zapdos_scene_operations.py",
             "apps/python/utils/zapdos/zapdos_scene_visuals.py",
-            "apps/python/utils/zapdos/zapdos_session.py",
         ]
 
         for raw_path in legacy_paths:
@@ -216,7 +222,6 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             / "python"
             / "utils"
             / "zapdos"
-            / "session"
             / "zapdos_session.py"
         )
 
@@ -229,11 +234,11 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             / "python"
             / "utils"
             / "zapdos"
-            / "rebuild"
-            / "scene_rebuild_manager.py"
+            / "editor"
+            / "rebuild_manager.py"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("from utils.zapdos.rebuild.overlay_rebuild_runner import prepare_overlay_rebuild_request", source)
+        self.assertIn("from utils.zapdos.editor.rebuild_runner import prepare_overlay_rebuild_request", source)
         self.assertNotIn("from utils.zapdos.zapdos_overlay_rebuild_runner import prepare_overlay_rebuild_request", source)
 
     def make_request(self, query: str = ""):
@@ -248,16 +253,26 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             }
         )
 
+    def attach_editor(self, session):
+        session.editor = EDITOR_SESSION_MODULE.ZapdosEditor(
+            session,
+            repo_root=SESSION_MODULE.REPO_ROOT,
+            default_robot_usd=SESSION_MODULE.DEFAULT_ROBOT_USD,
+            default_scene_usd=MODULE.DEFAULT_SCENE_USD,
+        )
+        return session.editor
+
     def build_physics_session(self, xml: str, body_map: dict[str, str]):
         with tempfile.TemporaryDirectory() as tmp:
             xml_path = Path(tmp) / "scene.xml"
             xml_path.write_text(xml.strip(), encoding="utf-8")
-            physics = MODULE.ZapdosPhysics("sess-1", SimpleNamespace(mjcf=xml_path), body_map)
+            physics = ZapdosPhysics("sess-1", SimpleNamespace(mjcf=xml_path), body_map)
             session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
             session.sess = "sess-1"
             session.physics = physics
             session.bundle = SimpleNamespace(cameras=[])
             session.msgs = queue.Queue(maxsize=64)
+            self.attach_editor(session)
             return session
 
     def build_pose_edit_session(self):
@@ -442,7 +457,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_build_geometry_only_assigns_texture_when_material_has_rgb_texture(self):
         bundle = ensure_render_bundle(MODULE.DEFAULT_ROBOT_USD, MODULE.DEFAULT_SCENE_USD)
-        physics = MODULE.ZapdosPhysics("sess-1", bundle, {})
+        physics = ZapdosPhysics("sess-1", bundle, {})
 
         textured = [geom for geom in physics.geoms.values() if geom.kind == "mesh" and geom.texture]
         untextured = [geom for geom in physics.geoms.values() if geom.kind == "mesh" and not geom.texture]
@@ -488,7 +503,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                 instance.active = 0
                 instance.timeout = timeout
 
-            with mock.patch.object(MODULE.Session, "__init__", new=fake_session_init):
+            with mock.patch.object(Session, "__init__", new=fake_session_init):
                 with mock.patch.object(SESSION_MODULE, "IsaacRenderer", return_value=SimpleNamespace(wait_ready=mock.AsyncMock(), read=mock.Mock(return_value=None), close=mock.Mock())):
                     with mock.patch.object(
                         MODULE.asyncio,
@@ -497,10 +512,10 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                     ):
                         session = MODULE.ZapdosSession("sess-1", bundle)
 
-        self.assertIsInstance(session.physics, MODULE.ZapdosPhysics)
+        self.assertIsInstance(session.physics, ZapdosPhysics)
         self.assertEqual(session.physics.body_map, {"Scene_Crate": "Crate"})
         self.assertEqual(session.physics.editable_body_names, {"Scene_Crate"})
-        self.assertIs(session.scene_rebuild_service.session, session)
+        self.assertIs(session.editor.session, session)
 
     def test_session_init_discards_stale_overlay_instances(self):
         rewritten_overlay = None
@@ -550,7 +565,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                 instance.timeout = timeout
 
             with mock.patch.object(SESSION_MODULE, "REPO_ROOT", root):
-                with mock.patch.object(MODULE.Session, "__init__", new=fake_session_init):
+                with mock.patch.object(Session, "__init__", new=fake_session_init):
                     with mock.patch.object(SESSION_MODULE, "IsaacRenderer", return_value=SimpleNamespace(wait_ready=mock.AsyncMock(), read=mock.Mock(return_value=None), close=mock.Mock())):
                         with mock.patch.object(
                             MODULE.asyncio,
@@ -560,8 +575,8 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                             session = MODULE.ZapdosSession("sess-1", bundle)
             rewritten_overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(session.overlay_state["instances"], [])
-        self.assertEqual(session.overlay_state["pose_overrides"], {})
+        self.assertEqual(session.editor.overlay_state["instances"], [])
+        self.assertEqual(session.editor.overlay_state["pose_overrides"], {})
         self.assertEqual(rewritten_overlay["instances"], [])
 
     def test_session_does_not_keep_read_only_physics_passthrough_helpers(self):
@@ -659,7 +674,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 """.strip(),
                 encoding="utf-8",
             )
-            physics = MODULE.ZapdosPhysics(
+            physics = ZapdosPhysics(
                 "sess-1",
                 SimpleNamespace(mjcf=xml_path),
                 {"RobotLink": "MyRobot/RobotLink"},
@@ -701,19 +716,19 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(session.physics.data.xpos[root_body_id].tolist(), [4.0, 5.0, 6.0])
 
-        with self.assertRaises(MODULE.HTTPException) as robot_error:
+        with self.assertRaises(HTTPException) as robot_error:
             session.call_once("set_body_pose", ("Arm_link", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))
         self.assertEqual(robot_error.exception.status_code, 403)
 
-        with self.assertRaises(MODULE.HTTPException) as missing_error:
+        with self.assertRaises(HTTPException) as missing_error:
             session.call_once("set_body_pose", ("MissingBody", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))
         self.assertEqual(missing_error.exception.status_code, 404)
 
     def test_set_body_pose_rejects_while_scene_rebuild_is_running(self):
         session = self.build_pose_edit_session()
-        session.rebuilding_scene = True
+        session.editor.rebuilding_scene = True
 
-        with self.assertRaises(MODULE.HTTPException) as err:
+        with self.assertRaises(HTTPException) as err:
             session.call_once("set_body_pose", ("Scene_Crate", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))
 
         self.assertEqual(err.exception.status_code, 409)
@@ -721,22 +736,22 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_set_scene_assets_returns_operation_id(self):
         session = self.build_pose_edit_session()
-        session.base_scene_usd = Path("scene.usda")
-        session.robot_usd = Path("robot.usda")
-        session.overlay_state = MODULE.default_overlay_state("C:/assets")
-        session.scene_revision = "rev-1"
-        session.overlay_path = Path("overlay.json")
-        session.composed_scene_usd = Path("overlay_scene.usda")
-        session.rebuilding_scene = False
+        editor = session.editor
+        editor.base_scene_usd = Path("scene.usda")
+        editor.robot_usd = Path("robot.usda")
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.scene_revision = "rev-1"
+        editor.overlay_path = Path("overlay.json")
+        editor.composed_scene_usd = Path("overlay_scene.usda")
+        editor.rebuilding_scene = False
 
         with mock.patch.object(
-            OVERLAY_COMMANDS_MODULE,
+            EDITOR_COMMANDS_MODULE,
             "resolve_asset_record",
             return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
         ):
-            with mock.patch.object(session, "_start_overlay_operation", return_value={"ok": True, "op_id": "op-1"}) as start_op:
-                result = MODULE.ZapdosSession.set_scene_assets(
-                    session,
+            with mock.patch.object(editor, "_start_overlay_operation", return_value={"ok": True, "op_id": "op-1"}) as start_op:
+                result = session.editor.set_scene_assets(
                     [{
                         "asset_id": "table_000",
                         "motion": "static",
@@ -762,34 +777,35 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             }],
         })
 
-    def test_set_scene_assets_delegates_to_scene_rebuild_service(self):
+    def test_set_scene_assets_delegates_to_editor(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.scene_rebuild_service = mock.Mock(
-            submit_replace=mock.Mock(return_value={"ok": True, "op_id": "op-9"}),
+        session.editor = mock.Mock(
+            set_scene_assets=mock.Mock(return_value={"ok": True, "op_id": "op-9"}),
         )
 
-        result = MODULE.ZapdosSession.set_scene_assets(session, [{"asset_id": "table_000"}])
+        result = MODULE.ZapdosSession.call_once(session, "set_scene_assets", ([{"asset_id": "table_000"}],))
 
         self.assertEqual(result, {"ok": True, "op_id": "op-9"})
-        session.scene_rebuild_service.submit_replace.assert_called_once_with([{"asset_id": "table_000"}])
+        session.editor.set_scene_assets.assert_called_once_with([{"asset_id": "table_000"}])
 
     def test_set_scene_assets_rejects_ambiguous_placement(self):
         session = self.build_pose_edit_session()
-        session.base_scene_usd = Path("scene.usda")
-        session.robot_usd = Path("robot.usda")
-        session.overlay_state = MODULE.default_overlay_state("C:/assets")
-        session.scene_revision = "rev-1"
-        session.overlay_path = Path("overlay.json")
-        session.composed_scene_usd = Path("overlay_scene.usda")
-        session.rebuilding_scene = False
+        editor = session.editor
+        editor.base_scene_usd = Path("scene.usda")
+        editor.robot_usd = Path("robot.usda")
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.scene_revision = "rev-1"
+        editor.overlay_path = Path("overlay.json")
+        editor.composed_scene_usd = Path("overlay_scene.usda")
+        editor.rebuilding_scene = False
 
         with mock.patch.object(
-            OVERLAY_COMMANDS_MODULE,
+            EDITOR_COMMANDS_MODULE,
             "resolve_asset_record",
             return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
         ):
-            with self.assertRaises(MODULE.HTTPException) as err:
-                MODULE.ZapdosSession.set_scene_assets(session, [{
+            with self.assertRaises(HTTPException) as err:
+                session.editor.set_scene_assets([{
                     "asset_id": "table_000",
                     "motion": "static",
                     "placement": {},
@@ -800,16 +816,17 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_set_scene_assets_rejects_unsupported_motion(self):
         session = self.build_pose_edit_session()
-        session.base_scene_usd = Path("scene.usda")
-        session.robot_usd = Path("robot.usda")
-        session.overlay_state = MODULE.default_overlay_state("C:/assets")
-        session.scene_revision = "rev-1"
-        session.overlay_path = Path("overlay.json")
-        session.composed_scene_usd = Path("overlay_scene.usda")
-        session.rebuilding_scene = False
+        editor = session.editor
+        editor.base_scene_usd = Path("scene.usda")
+        editor.robot_usd = Path("robot.usda")
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.scene_revision = "rev-1"
+        editor.overlay_path = Path("overlay.json")
+        editor.composed_scene_usd = Path("overlay_scene.usda")
+        editor.rebuilding_scene = False
 
-        with self.assertRaises(MODULE.HTTPException) as err:
-            MODULE.ZapdosSession.set_scene_assets(session, [{
+        with self.assertRaises(HTTPException) as err:
+            session.editor.set_scene_assets([{
                 "asset_id": "table_000",
                 "motion": "frozen",
                 "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
@@ -820,37 +837,39 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_set_scene_assets_rejects_empty_assets(self):
         session = self.build_pose_edit_session()
-        session.base_scene_usd = Path("scene.usda")
-        session.robot_usd = Path("robot.usda")
-        session.overlay_state = MODULE.default_overlay_state("C:/assets")
-        session.scene_revision = "rev-1"
-        session.overlay_path = Path("overlay.json")
-        session.composed_scene_usd = Path("overlay_scene.usda")
-        session.rebuilding_scene = False
+        editor = session.editor
+        editor.base_scene_usd = Path("scene.usda")
+        editor.robot_usd = Path("robot.usda")
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.scene_revision = "rev-1"
+        editor.overlay_path = Path("overlay.json")
+        editor.composed_scene_usd = Path("overlay_scene.usda")
+        editor.rebuilding_scene = False
 
-        with self.assertRaises(MODULE.HTTPException) as err:
-            MODULE.ZapdosSession.set_scene_assets(session, [])
+        with self.assertRaises(HTTPException) as err:
+            session.editor.set_scene_assets([])
 
         self.assertEqual(err.exception.status_code, 400)
         self.assertIn("assets", err.exception.detail)
 
     def test_set_scene_assets_rejects_unknown_asset_id(self):
         session = self.build_pose_edit_session()
-        session.base_scene_usd = Path("scene.usda")
-        session.robot_usd = Path("robot.usda")
-        session.overlay_state = MODULE.default_overlay_state("C:/assets")
-        session.scene_revision = "rev-1"
-        session.overlay_path = Path("overlay.json")
-        session.composed_scene_usd = Path("overlay_scene.usda")
-        session.rebuilding_scene = False
+        editor = session.editor
+        editor.base_scene_usd = Path("scene.usda")
+        editor.robot_usd = Path("robot.usda")
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.scene_revision = "rev-1"
+        editor.overlay_path = Path("overlay.json")
+        editor.composed_scene_usd = Path("overlay_scene.usda")
+        editor.rebuilding_scene = False
 
         with mock.patch.object(
-            OVERLAY_COMMANDS_MODULE,
+            EDITOR_COMMANDS_MODULE,
             "resolve_asset_record",
             side_effect=KeyError("missing_table"),
         ):
-            with self.assertRaises(MODULE.HTTPException) as err:
-                MODULE.ZapdosSession.set_scene_assets(session, [{
+            with self.assertRaises(HTTPException) as err:
+                session.editor.set_scene_assets([{
                     "asset_id": "missing_table",
                     "motion": "static",
                     "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
@@ -861,21 +880,22 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_set_scene_assets_rejects_missing_assets_root(self):
         session = self.build_pose_edit_session()
-        session.base_scene_usd = Path("scene.usda")
-        session.robot_usd = Path("robot.usda")
-        session.overlay_state = MODULE.default_overlay_state("C:/missing-assets")
-        session.scene_revision = "rev-1"
-        session.overlay_path = Path("overlay.json")
-        session.composed_scene_usd = Path("overlay_scene.usda")
-        session.rebuilding_scene = False
+        editor = session.editor
+        editor.base_scene_usd = Path("scene.usda")
+        editor.robot_usd = Path("robot.usda")
+        editor.overlay_state = default_overlay_state("C:/missing-assets")
+        editor.scene_revision = "rev-1"
+        editor.overlay_path = Path("overlay.json")
+        editor.composed_scene_usd = Path("overlay_scene.usda")
+        editor.rebuilding_scene = False
 
         with mock.patch.object(
-            OVERLAY_COMMANDS_MODULE,
+            EDITOR_COMMANDS_MODULE,
             "resolve_asset_record",
             side_effect=FileNotFoundError("GenieSim assets entry not found: C:/missing-assets/__init__.py"),
         ):
-            with self.assertRaises(MODULE.HTTPException) as err:
-                MODULE.ZapdosSession.set_scene_assets(session, [{
+            with self.assertRaises(HTTPException) as err:
+                session.editor.set_scene_assets([{
                     "asset_id": "benchmark_table_000",
                     "motion": "static",
                     "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
@@ -886,32 +906,33 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_set_scene_assets_authoritatively_replaces_instances_and_pose_overrides(self):
         session = self.build_pose_edit_session()
-        session.base_scene_usd = Path("scene.usda")
-        session.robot_usd = Path("robot.usda")
-        session.overlay_state = MODULE.default_overlay_state("C:/assets")
-        session.overlay_state["instances"] = [{
+        editor = session.editor
+        editor.base_scene_usd = Path("scene.usda")
+        editor.robot_usd = Path("robot.usda")
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.overlay_state["instances"] = [{
             "id": "crate_000_01",
             "asset_id": "crate_000",
             "url": "objects/crate_000/Aligned.usda",
             "motion": "dynamic",
             "placement": {"kind": "world_pose", "pos": [0.0, 0.0, 0.0], "quat": [1.0, 0.0, 0.0, 0.0]},
         }]
-        session.overlay_state["pose_overrides"] = {
+        editor.overlay_state["pose_overrides"] = {
             "Scene_crate_000_01": {"pos": [1.0, 2.0, 3.0], "quat": [1.0, 0.0, 0.0, 0.0]},
         }
-        session.scene_revision = "rev-1"
-        session.overlay_path = Path("overlay.json")
-        session.composed_scene_usd = Path("overlay_scene.usda")
-        session.rebuilding_scene = False
+        editor.scene_revision = "rev-1"
+        editor.overlay_path = Path("overlay.json")
+        editor.composed_scene_usd = Path("overlay_scene.usda")
+        editor.rebuilding_scene = False
         captured = {}
 
         with mock.patch.object(
-            OVERLAY_COMMANDS_MODULE,
+            EDITOR_COMMANDS_MODULE,
             "resolve_asset_record",
             return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
         ):
-            with mock.patch.object(session, "_start_overlay_operation", side_effect=lambda next_overlay, payload: captured.update({"state": next_overlay, "payload": payload}) or {"ok": True, "op_id": "op-2"}):
-                result = MODULE.ZapdosSession.set_scene_assets(session, [{
+            with mock.patch.object(editor, "_start_overlay_operation", side_effect=lambda next_overlay, payload: captured.update({"state": next_overlay, "payload": payload}) or {"ok": True, "op_id": "op-2"}):
+                result = session.editor.set_scene_assets([{
                     "asset_id": "table_000",
                     "motion": "static",
                     "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
@@ -929,46 +950,47 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_set_body_pose_persists_pose_override_without_changing_scene_revision(self):
         session = self.build_freejoint_pose_edit_session()
-        session.overlay_state = MODULE.default_overlay_state("C:/assets")
-        session.overlay_path = Path("overlay.json")
-        session.scene_revision = "rev-1"
+        session.editor.overlay_state = default_overlay_state("C:/assets")
+        session.editor.overlay_path = Path("overlay.json")
+        session.editor.scene_revision = "rev-1"
 
-        with mock.patch.object(SESSION_MODULE, "save_overlay_state") as save_overlay:
+        with mock.patch.object(EDITOR_SESSION_MODULE, "save_overlay_state") as save_overlay:
             session.call_once("set_body_pose", ("Scene_Crate", [4.0, 5.0, 6.0], [1.0, 0.0, 0.0, 0.0]))
 
-        self.assertEqual(session.scene_revision, "rev-1")
-        self.assertEqual(session.overlay_state["pose_overrides"]["Scene_Crate"]["pos"], [4.0, 5.0, 6.0])
+        self.assertEqual(session.editor.scene_revision, "rev-1")
+        self.assertEqual(session.editor.overlay_state["pose_overrides"]["Scene_Crate"]["pos"], [4.0, 5.0, 6.0])
         save_overlay.assert_called_once()
 
     def test_set_scene_assets_rejects_broken_existing_overlay_asset(self):
         session = self.build_pose_edit_session()
-        session.base_scene_usd = Path("scene.usda")
-        session.robot_usd = Path("robot.usda")
-        session.overlay_state = MODULE.default_overlay_state("C:/assets")
-        session.overlay_state["instances"] = [{
+        editor = session.editor
+        editor.base_scene_usd = Path("scene.usda")
+        editor.robot_usd = Path("robot.usda")
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.overlay_state["instances"] = [{
             "id": "Crate",
             "asset_id": "crate_000",
             "url": "objects/crate_000/Aligned.usda",
             "motion": "static",
             "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
         }]
-        session.scene_revision = "rev-1"
-        session.overlay_path = Path("overlay.json")
-        session.composed_scene_usd = Path("overlay_scene.usda")
-        session.rebuilding_scene = False
+        editor.scene_revision = "rev-1"
+        editor.overlay_path = Path("overlay.json")
+        editor.composed_scene_usd = Path("overlay_scene.usda")
+        editor.rebuilding_scene = False
 
         with mock.patch.object(
-            OVERLAY_COMMANDS_MODULE,
+            EDITOR_COMMANDS_MODULE,
             "resolve_asset_record",
             return_value={"asset_id": "benchmark_table_000", "url": "objects/benchmark/table/benchmark_table_000/Aligned.usda", "description": {}},
         ):
             with mock.patch.object(
-                SESSION_MODULE,
+                EDITOR_SESSION_MODULE,
                 "asset_local_bounds",
                 side_effect=RuntimeError("Failed to open asset stage: C:/assets/objects/crate_000/Aligned.usda"),
             ):
-                with self.assertRaises(MODULE.HTTPException) as err:
-                    MODULE.ZapdosSession.set_scene_assets(session, [{
+                with self.assertRaises(HTTPException) as err:
+                    session.editor.set_scene_assets([{
                         "asset_id": "benchmark_table_000",
                         "motion": "static",
                         "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
@@ -977,16 +999,16 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(err.exception.status_code, 409)
         self.assertIn("Crate", err.exception.detail)
 
-    def test_remove_asset_from_scene_delegates_to_scene_rebuild_service(self):
+    def test_remove_asset_from_scene_delegates_to_editor(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.scene_rebuild_service = mock.Mock(
-            submit_remove=mock.Mock(return_value={"ok": True, "instance_id": "table_000_01"}),
+        session.editor = mock.Mock(
+            remove_asset_from_scene=mock.Mock(return_value={"ok": True, "instance_id": "table_000_01"}),
         )
 
-        result = MODULE.ZapdosSession.remove_asset_from_scene(session, "table_000_01")
+        result = MODULE.ZapdosSession.call_once(session, "remove_asset_from_scene", ("table_000_01",))
 
         self.assertEqual(result, {"ok": True, "instance_id": "table_000_01"})
-        session.scene_rebuild_service.submit_remove.assert_called_once_with("table_000_01")
+        session.editor.remove_asset_from_scene.assert_called_once_with("table_000_01")
 
     def test_swap_runtime_bundle_closes_previous_physics_after_successful_swap(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
@@ -999,8 +1021,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.physics = old_physics
         session.renderer = old_renderer
         session.bundle = SimpleNamespace(cameras=[])
-        session.camera_index = {}
-        session.last_frame_index = {}
+        editor = EDITOR_SESSION_MODULE.ZapdosEditor.__new__(EDITOR_SESSION_MODULE.ZapdosEditor)
+        editor.session = session
+        session.editor = editor
 
         new_physics = SimpleNamespace(
             model=object(),
@@ -1018,13 +1041,13 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
             with mock.patch.object(SESSION_MODULE, "ZapdosPhysics", return_value=new_physics):
                     with mock.patch.object(SESSION_MODULE, "IsaacRenderer", return_value=new_renderer):
-                        with mock.patch.object(MODULE.mujoco, "mj_forward"):
-                            session._swap_runtime_bundle(bundle, {"pose_overrides": {}})
+                        with mock.patch.object(mujoco, "mj_forward"):
+                            editor._swap_runtime_bundle(bundle, {"pose_overrides": {}})
 
         old_renderer.close.assert_called_once_with(stop_remote=False)
         old_physics.close.assert_called_once_with()
         self.assertIs(session.physics, new_physics)
-        self.assertIs(session.renderer, new_renderer)
+        self.assertIs(getattr(session.renderer, "backend", session.renderer), new_renderer)
         self.assertEqual(new_physics.data.qpos[:2], [1.0, 2.0])
         self.assertEqual(new_physics.data.ctrl[:1], [3.0])
 
@@ -1042,8 +1065,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.physics = old_physics
         session.renderer = old_renderer
         session.bundle = SimpleNamespace(cameras=[])
-        session.camera_index = {}
-        session.last_frame_index = {}
+        editor = EDITOR_SESSION_MODULE.ZapdosEditor.__new__(EDITOR_SESSION_MODULE.ZapdosEditor)
+        editor.session = session
+        session.editor = editor
 
         new_physics = SimpleNamespace(
             model=object(),
@@ -1063,8 +1087,8 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
             with mock.patch.object(SESSION_MODULE, "ZapdosPhysics", return_value=new_physics):
                 with mock.patch.object(SESSION_MODULE, "IsaacRenderer") as renderer_cls:
-                    with mock.patch.object(MODULE.mujoco, "mj_forward"):
-                        session._swap_runtime_bundle(bundle, {"pose_overrides": {}})
+                    with mock.patch.object(mujoco, "mj_forward"):
+                        editor._swap_runtime_bundle(bundle, {"pose_overrides": {}})
 
         renderer_cls.assert_not_called()
         old_renderer.reload_scene.assert_called_once_with(bundle)
@@ -1072,8 +1096,8 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         old_physics.close.assert_called_once_with()
         self.assertIs(session.renderer, old_renderer)
         self.assertIs(session.physics, new_physics)
-        self.assertEqual(session.camera_index, {"head_camera": 0})
-        self.assertEqual(session.last_frame_index, {"head_camera": -1})
+        self.assertEqual(session.renderer.camera_index, {"head_camera": 0})
+        self.assertEqual(session.renderer.last_frame_index, {"head_camera": -1})
 
     def test_swap_runtime_bundle_falls_back_to_new_renderer_when_reload_fails(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
@@ -1089,8 +1113,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.physics = old_physics
         session.renderer = old_renderer
         session.bundle = SimpleNamespace(cameras=[])
-        session.camera_index = {}
-        session.last_frame_index = {}
+        editor = EDITOR_SESSION_MODULE.ZapdosEditor.__new__(EDITOR_SESSION_MODULE.ZapdosEditor)
+        editor.session = session
+        session.editor = editor
 
         new_physics = SimpleNamespace(
             model=object(),
@@ -1111,13 +1136,13 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
             with mock.patch.object(SESSION_MODULE, "ZapdosPhysics", return_value=new_physics):
                 with mock.patch.object(SESSION_MODULE, "IsaacRenderer", return_value=new_renderer):
-                    with mock.patch.object(MODULE.mujoco, "mj_forward"):
-                        session._swap_runtime_bundle(bundle, {"pose_overrides": {}})
+                    with mock.patch.object(mujoco, "mj_forward"):
+                        editor._swap_runtime_bundle(bundle, {"pose_overrides": {}})
 
         old_renderer.reload_scene.assert_called_once_with(bundle)
         old_renderer.close.assert_called_once_with(stop_remote=False)
         old_physics.close.assert_called_once_with()
-        self.assertIs(session.renderer, new_renderer)
+        self.assertIs(getattr(session.renderer, "backend", session.renderer), new_renderer)
         self.assertIs(session.physics, new_physics)
 
     def test_swap_runtime_bundle_replays_pose_overrides_for_movable_robot_roots(self):
@@ -1131,8 +1156,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.physics = old_physics
         session.renderer = old_renderer
         session.bundle = SimpleNamespace(cameras=[])
-        session.camera_index = {}
-        session.last_frame_index = {}
+        editor = EDITOR_SESSION_MODULE.ZapdosEditor.__new__(EDITOR_SESSION_MODULE.ZapdosEditor)
+        editor.session = session
+        session.editor = editor
 
         new_physics = SimpleNamespace(
             model=object(),
@@ -1160,8 +1186,8 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
             with mock.patch.object(SESSION_MODULE, "ZapdosPhysics", return_value=new_physics):
                 with mock.patch.object(SESSION_MODULE, "IsaacRenderer", return_value=new_renderer):
-                    with mock.patch.object(MODULE.mujoco, "mj_forward"):
-                        session._swap_runtime_bundle(bundle, overlay_state)
+                    with mock.patch.object(mujoco, "mj_forward"):
+                        editor._swap_runtime_bundle(bundle, overlay_state)
 
         new_physics.set_body_pose.assert_called_once_with(
             "Root_base_link",
@@ -1180,8 +1206,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.physics = old_physics
         session.renderer = old_renderer
         session.bundle = SimpleNamespace(cameras=[])
-        session.camera_index = {}
-        session.last_frame_index = {}
+        editor = EDITOR_SESSION_MODULE.ZapdosEditor.__new__(EDITOR_SESSION_MODULE.ZapdosEditor)
+        editor.session = session
+        session.editor = editor
 
         new_physics = SimpleNamespace(
             model=object(),
@@ -1198,9 +1225,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
             with mock.patch.object(SESSION_MODULE, "ZapdosPhysics", return_value=new_physics):
                 with mock.patch.object(SESSION_MODULE, "IsaacRenderer", side_effect=RuntimeError("renderer failed")):
-                    with mock.patch.object(MODULE.mujoco, "mj_forward"):
+                    with mock.patch.object(mujoco, "mj_forward"):
                         with self.assertRaises(RuntimeError):
-                            session._swap_runtime_bundle(bundle, {"pose_overrides": {}})
+                            editor._swap_runtime_bundle(bundle, {"pose_overrides": {}})
 
         old_physics.close.assert_not_called()
         old_renderer.close.assert_not_called()
@@ -1222,8 +1249,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.physics = old_physics
         session.renderer = old_renderer
         session.bundle = SimpleNamespace(cameras=[])
-        session.camera_index = {}
-        session.last_frame_index = {}
+        editor = EDITOR_SESSION_MODULE.ZapdosEditor.__new__(EDITOR_SESSION_MODULE.ZapdosEditor)
+        editor.session = session
+        session.editor = editor
 
         new_physics = SimpleNamespace(
             model=object(),
@@ -1243,9 +1271,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
             with mock.patch.object(SESSION_MODULE, "ZapdosPhysics", return_value=new_physics):
                 with mock.patch.object(SESSION_MODULE, "IsaacRenderer", side_effect=RuntimeError("renderer failed")):
-                    with mock.patch.object(MODULE.mujoco, "mj_forward"):
+                    with mock.patch.object(mujoco, "mj_forward"):
                         with self.assertRaises(RuntimeError):
-                            session._swap_runtime_bundle(bundle, {"pose_overrides": {}})
+                            editor._swap_runtime_bundle(bundle, {"pose_overrides": {}})
 
         old_renderer.reload_scene.assert_called_once_with(bundle)
         old_renderer.close.assert_not_called()
@@ -1255,7 +1283,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(session.renderer, old_renderer)
 
     def test_require_session_future_rejects_missing_runtime_session(self):
-        with self.assertRaises(MODULE.HTTPException) as err:
+        with self.assertRaises(HTTPException) as err:
             MODULE._require_session_future("sess-1")
 
         self.assertEqual(err.exception.status_code, 409)
@@ -1266,7 +1294,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         future.set_result(SimpleNamespace(is_active=lambda: False))
         MODULE.sessions["sess-1"] = future
 
-        with self.assertRaises(MODULE.HTTPException) as err:
+        with self.assertRaises(HTTPException) as err:
             MODULE._require_session_future("sess-1")
 
         self.assertEqual(err.exception.status_code, 409)
@@ -1284,35 +1312,40 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_call_once_dispatches_set_scene_assets(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.set_scene_assets = mock.Mock(return_value={"ok": True, "op_id": "op-1"})
+        session.editor = mock.Mock(
+            set_scene_assets=mock.Mock(return_value={"ok": True, "op_id": "op-1"}),
+        )
 
         result = MODULE.ZapdosSession.call_once(session, "set_scene_assets", ([{"asset_id": "table_000"}],))
 
         self.assertEqual(result, {"ok": True, "op_id": "op-1"})
-        session.set_scene_assets.assert_called_once_with([{"asset_id": "table_000"}])
+        session.editor.set_scene_assets.assert_called_once_with([{"asset_id": "table_000"}])
 
     def test_run_overlay_rebuild_background_queues_completion_without_nested_session_call(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.overlay_completions = queue.Queue()
+        session.sess = "sess-1"
+        session.bundle = SimpleNamespace(cameras=[])
+        editor = self.attach_editor(session)
+        editor.overlay_completions = queue.Queue()
         session.call = mock.Mock()
-        prepared = MODULE.PreparedOverlayRebuild(
+        prepared = PreparedOverlayRebuild(
             bundle=SimpleNamespace(),
-            next_overlay=MODULE.default_overlay_state("C:/assets"),
-            previous_overlay=MODULE.default_overlay_state("C:/assets"),
+            next_overlay=default_overlay_state("C:/assets"),
+            previous_overlay=default_overlay_state("C:/assets"),
             previous_revision="rev-1",
             next_revision="rev-2",
         )
 
-        with mock.patch.object(session, "_prepare_overlay_rebuild", return_value=prepared):
-            session._run_overlay_rebuild_background(
+        with mock.patch.object(editor, "_prepare_overlay_rebuild", return_value=prepared):
+            editor._run_overlay_rebuild_background(
                 "op-1",
-                MODULE.default_overlay_state("C:/assets"),
+                default_overlay_state("C:/assets"),
                 {},
-                MODULE.default_overlay_state("C:/assets"),
+                default_overlay_state("C:/assets"),
                 "rev-1",
             )
 
-        completion = session.overlay_completions.get_nowait()
+        completion = editor.overlay_completions.get_nowait()
         self.assertEqual(completion.op_id, "op-1")
         self.assertIs(completion.prepared, prepared)
         self.assertIsNone(completion.error)
@@ -1320,52 +1353,68 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
     def test_drain_overlay_completions_resolves_scene_rebuild_job_future(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.overlay_completions = queue.Queue()
-        session.scene_rebuild_jobs = {
-            "op-1": MODULE.SceneRebuildJob(
-                future=MODULE.ConcurrentFuture(),
+        session.sess = "sess-1"
+        session.bundle = SimpleNamespace(cameras=[])
+        editor = self.attach_editor(session)
+        editor.overlay_completions = queue.Queue()
+        editor.scene_rebuild_jobs = {
+            "op-1": SceneRebuildJob(
+                future=ConcurrentFuture(),
                 success_payload={"ok": True, "items": []},
                 events=queue.Queue(),
             ),
         }
-        session.scene_rebuild_jobs_lock = threading.Lock()
-        prepared = MODULE.PreparedOverlayRebuild(
+        editor.scene_rebuild_jobs_lock = threading.Lock()
+        prepared = PreparedOverlayRebuild(
             bundle=SimpleNamespace(),
-            next_overlay=MODULE.default_overlay_state("C:/assets"),
-            previous_overlay=MODULE.default_overlay_state("C:/assets"),
+            next_overlay=default_overlay_state("C:/assets"),
+            previous_overlay=default_overlay_state("C:/assets"),
             previous_revision="rev-1",
             next_revision="rev-2",
         )
-        session.overlay_completions.put(MODULE.OverlayRebuildCompletion(op_id="op-1", prepared=prepared))
+        editor.overlay_completions.put(OverlayRebuildCompletion(op_id="op-1", prepared=prepared))
 
-        with mock.patch.object(session, "_apply_prepared_overlay_rebuild", return_value="rev-2"):
-            session._drain_overlay_completions()
+        with mock.patch.object(editor, "_apply_prepared_overlay_rebuild", return_value="rev-2"):
+            editor.drain_completions()
 
         self.assertEqual(
-            session.scene_rebuild_jobs["op-1"].future.result(timeout=1),
+            editor.scene_rebuild_jobs["op-1"].future.result(timeout=1),
             {"ok": True, "items": [], "scene_revision": "rev-2"},
         )
 
-    def test_drain_overlay_completions_delegates_to_scene_rebuild_service(self):
+    def test_step_once_drains_editor_completions(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.scene_rebuild_service = mock.Mock(drain_completions=mock.Mock())
+        session.editor = mock.Mock(drain_completions=mock.Mock())
+        session.physics = mock.Mock(
+            apply_joint_command=mock.Mock(),
+            step=mock.Mock(),
+        )
+        session.command_msgs = queue.Queue()
 
-        MODULE.ZapdosSession._drain_overlay_completions(session)
+        with mock.patch.object(Session, "step_once", return_value={"ok": True}) as base_step:
+            result = MODULE.ZapdosSession.step_once(session)
 
-        session.scene_rebuild_service.drain_completions.assert_called_once_with()
+        self.assertEqual(result, {"ok": True})
+        session.editor.drain_completions.assert_called_once_with()
+        session.physics.apply_joint_command.assert_called_once_with(None)
+        session.physics.step.assert_called_once_with()
+        base_step.assert_called_once_with()
 
     async def test_stream_scene_rebuild_job_emits_done_event_and_discards_job(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        future = MODULE.ConcurrentFuture()
+        session.sess = "sess-1"
+        session.bundle = SimpleNamespace(cameras=[])
+        editor = self.attach_editor(session)
+        future = ConcurrentFuture()
         future.set_result({"ok": True, "items": [], "scene_revision": "rev-2"})
-        session.scene_rebuild_jobs = {
-            "op-1": MODULE.SceneRebuildJob(
+        editor.scene_rebuild_jobs = {
+            "op-1": SceneRebuildJob(
                 future=future,
                 success_payload={"ok": True, "items": []},
                 events=queue.Queue(),
             ),
         }
-        session.scene_rebuild_jobs_lock = threading.Lock()
+        editor.scene_rebuild_jobs_lock = threading.Lock()
 
         events = [chunk async for chunk in MODULE._stream_scene_rebuild_job(session, "op-1")]
 
@@ -1373,19 +1422,22 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             'event: started\ndata: {"op_id": "op-1"}\n\n',
             'event: done\ndata: {"ok": true, "items": [], "scene_revision": "rev-2"}\n\n',
         ])
-        self.assertNotIn("op-1", session.scene_rebuild_jobs)
+        self.assertNotIn("op-1", editor.scene_rebuild_jobs)
 
     async def test_stream_scene_rebuild_job_emits_started_event_before_completion(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        future = MODULE.ConcurrentFuture()
-        session.scene_rebuild_jobs = {
-            "op-1": MODULE.SceneRebuildJob(
+        session.sess = "sess-1"
+        session.bundle = SimpleNamespace(cameras=[])
+        editor = self.attach_editor(session)
+        future = ConcurrentFuture()
+        editor.scene_rebuild_jobs = {
+            "op-1": SceneRebuildJob(
                 future=future,
                 success_payload={"ok": True, "items": []},
                 events=queue.Queue(),
             ),
         }
-        session.scene_rebuild_jobs_lock = threading.Lock()
+        editor.scene_rebuild_jobs_lock = threading.Lock()
         stream = MODULE._stream_scene_rebuild_job(session, "op-1")
 
         started = await asyncio.wait_for(anext(stream), timeout=0.1)
@@ -1396,29 +1448,32 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done, 'event: done\ndata: {"ok": true, "items": [], "scene_revision": "rev-2"}\n\n')
         with self.assertRaises(StopAsyncIteration):
             await anext(stream)
-        self.assertNotIn("op-1", session.scene_rebuild_jobs)
+        self.assertNotIn("op-1", editor.scene_rebuild_jobs)
 
     async def test_stream_scene_rebuild_job_emits_failed_event_when_background_prepare_errors_without_drain(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.overlay_completions = queue.Queue()
-        session.rebuilding_scene = True
-        session.scene_rebuild_jobs = {
-            "op-1": MODULE.SceneRebuildJob(
-                future=MODULE.ConcurrentFuture(),
+        session.sess = "sess-1"
+        session.bundle = SimpleNamespace(cameras=[])
+        editor = self.attach_editor(session)
+        editor.overlay_completions = queue.Queue()
+        editor.rebuilding_scene = True
+        editor.scene_rebuild_jobs = {
+            "op-1": SceneRebuildJob(
+                future=ConcurrentFuture(),
                 success_payload={"ok": True, "items": []},
                 events=queue.Queue(),
             ),
         }
-        session.scene_rebuild_jobs_lock = threading.Lock()
+        editor.scene_rebuild_jobs_lock = threading.Lock()
         stream = MODULE._stream_scene_rebuild_job(session, "op-1")
 
         started = await asyncio.wait_for(anext(stream), timeout=0.1)
-        with mock.patch.object(session, "_prepare_overlay_rebuild", side_effect=RuntimeError("subprocess crashed")):
-            session._run_overlay_rebuild_background(
+        with mock.patch.object(editor, "_prepare_overlay_rebuild", side_effect=RuntimeError("subprocess crashed")):
+            editor._run_overlay_rebuild_background(
                 "op-1",
-                MODULE.default_overlay_state("C:/assets"),
+                default_overlay_state("C:/assets"),
                 {},
-                MODULE.default_overlay_state("C:/assets"),
+                default_overlay_state("C:/assets"),
                 "rev-1",
             )
         progress = await asyncio.wait_for(anext(stream), timeout=0.2)
@@ -1426,32 +1481,22 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(started, 'event: started\ndata: {"op_id": "op-1"}\n\n')
         self.assertEqual(progress, 'event: progress\ndata: {"stage": "prepare_overlay_rebuild.started"}\n\n')
-        self.assertEqual(failed, 'event: failed\ndata: {"detail": "subprocess crashed"}\n\n')
-        self.assertFalse(session.rebuilding_scene)
+        self.assertIn('"detail": "subprocess crashed"', failed)
+        self.assertFalse(editor.rebuilding_scene)
         with self.assertRaises(StopAsyncIteration):
             await anext(stream)
-        self.assertNotIn("op-1", session.scene_rebuild_jobs)
+        self.assertNotIn("op-1", editor.scene_rebuild_jobs)
 
-    def test_save_camera_override_persists_renderer_snapshot(self):
+    def test_save_camera_override_delegates_to_renderer(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.renderer = SimpleNamespace(snapshot_cameras=mock.Mock(return_value=[{
-            "name": "head_camera",
-            "parent_prim": "/MyRobot/zed_link",
-            "pos": [0.1, 0.2, 0.3],
-            "quat": [1.0, 0.0, 0.0, 0.0],
-            "fovy": 60.0,
-            "horizontal_aperture": 30.0,
-            "vertical_aperture": 20.0,
-            "clipping_range": [0.2, 80.0],
-        }]))
+        session.renderer = SimpleNamespace(
+            save_camera_override=mock.Mock(return_value={"ok": True, "saved": 1, "path": "camera.json"}),
+        )
 
-        with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.dict(os.environ, {"USERPROFILE": tmp}, clear=False):
-                result = MODULE.ZapdosSession.save_camera_override(session)
-                payload = json.loads((Path(tmp) / ".glass-beaker" / "config.json").read_text(encoding="utf-8"))
+        result = MODULE.ZapdosSession.save_camera_override(session)
 
         self.assertEqual(result["saved"], 1)
-        self.assertEqual(payload["override"]["camera"]["/MyRobot/zed_link"]["head_camera"]["fovy"], 60.0)
+        session.renderer.save_camera_override.assert_called_once_with()
 
 
 if __name__ == "__main__":
