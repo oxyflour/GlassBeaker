@@ -88,7 +88,14 @@ class FfsCodecTest(unittest.TestCase):
         coeffs = torch.tensor(encode_ffs(fields[:2], state), dtype=torch.float64, requires_grad=True)
 
         codec = TorchFfsCodec.from_state(state, dtype=torch.float64)
-        loss = codec.decode(coeffs).square().sum()
+        decoded = codec.decode(coeffs)
+        np.testing.assert_allclose(
+            decoded.detach().cpu().numpy(),
+            decode_ffs(coeffs.detach().cpu().numpy(), state),
+            rtol=0.0,
+            atol=1e-12,
+        )
+        loss = decoded.square().sum()
         loss.backward()
 
         self.assertIsNotNone(coeffs.grad)

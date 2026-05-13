@@ -30,7 +30,6 @@ class SampleRecord:
     ffs: np.ndarray | None = None
     ffs_radiated_power: np.ndarray | None = None
     ffs_stimulated_power: np.ndarray | None = None
-    ffs_coeff: np.ndarray | None = None
 
 
 @dataclass
@@ -405,6 +404,4 @@ def stack_records(records: list[SampleRecord]) -> dict[str, torch.Tensor]:
             np.stack([record.ffs_stimulated_power for record in records]),
             dtype=torch.float32,
         )
-    if records and records[0].ffs_coeff is not None:
-        stacked["ffs_coeff"] = torch.tensor(np.stack([record.ffs_coeff for record in records]), dtype=torch.float32)
     return stacked

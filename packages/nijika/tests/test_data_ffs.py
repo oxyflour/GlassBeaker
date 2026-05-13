@@ -34,9 +34,11 @@ class DataFfsTest(unittest.TestCase):
             self.assertEqual(bundle.port_count, 3)
             self.assertEqual(bundle.records[0].ffs.shape[0], bundle.port_count)
             self.assertEqual(bundle.records[0].ffs.shape[1], len(bundle.ffs_metadata.frequencies_hz))
+            self.assertNotIn("ffs_coeff", type(bundle.records[0]).__dataclass_fields__)
             self.assertIn("ffs", stacked)
             self.assertIn("ffs_radiated_power", stacked)
             self.assertIn("ffs_stimulated_power", stacked)
+            self.assertNotIn("ffs_coeff", stacked)
             self.assertEqual(stacked["ffs"].shape[0], 2)
             self.assertEqual(
                 tuple(stacked["ffs_radiated_power"].shape[:3]),
