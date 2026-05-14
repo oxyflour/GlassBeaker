@@ -17,6 +17,7 @@ from optimizer_objective import (
     antenna_efficiency,
     efficiency_objective,
     enumerate_role_assignments,
+    soft_load_impedance,
 )
 from optimizer_torch_farfield import (
     combine_farfield_basis,
@@ -304,11 +305,15 @@ def _solve_loaded_currents(
     z_matrix = z0 * (eye + s_matrix) @ torch.linalg.inv(eye - s_matrix)
     loaded = z_matrix.clone()
     if termination_probs is not None:
+        z_loads = soft_load_impedance(
+            termination_probs,
+            ground_admittance=ground_admittance,
+            open_admittance=open_admittance,
+        )
         for port in range(ports):
             if port == feed_index:
                 continue
-            y_load = termination_probs[port] * ground_admittance + (1.0 - termination_probs[port]) * open_admittance
-            loaded[..., port, port] = loaded[..., port, port] + 1.0 / (y_load + 1e-12)
+            loaded[..., port, port] = loaded[..., port, port] + z_loads[port].to(loaded.dtype)
     elif terminations is not None:
         for port, term in terminations.items():
             loaded[..., port, port] = loaded[..., port, port] + (0.0 if term == "ground" else 1e6)
@@ -422,6 +427,7 @@ def optimize_model(
     ground_admittance: float = 1e6,
     open_admittance: float = 1e-6,
     efficiency_mode: str = "rez",
+    uncertainty_weight: float = 0.05,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -527,7 +533,7 @@ def optimize_model(
             )
 
         # Uncertainty penalty: discourage optimizer from exploiting uncertain regions
-        unc_penalty = s_std.mean() * 0.5
+        unc_penalty = s_std.mean() * uncertainty_weight
 
         loss = eff_loss + unc_penalty
         loss.backward()

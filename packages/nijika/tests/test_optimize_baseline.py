@@ -496,6 +496,21 @@ class OptimizeBaselineTest(unittest.TestCase):
                     efficiency_mode="farfield",
                 )
 
+    def test_uncertainty_weight_zero_removes_penalty_from_trace_loss(self):
+        checkpoint = {"freq_grid": [1.0e9, 1.5e9, 2.0e9], "port_count": 3, "sample_points": 8}
+        with tempfile.TemporaryDirectory() as tmp:
+            result = optimize_model(
+                model=_ToySurrogate(),
+                checkpoint=checkpoint,
+                config=_toy_config(),
+                output_dir=Path(tmp),
+                steps=1,
+                lr=0.0,
+                top_k=1,
+                uncertainty_weight=0.0,
+            )
+        self.assertAlmostEqual(result["trace"][0]["loss"], result["trace"][0]["eff_loss"], places=9)
+
 
 if __name__ == "__main__":
     unittest.main()

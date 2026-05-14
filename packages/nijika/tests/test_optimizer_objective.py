@@ -16,6 +16,7 @@ from optimizer_objective import (  # noqa: E402
     feed_probabilities,
     loaded_input_admittance,
     s_to_y,
+    soft_load_impedance,
     termination_probabilities,
 )
 
@@ -61,6 +62,19 @@ class OptimizerObjectiveTest(unittest.TestCase):
             reduced.reshape(-1),
             rtol=1e-5,
             atol=1e-5,
+        )
+
+    def test_soft_load_impedance_uses_log_impedance_midpoint(self):
+        z_load = soft_load_impedance(
+            torch.tensor([0.0, 0.5, 1.0], dtype=torch.float32),
+            ground_admittance=1e6,
+            open_admittance=1e-6,
+        )
+        torch.testing.assert_close(
+            z_load,
+            torch.tensor([1.0e6, 1.0, 1.0e-6], dtype=torch.float32),
+            rtol=1e-5,
+            atol=1e-8,
         )
 
 

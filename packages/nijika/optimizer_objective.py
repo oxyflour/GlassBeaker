@@ -6,6 +6,20 @@ from typing import Any
 import torch
 
 
+def soft_load_impedance(
+    termination_probs: torch.Tensor,
+    *,
+    ground_admittance: float = 1e6,
+    open_admittance: float = 1e-6,
+) -> torch.Tensor:
+    probs = torch.clamp(termination_probs, 0.0, 1.0)
+    dtype = probs.dtype
+    device = probs.device
+    z_ground = torch.as_tensor(1.0 / max(ground_admittance, 1e-12), dtype=dtype, device=device)
+    z_open = torch.as_tensor(1.0 / max(open_admittance, 1e-12), dtype=dtype, device=device)
+    return torch.exp(probs * torch.log(z_ground) + (1.0 - probs) * torch.log(z_open))
+
+
 def antenna_efficiency(
     s_matrix: torch.Tensor,
     feed_index: int,
@@ -18,7 +32,7 @@ def antenna_efficiency(
     """Compute antenna total efficiency via S→Z→circuit solve.
 
     Supports both soft (term_probs) and hard (terminations dict) modes.
-    Soft mode: Z_load = (1 / (p*Y_gnd + (1-p)*Y_open)) for each port.
+    Soft mode: interpolate between ground/open in log-impedance space.
     """
     P = s_matrix.size(-1)
     I_mat = torch.eye(P, dtype=s_matrix.dtype, device=s_matrix.device)
@@ -26,15 +40,15 @@ def antenna_efficiency(
 
     Z_mod = Z.clone()
     if termination_probs is not None:
-        Y_gnd = ground_admittance
-        Y_open = open_admittance
+        z_loads = soft_load_impedance(
+            termination_probs,
+            ground_admittance=ground_admittance,
+            open_admittance=open_admittance,
+        )
         for port in range(P):
             if port == feed_index:
                 continue
-            p = termination_probs[port]
-            y_load = p * Y_gnd + (1.0 - p) * Y_open
-            z_load = 1.0 / (y_load + 1e-12)
-            Z_mod[..., port, port] = Z_mod[..., port, port] + z_load
+            Z_mod[..., port, port] = Z_mod[..., port, port] + z_loads[port].to(Z_mod.dtype)
     elif terminations is not None:
         for port, term in terminations.items():
             Z_mod[..., port, port] = Z_mod[..., port, port] + (0.0 if term == "ground" else 1e6)
@@ -58,8 +72,8 @@ def efficiency_objective(
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Maximize efficiency with fully differentiable feed AND termination selection.
 
-    Uses soft interpolation of load impedances instead of hard ground/open
-    thresholding, so gradients flow through termination_logits.
+    Uses soft interpolation of load impedances in log-impedance space so
+    gradients flow through termination_logits without collapsing to near-ground.
     """
     feed_probs = torch.softmax(feed_logits, dim=-1)
     term_probs = torch.sigmoid(termination_logits)
@@ -160,7 +174,12 @@ def soft_role_objective(
     threshold_mag = 10.0 ** (match_threshold_db / 20.0)
     for feed_index in range(s_matrix.size(-1)):
         other_indices = [idx for idx in range(s_matrix.size(-1)) if idx != feed_index]
-        load_mix = open_admittance + (ground_admittance - open_admittance) * term_probs[other_indices]
+        z_load = soft_load_impedance(
+            term_probs[other_indices],
+            ground_admittance=ground_admittance,
+            open_admittance=open_admittance,
+        )
+        load_mix = 1.0 / z_load.clamp_min(1e-12)
         y_in = loaded_input_admittance(y_matrix, feed_index=feed_index, other_load_admittances=load_mix)
         gamma = reflection_from_admittance(y_in, z0=z0)
         per_feed_gamma.append(gamma)
