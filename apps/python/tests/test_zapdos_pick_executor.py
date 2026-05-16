@@ -116,6 +116,32 @@ class _RecordingIK(_MutableIK):
         return super().solve_step(arm, target_pose, gripper_opening, **kwargs)
 
 
+class _FingerCenterIK(_MutableIK):
+    def __init__(self, pose: dict[str, tuple[float, ...]]) -> None:
+        super().__init__(pose)
+        self.finger_pose = pose
+        self.solve_targets: list[dict[str, object]] = []
+
+    def get_gripper_finger_center_pose(self, arm: str) -> dict[str, tuple[float, ...]]:
+        del arm
+        return self.finger_pose
+
+    def solve_step(
+        self,
+        arm: str,
+        target_pose: dict[str, object],
+        gripper_opening: float,
+        **_kwargs: object,
+    ) -> dict[str, list[object]]:
+        del arm, gripper_opening
+        self.solve_targets.append(target_pose)
+        self.finger_pose = {
+            "position": target_pose["position"],  # type: ignore
+            "rotation": target_pose["rotation"],  # type: ignore
+        }
+        return {"name": [], "position": []}
+
+
 class PickExecutorTest(unittest.TestCase):
     def test_execute_runs_stage_sequence_in_order(self):
         physics = _FakePhysics()
@@ -142,6 +168,28 @@ class PickExecutorTest(unittest.TestCase):
                 executor.execute(plan)
 
         self.assertEqual(visited[:2], [(0.46, 0.0, 0.2), (0.46, 0.0, 0.92)])
+
+    def test_execute_drives_finger_center_move_target_through_ik(self):
+        physics = _FakePhysics()
+        ik = _FingerCenterIK(_pose(0.0, 0.0, 0.0))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+
+        executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "stages": [
+                {
+                    "name": "descend_to_grasp",
+                    "kind": "move_pose",
+                    "target_point": "finger_center",
+                    "pose": {"position": [0.1, 0.2, 0.3], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                },
+            ],
+        })
+
+        self.assertTrue(ik.solve_targets)
+        self.assertEqual(ik.solve_targets[-1]["target_point"], "finger_center")
+        self.assertEqual(ik.finger_pose["position"], (0.1, 0.2, 0.3))
 
     def test_execute_reports_stage_name_when_motion_stage_fails(self):
         executor = PickExecutor(_FakePhysics(), bundle=_bundle(), ik_controller=_StaticIK(_pose(1.0, 0.0, 0.0)))

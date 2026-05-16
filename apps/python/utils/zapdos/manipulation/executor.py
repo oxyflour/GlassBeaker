@@ -32,10 +32,15 @@ class PickExecutor:
         self.bundle = bundle
         self.ik_controller = ik_controller
 
-    def current_pose(self, arm: str) -> dict[str, list[float]]:
+    def current_pose(self, arm: str, *, target_point: str = "end_effector") -> dict[str, list[float]]:
         ik = self._ensure_ik()
         ik.sync_joint_state(self.physics.joint_state_msg())
-        pose = ik.get_end_effector_pose(arm)
+        if target_point == "finger_center":
+            pose = ik.get_gripper_finger_center_pose(arm)
+        elif target_point == "end_effector":
+            pose = ik.get_end_effector_pose(arm)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported target point: {target_point}")
         return {
             "position": [float(value) for value in pose["position"]],
             "quat_wxyz": [float(value) for value in pose["rotation"]],
@@ -63,6 +68,11 @@ class PickExecutor:
                 stage_kind = str(stage["kind"])
                 if stage_kind == "move_pose":
                     target = self._pose(stage["pose"])
+                    target_point = str(stage.get("target_point") or "end_effector")
+                    if target_point == "finger_center":
+                        target["target_point"] = target_point
+                    elif target_point != "end_effector":
+                        raise HTTPException(status_code=409, detail=f"Pick failed: unsupported target point {target_point} at {stage_name}")
                     grasp_pose = target if stage_name == "descend_to_grasp" else grasp_pose
                     include_torso = bool(stage.get("include_torso", False))
                     position_only = bool(stage.get("position_only", False))
@@ -149,7 +159,7 @@ class PickExecutor:
         include_torso: bool = False,
         position_only: bool = False,
     ) -> None:
-        start = ik.get_end_effector_pose(arm)
+        start = self._current_pose_for_target(ik, arm, target)
         requested_steps = max(steps, 1)
         if position_only:
             dx = abs(float(target["position"][0]) - float(start["position"][0]))
@@ -158,7 +168,7 @@ class PickExecutor:
             if dx <= POSITION_STAGE_SUBGOAL_TOLERANCE and dy <= POSITION_STAGE_SUBGOAL_TOLERANCE:
                 max_steps = max(DRIVE_SETTLE_STEPS, requested_steps, int(math.ceil(position_error / POSITION_STAGE_STEP_SCALE)))
                 for _ in range(max_steps):
-                    current = ik.get_end_effector_pose(arm)
+                    current = self._current_pose_for_target(ik, arm, target)
                     if self._distance(current["position"], target["position"]) <= DRIVE_POSE_TOLERANCE:
                         return
                     self.physics.apply_joint_command(ik.solve_step(
@@ -182,8 +192,10 @@ class PickExecutor:
                     "position": tuple((1.0 - alpha) * a + alpha * b for a, b in zip(start["position"], target["position"])),
                     "rotation": target["rotation"],
                 }
+                if target.get("target_point") == "finger_center":
+                    subgoal["target_point"] = "finger_center"  # type: ignore
                 for _ in range(POSITION_STAGE_SEGMENT_STEPS):
-                    current = ik.get_end_effector_pose(arm)
+                    current = self._current_pose_for_target(ik, arm, subgoal)
                     if self._distance(current["position"], subgoal["position"]) <= subgoal_tolerance:
                         break
                     self.physics.apply_joint_command(ik.solve_step(
@@ -206,6 +218,8 @@ class PickExecutor:
                 "position": tuple((1.0 - alpha) * a + alpha * b for a, b in zip(start["position"], target["position"])),
                 "rotation": tuple(self._normalize((1.0 - alpha) * np.asarray(start["rotation"]) + alpha * np.asarray(target["rotation"]))),
             }
+            if target.get("target_point") == "finger_center":
+                pose["target_point"] = "finger_center"  # type: ignore
             self.physics.apply_joint_command(ik.solve_step(
                 arm,
                 pose,
@@ -215,7 +229,7 @@ class PickExecutor:
             ))
             self.physics.step()
             ik.sync_joint_state(self.physics.joint_state_msg())
-            current = ik.get_end_effector_pose(arm)
+            current = self._current_pose_for_target(ik, arm, target)
             current_error = self._distance(current["position"], target["position"])
             best_error = min(best_error, current_error)
             total_steps += 1
@@ -226,7 +240,7 @@ class PickExecutor:
             ):
                 return
         for _ in range(DRIVE_SETTLE_STEPS):
-            current = ik.get_end_effector_pose(arm)
+            current = self._current_pose_for_target(ik, arm, target)
             if self._distance(current["position"], target["position"]) <= DRIVE_POSE_TOLERANCE:
                 if position_only or self._rotation_error(current["rotation"], target["rotation"]) <= DRIVE_ROTATION_TOLERANCE:
                     return
@@ -239,7 +253,7 @@ class PickExecutor:
             ))
             self.physics.step()
             ik.sync_joint_state(self.physics.joint_state_msg())
-            current = ik.get_end_effector_pose(arm)
+            current = self._current_pose_for_target(ik, arm, target)
             current_error = self._distance(current["position"], target["position"])
             best_error = min(best_error, current_error)
             total_steps += 1
@@ -255,6 +269,13 @@ class PickExecutor:
         position = tuple(float(v) for v in pose.get("position", (0.0, 0.0, 0.0)))
         rotation = tuple(float(v) for v in pose.get("quat_wxyz") or pose.get("rotation", (1.0, 0.0, 0.0, 0.0)))
         return {"position": position, "rotation": rotation}
+
+    def _current_pose_for_target(self, ik: IKController, arm: str, target: dict[str, object]) -> dict[str, tuple[float, ...]]:
+        if target.get("target_point") == "finger_center":
+            finger_center_pose = getattr(ik, "get_gripper_finger_center_pose", None)
+            if callable(finger_center_pose):
+                return finger_center_pose(arm)
+        return ik.get_end_effector_pose(arm)
 
     def _normalize(self, quat: np.ndarray) -> np.ndarray:
         norm = np.linalg.norm(quat)
@@ -298,7 +319,7 @@ class PickExecutor:
         tolerance: float,
         stage: str,
     ) -> None:
-        current = ik.get_end_effector_pose(arm)
+        current = self._current_pose_for_target(ik, arm, target)
         error = self._distance(current["position"], target["position"])
         if error > tolerance:
             raise HTTPException(status_code=409, detail=f"Pick failed: {stage} pose error {error:.3f} exceeds tolerance")
@@ -310,7 +331,8 @@ class PickExecutor:
         target_body: str,
         tolerance: float,
     ) -> None:
-        gripper = ik.get_end_effector_pose(arm)
+        finger_center_pose = getattr(ik, "get_gripper_finger_center_pose", None)
+        gripper = finger_center_pose(arm) if callable(finger_center_pose) else ik.get_end_effector_pose(arm)
         target_position: tuple[float, ...] | None = None
         body_world_aabb = getattr(self.physics, "body_world_aabb", None)
         if callable(body_world_aabb):

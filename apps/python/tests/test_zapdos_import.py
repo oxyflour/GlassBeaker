@@ -1572,12 +1572,15 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(plan["stages"][1]["position_only"])
         self.assertEqual(plan["stages"][1]["steps"], 20)
         self.assertFalse(plan["stages"][1].get("include_torso", False))
+        self.assertEqual(plan["stages"][1]["target_point"], "finger_center")
         self.assertEqual(plan["stages"][1]["pose"]["position"], [0.5, 0.0, 0.95])
         self.assertTrue(plan["stages"][2]["position_only"])
         self.assertEqual(plan["stages"][2]["steps"], 24)
         self.assertFalse(plan["stages"][2].get("include_torso", False))
+        self.assertEqual(plan["stages"][2]["target_point"], "finger_center")
         self.assertEqual(plan["stages"][2]["pose"]["position"], [0.5, 0.0, 0.83])
         self.assertEqual(plan["stages"][4]["steps"], 20)
+        self.assertEqual(plan["stages"][4]["target_point"], "finger_center")
         self.assertEqual(plan["stages"][4]["pose"]["position"], [0.4, 0.18, 0.92])
 
     def test_manipulation_runtime_executes_arm_only_place_apple_plan(self):

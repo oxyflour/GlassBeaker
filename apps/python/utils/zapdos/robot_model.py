@@ -24,6 +24,11 @@ def get_robot_model_key_from_usd(robot_usd: str | Path | None) -> RobotModelKey 
     for key, value in ROBOT_USD_BY_KEY.items():
         if value == resolved:
             return key
+    full_path = str(resolved).lower()
+    if "r1pro" in full_path:
+        return "r1pro"
+    if "moz1" in full_path or "spirit01" in full_path:
+        return "moz1"
     return None
 
 

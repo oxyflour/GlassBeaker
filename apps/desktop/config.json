@@ -2,10 +2,102 @@
   "override": {
     "position": {
       "r1pro": {
-        "left_arm_joint1":  0.1,
-        "left_arm_joint4": -0.2,
-        "right_arm_joint1":  0.1,
-        "right_arm_joint4": -0.2
+        "left_arm_joint1":  0.2,
+        "left_arm_joint4": -0.5,
+        "right_arm_joint1":  0.2,
+        "right_arm_joint4": -0.5
+      }
+    },
+    "joint_drive": {
+      "r1pro": {
+        "steer_motor_joint1": {
+          "damping": 40.0
+        },
+        "wheel_motor_joint1": {
+          "damping": 40.0
+        },
+        "steer_motor_joint2": {
+          "damping": 40.0
+        },
+        "wheel_motor_joint2": {
+          "damping": 40.0
+        },
+        "steer_motor_joint3": {
+          "damping": 40.0
+        },
+        "wheel_motor_joint3": {
+          "damping": 40.0
+        },
+        "torso_joint1": {
+          "damping": 80.0,
+          "forcerange": [
+            -180.0,
+            180.0
+          ]
+        },
+        "torso_joint2": {
+          "damping": 80.0,
+          "forcerange": [
+            -180.0,
+            180.0
+          ]
+        },
+        "torso_joint3": {
+          "damping": 80.0,
+          "forcerange": [
+            -180.0,
+            180.0
+          ]
+        },
+        "torso_joint4": {
+          "damping": 60.0,
+          "forcerange": [
+            -150.0,
+            150.0
+          ]
+        },
+        "left_arm_joint1": {
+          "damping": 40.0
+        },
+        "left_arm_joint2": {
+          "damping": 40.0
+        },
+        "left_arm_joint3": {
+          "damping": 40.0
+        },
+        "left_arm_joint4": {
+          "damping": 40.0
+        },
+        "left_arm_joint5": {
+          "damping": 40.0
+        },
+        "left_arm_joint6": {
+          "damping": 40.0
+        },
+        "left_arm_joint7": {
+          "damping": 40.0
+        },
+        "right_arm_joint1": {
+          "damping": 40.0
+        },
+        "right_arm_joint2": {
+          "damping": 40.0
+        },
+        "right_arm_joint3": {
+          "damping": 40.0
+        },
+        "right_arm_joint4": {
+          "damping": 40.0
+        },
+        "right_arm_joint5": {
+          "damping": 40.0
+        },
+        "right_arm_joint6": {
+          "damping": 40.0
+        },
+        "right_arm_joint7": {
+          "damping": 40.0
+        }
       }
     },
     "camera": {

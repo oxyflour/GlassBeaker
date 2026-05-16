@@ -104,6 +104,7 @@ def _move_stage(
             "position": [round(float(x), 6), round(float(y), 6), round(float(z), 6)],
             "quat_wxyz": [round(float(value), 6) for value in quat_wxyz],
         },
+        "target_point": "finger_center",
     }
 
 

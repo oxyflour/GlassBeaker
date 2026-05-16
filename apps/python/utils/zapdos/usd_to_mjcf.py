@@ -35,6 +35,7 @@ import xml.etree.ElementTree as ET
 from PIL import Image
 
 from pxr import Usd, UsdGeom, UsdShade
+from utils.zapdos.joint_drive_override import JointDriveOverride
 from utils.zapdos.usd_asset_cache import (
     file_digest,
     materialize_cached_file,
@@ -312,6 +313,7 @@ class JointData:
     stiffness: Optional[float] = None
     springref: Optional[float] = None
     actuatorfrcrange: Optional[Tuple[float, float]] = None
+    position_kp: Optional[float] = None
 
 
 @dataclass
@@ -431,6 +433,7 @@ class USDToMJCFConverter:
         output_xml: Path,
         model_name: str = "converted_from_usd",
         force_body_paths: set[str] | None = None,
+        joint_drive_overrides: Dict[str, JointDriveOverride] | None = None,
         stage=None,
     ):
         self.usd_path = Path(usd_path)
@@ -460,6 +463,7 @@ class USDToMJCFConverter:
         up = UsdGeom.GetStageUpAxis(self.stage) # type: ignore
         self.stage_up_axis = str(up) if up is not None else "Z"
         self.force_body_paths = set(force_body_paths or ())
+        self.joint_drive_overrides = dict(joint_drive_overrides or {})
 
         self.nodes: Dict[str, BodyNode] = {}
         self.world_cameras: List[CameraData] = []
@@ -1498,6 +1502,7 @@ class USDToMJCFConverter:
             self.nodes[path] = node
 
         self.parse_and_apply_joints()
+        self.apply_joint_drive_overrides()
         self.rebuild_children()
         self.exclude_gripper_finger_siblings()
         self.recompute_local_poses()
@@ -1583,12 +1588,37 @@ class USDToMJCFConverter:
             joint.actuatorfrcrange is not None,
         ))
 
+    def apply_joint_drive_overrides(self):
+        if not self.joint_drive_overrides:
+            return
+        joints = {
+            node.joint.name: node.joint
+            for node in self.nodes.values()
+            if node.joint is not None
+        }
+        for joint_name, override in self.joint_drive_overrides.items():
+            joint = joints.get(joint_name)
+            if joint is None:
+                raise RuntimeError(f"Joint drive override references unknown joint: {joint_name}")
+            if "damping" in override:
+                joint.damping = float(override["damping"])
+            if "stiffness" in override:
+                joint.stiffness = float(override["stiffness"])
+            if "forcerange" in override:
+                joint.actuatorfrcrange = tuple(float(value) for value in override["forcerange"])
+            if "kp" in override:
+                if not self.uses_position_actuator(joint):
+                    raise RuntimeError(f"Joint drive override kp requires a position actuator: {joint_name}")
+                joint.position_kp = float(override["kp"])
+
     def range_is_finite(self, value_range: Optional[Tuple[float, float]]) -> bool:
         if value_range is None:
             return False
         return math.isfinite(float(value_range[0])) and math.isfinite(float(value_range[1]))
 
     def estimate_position_kp(self, joint: JointData) -> float:
+        if joint.position_kp is not None:
+            return float(joint.position_kp)
         if joint.stiffness is not None and joint.stiffness > 0.0:
             return float(joint.stiffness)
 

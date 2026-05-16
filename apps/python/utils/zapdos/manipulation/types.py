@@ -57,6 +57,7 @@ class PickStage(TypedDict):
     name: str
     kind: str
     pose: NotRequired[PickPose]
+    target_point: NotRequired[str]
     include_torso: NotRequired[bool]
     position_only: NotRequired[bool]
     steps: NotRequired[int]

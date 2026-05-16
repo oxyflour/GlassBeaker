@@ -77,11 +77,8 @@ class Session:
     
     async def stream(self):
         while self.is_active():
-            try:
-                msg = self.msgs.get(False)
-                yield f"data: {json.dumps(msg)}\n\n"
-            except queue.Empty:
-                await asyncio.sleep(0.1)
+            msg = await asyncio.to_thread(lambda: self.msgs.get())
+            yield f"data: {json.dumps(msg)}\n\n"
         msg = { 'inactive': True }
         yield f"data: {json.dumps(msg)}\n\n"
     

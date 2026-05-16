@@ -254,6 +254,7 @@ class ZapdosManipulationTest(unittest.TestCase):
         self.assertTrue(all(stage["kind"] == "move_pose" for stage in plan["stages"] if stage["name"] != "close_gripper"))
         self.assertEqual(plan["stages"][0]["pose"]["position"], [0.0, 0.0, 1.03])
         self.assertEqual(plan["stages"][1]["pose"]["position"], [0.5, 0.0, 1.03])
+        self.assertTrue(all(stage.get("target_point") == "finger_center" for stage in plan["stages"] if stage["name"] != "close_gripper"))
         self.assertEqual(plan["stages"][2]["pose"]["position"], [0.5, 0.0, 0.95])
         self.assertEqual(plan["stages"][3]["pose"]["position"], [0.5, 0.0, 0.83])
         self.assertEqual(plan["stages"][4]["width"], 0.0)

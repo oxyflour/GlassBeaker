@@ -121,7 +121,7 @@ class ManipulationRuntime:
             if "arm" in params or accepts_any_kwargs:
                 kwargs["arm"] = arm
             if "start_pose" in params or accepts_any_kwargs:
-                kwargs["start_pose"] = self.executor.current_pose(arm)
+                kwargs["start_pose"] = self.executor.current_pose(arm, target_point="finger_center")
             return self.planning_fn(grounded["target"], **kwargs)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -138,8 +138,14 @@ class ManipulationRuntime:
         center = self._target_center(target)
         side = 1.0 if arm == "left" else -1.0
         current_pose = self.executor.current_pose(arm)
+        quat_wxyz = list(current_pose["quat_wxyz"])
         grasp_position = [round(center[0], 6), round(center[1], 6), round(center[2], 6)]
         above_position = [grasp_position[0], grasp_position[1], round(center[2] + 0.12, 6)]
+        retreat_position = [
+            round(center[0] - 0.10, 6),
+            round(center[1] + side * 0.18, 6),
+            round(center[2] + 0.09, 6),
+        ]
         return {
             "kind": "pick",
             "arm": arm,
@@ -158,8 +164,9 @@ class ManipulationRuntime:
                     "kind": "move_pose",
                     "pose": {
                         "position": above_position,
-                        "quat_wxyz": list(current_pose["quat_wxyz"]),
+                        "quat_wxyz": quat_wxyz,
                     },
+                    "target_point": "finger_center",
                     "position_only": True,
                     "steps": 20,
                     "tolerance": 0.05,
@@ -169,8 +176,9 @@ class ManipulationRuntime:
                     "kind": "move_pose",
                     "pose": {
                         "position": grasp_position,
-                        "quat_wxyz": list(current_pose["quat_wxyz"]),
+                        "quat_wxyz": quat_wxyz,
                     },
+                    "target_point": "finger_center",
                     "position_only": True,
                     "steps": 24,
                     "tolerance": 0.05,
@@ -180,13 +188,10 @@ class ManipulationRuntime:
                     "name": "retreat",
                     "kind": "move_pose",
                     "pose": {
-                        "position": [
-                            round(center[0] - 0.10, 6),
-                            round(center[1] + side * 0.18, 6),
-                            round(center[2] + 0.09, 6),
-                        ],
-                        "quat_wxyz": list(current_pose["quat_wxyz"]),
+                        "position": retreat_position,
+                        "quat_wxyz": quat_wxyz,
                     },
+                    "target_point": "finger_center",
                     "position_only": True,
                     "steps": 20,
                     "tolerance": 0.08,

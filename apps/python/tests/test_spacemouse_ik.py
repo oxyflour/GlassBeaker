@@ -95,6 +95,31 @@ class SpaceMouseIKControllerTest(unittest.TestCase):
         finally:
             physics.close()
 
+    def test_finger_center_target_converts_to_gripper_joint_target_with_rotation(self):
+        arm = "left"
+        end_effector = self.controller.get_end_effector_pose(arm)
+        finger_center = self.controller.get_gripper_finger_center_pose(arm)
+        current_rotation = _quat_matrix(end_effector["rotation"])
+        local_offset = current_rotation.T @ (
+            np.asarray(finger_center["position"], dtype=float) - np.asarray(end_effector["position"], dtype=float)
+        )
+        target_rotation = (
+            0.7071067811865476,
+            0.0,
+            0.7071067811865475,
+            0.0,
+        )
+        desired_finger_center = (0.5, -0.1, 0.83)
+
+        gripper_joint_target = self.controller.finger_center_pose_to_end_effector_pose(arm, {
+            "position": desired_finger_center,
+            "rotation": target_rotation,
+        })
+
+        expected = np.asarray(desired_finger_center, dtype=float) - _quat_matrix(target_rotation) @ local_offset
+        self.assertLess(math.dist(gripper_joint_target["position"], tuple(expected.tolist())), 1e-9)
+        self.assertEqual(gripper_joint_target["rotation"], target_rotation)
+
     def test_left_arm_position_only_with_torso_reaches_vertical_target(self):
         body_map = json.loads(self.controller.bundle.body_map_json.read_text(encoding="utf-8"))
         physics = MujocoPhysics("ik-test", self.controller.bundle, body_map)
@@ -127,6 +152,15 @@ class SpaceMouseIKControllerTest(unittest.TestCase):
             self.assertLess(abs(reached["position"][1] - start["position"][1]), 0.02)
         finally:
             physics.close()
+
+
+def _quat_matrix(quat_wxyz: tuple[float, ...]) -> np.ndarray:
+    w, x, y, z = quat_wxyz
+    return np.array([
+        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+        [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+        [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+    ], dtype=float)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,13 @@ class SpaceMouseArmConfigTest(unittest.TestCase):
             ("left_gripper_finger_joint1", "left_gripper_finger_joint2"),
         )
         self.assertEqual(config.end_effector_body, "Root_r1_pro_with_gripper_left_gripper_link")
+        self.assertEqual(
+            config.gripper_finger_body_names,
+            (
+                "Root_r1_pro_with_gripper_left_gripper_finger_link1",
+                "Root_r1_pro_with_gripper_left_gripper_finger_link2",
+            ),
+        )
 
     def test_right_arm_config_matches_r1pro_names(self):
         config = get_arm_config("right")
@@ -54,6 +61,13 @@ class SpaceMouseArmConfigTest(unittest.TestCase):
             ("right_gripper_finger_joint1", "right_gripper_finger_joint2"),
         )
         self.assertEqual(config.end_effector_body, "Root_r1_pro_with_gripper_right_gripper_link")
+        self.assertEqual(
+            config.gripper_finger_body_names,
+            (
+                "Root_r1_pro_with_gripper_right_gripper_finger_link1",
+                "Root_r1_pro_with_gripper_right_gripper_finger_link2",
+            ),
+        )
 
     def test_configs_only_expose_left_and_right(self):
         self.assertEqual(sorted(ARM_CONFIGS), ["left", "right"])

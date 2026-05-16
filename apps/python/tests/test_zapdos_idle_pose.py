@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from functools import lru_cache
 from pathlib import Path
 from unittest import mock
@@ -133,6 +134,36 @@ class ZapdosIdlePoseTest(unittest.TestCase):
 
         self.assertAlmostEqual(joints["left_arm_joint2"], 0.17)
         self.assertNotIn("missing_joint", joints)
+
+    def test_render_bundle_applies_joint_drive_override_from_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            default_path = Path(tmp) / "desktop-config.json"
+            default_path.write_text(json.dumps({
+                "override": {
+                    "joint_drive": {
+                        "r1pro": {
+                            "torso_joint1": {
+                                "damping": 80.0,
+                                "kp": 180.0,
+                                "forcerange": [-150.0, 150.0],
+                            }
+                        }
+                    }
+                }
+            }), encoding="utf-8")
+            with mock.patch("utils.user_config.default_config_path", return_value=default_path):
+                with mock.patch.dict(os.environ, {"DEBUG_MUJOCO_VIEWER": "", "USERPROFILE": ""}, clear=False):
+                    bundle = ensure_render_bundle(R1PRO_USD, DEFAULT_SCENE_USD)
+
+        root = ET.parse(bundle.mjcf).getroot()
+        joint_xml = root.find(".//joint[@name='torso_joint1']")
+        self.assertIsNotNone(joint_xml)
+        self.assertEqual(joint_xml.attrib.get("damping"), "80")
+        self.assertEqual(joint_xml.attrib.get("actuatorfrcrange"), "-150 150")
+        actuator = root.find("./actuator/position[@joint='torso_joint1']")
+        self.assertIsNotNone(actuator)
+        self.assertEqual(actuator.attrib.get("kp"), "180")
+        self.assertEqual(actuator.attrib.get("forcerange"), "-150 150")
 
     def test_mujoco_physics_rejects_non_object_idle_pose_override(self):
         with self.assertRaisesRegex(RuntimeError, "override.position.r1pro must be a JSON object"):

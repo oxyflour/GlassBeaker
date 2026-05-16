@@ -11,6 +11,7 @@ from pxr import Usd
 
 from utils.camera_override import apply_camera_overrides
 from utils.user_config import read_user_config
+from utils.zapdos.joint_drive_override import load_joint_drive_overrides
 from utils.zapdos.physics.mujoco_tools import compile_urdf_to_mjcf, merge_mjcf_files
 
 from .camera_specs import build_render_cameras
@@ -38,6 +39,8 @@ BUNDLE_DEPENDENCY_FILES = (
     Path(__file__).with_name("camera_specs.py").resolve(),
     Path(__file__).with_name("scene_catalog.py").resolve(),
     Path(__file__).with_name("usd_to_mjcf_adapter.py").resolve(),
+    REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "joint_drive_override.py",
+    REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "robot_model.py",
     REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "usd_to_mjcf.py",
 )
 
@@ -189,6 +192,7 @@ def _build_sim_scene_mjcf(
     fallback_scene_usd: Path | None,
     force_body_paths: set[str],
 ) -> None:
+    joint_drive_overrides = load_joint_drive_overrides(descriptor.visual_usd)
     if descriptor.physics_input.suffix.lower() == ".urdf":
         robot_xml = mjcf.with_name("robot.xml")
         scene_xml = mjcf.with_name("scene.xml")
@@ -199,6 +203,7 @@ def _build_sim_scene_mjcf(
             scene_xml,
             "scene_bundle",
             force_body_paths=force_body_paths,
+            joint_drive_overrides=joint_drive_overrides,
             stage=sim_stage,
         ).convert()
         merge_mjcf_files(robot_xml, scene_xml, mjcf)
@@ -209,6 +214,7 @@ def _build_sim_scene_mjcf(
         mjcf,
         "r1pro_bundle",
         force_body_paths=force_body_paths,
+        joint_drive_overrides=joint_drive_overrides,
         stage=sim_stage,
     ).convert()
 

@@ -9,6 +9,7 @@ class ArmConfig:
     joint_names: tuple[str, ...]
     gripper_joint_names: tuple[str, str]
     end_effector_body: str
+    gripper_finger_body_names: tuple[str, str]
 
 
 ARM_CONFIGS = {
@@ -25,6 +26,10 @@ ARM_CONFIGS = {
         ),
         gripper_joint_names=("left_gripper_finger_joint1", "left_gripper_finger_joint2"),
         end_effector_body="Root_r1_pro_with_gripper_left_gripper_link",
+        gripper_finger_body_names=(
+            "Root_r1_pro_with_gripper_left_gripper_finger_link1",
+            "Root_r1_pro_with_gripper_left_gripper_finger_link2",
+        ),
     ),
     "right": ArmConfig(
         arm="right",
@@ -39,6 +44,10 @@ ARM_CONFIGS = {
         ),
         gripper_joint_names=("right_gripper_finger_joint1", "right_gripper_finger_joint2"),
         end_effector_body="Root_r1_pro_with_gripper_right_gripper_link",
+        gripper_finger_body_names=(
+            "Root_r1_pro_with_gripper_right_gripper_finger_link1",
+            "Root_r1_pro_with_gripper_right_gripper_finger_link2",
+        ),
     ),
 }
 

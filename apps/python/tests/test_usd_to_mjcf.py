@@ -401,6 +401,63 @@ def Xform "World"
             self.assertEqual(actuator.attrib.get("joint"), joint_xml.attrib["name"])
             mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
 
+    def test_joint_drive_override_updates_position_drive_joint_and_actuator(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "position_drive_override.usda"
+            output_xml = Path(tmpdir) / "position_drive_override.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            base = UsdGeom.Xform.Define(stage, "/World/Base")
+            arm = UsdGeom.Xform.Define(stage, "/World/Arm")
+            for prim in (base.GetPrim(), arm.GetPrim()):
+                UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(1.0)
+
+            joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Arm/RevoluteJoint")
+            joint.CreateBody0Rel().SetTargets([base.GetPath()])
+            joint.CreateBody1Rel().SetTargets([arm.GetPath()])
+            joint.CreateAxisAttr("Z")
+            joint.CreateLowerLimitAttr(-45.0)
+            joint.CreateUpperLimitAttr(45.0)
+            joint_prim = joint.GetPrim()
+            joint_prim.CreateAttribute(
+                "drive:angular:physics:damping",
+                Sdf.ValueTypeNames.Float,
+            ).Set(10.0)
+            joint_prim.CreateAttribute(
+                "drive:angular:physics:stiffness",
+                Sdf.ValueTypeNames.Float,
+            ).Set(100.0)
+            joint_prim.CreateAttribute(
+                "drive:angular:physics:targetPosition",
+                Sdf.ValueTypeNames.Float,
+            ).Set(15.0)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(
+                scene_path,
+                output_xml,
+                model_name="position_drive_override",
+                joint_drive_overrides={
+                    "RevoluteJoint": {
+                        "damping": 40.0,
+                        "kp": 250.0,
+                        "forcerange": (-12.0, 18.0),
+                    }
+                },
+            ).convert()
+
+            root = ET.parse(output_xml).getroot()
+            joint_xml = root.find(".//joint")
+            self.assertIsNotNone(joint_xml)
+            self.assertEqual(joint_xml.attrib.get("damping"), fmt_f(40.0))
+            self.assertEqual(joint_xml.attrib.get("actuatorfrcrange"), "-12 18")
+            actuator = root.find("./actuator/position")
+            self.assertIsNotNone(actuator)
+            self.assertEqual(actuator.attrib.get("kp"), fmt_f(250.0))
+            self.assertEqual(actuator.attrib.get("forcerange"), "-12 18")
+            mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
+
     def test_explicit_collision_enabled_visual_geom_keeps_contact_bits(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scene_path = Path(tmpdir) / "visual_collision.usda"

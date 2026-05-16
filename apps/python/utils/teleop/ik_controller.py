@@ -20,6 +20,7 @@ class IKController:
         self.data = mujoco.MjData(self.model)  # type: ignore
         self._joint_ids = {}
         self._body_ids = {}
+        self._finger_body_ids = {}
         self._joint_limits = {}
         self._torso_joint_names = []
         for name in TORSO_JOINT_NAMES:
@@ -38,6 +39,10 @@ class IKController:
                 self.model,
                 mujoco.mjtObj.mjOBJ_BODY, # type: ignore
                 config.end_effector_body,
+            )
+            self._finger_body_ids[arm] = tuple(
+                mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)  # type: ignore
+                for name in config.gripper_finger_body_names
             )
             for name in (*config.joint_names, *config.gripper_joint_names):
                 joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)  # type: ignore
@@ -73,6 +78,30 @@ class IKController:
             "rotation": rotation,
         }
 
+    def get_gripper_finger_center_pose(self, arm: str) -> dict[str, tuple[float, ...]]:
+        end_effector = self.get_end_effector_pose(arm)
+        positions = [
+            body_world_pose(self.data, body_id)[:3, 3]
+            for body_id in self._finger_body_ids[arm]
+        ]
+        center = np.mean(np.asarray(positions, dtype=float), axis=0)
+        return {
+            "position": tuple(float(value) for value in center),
+            "rotation": end_effector["rotation"],
+        }
+
+    def finger_center_pose_to_end_effector_pose(self, arm: str, pose: dict) -> dict[str, tuple[float, ...]]:
+        end_effector_matrix = body_world_pose(self.data, self._body_ids[arm])
+        finger_center = np.asarray(self.get_gripper_finger_center_pose(arm)["position"], dtype=float)
+        local_offset = end_effector_matrix[:3, :3].T @ (finger_center - end_effector_matrix[:3, 3])
+        rotation = tuple(float(value) for value in pose["rotation"])
+        target_rotation = self._quat_matrix(rotation)
+        target_position = np.asarray(pose["position"], dtype=float) - target_rotation @ local_offset
+        return {
+            "position": tuple(float(value) for value in target_position),
+            "rotation": rotation,
+        }
+
     def solve_step(
         self,
         arm: str,
@@ -91,8 +120,15 @@ class IKController:
             for name in joint_names
         )
         current = self.get_end_effector_pose(arm)
-        pos_err = np.asarray(target_pose["position"], dtype=float) - np.asarray(current["position"], dtype=float)
-        rot_err = self._rotation_error(current["rotation"], target_pose["rotation"])
+        resolved_target = target_pose
+        if target_pose.get("target_point") == "finger_center":
+            target_rotation = current["rotation"] if position_only else target_pose["rotation"]
+            resolved_target = self.finger_center_pose_to_end_effector_pose(arm, {
+                "position": target_pose["position"],
+                "rotation": target_rotation,
+            })
+        pos_err = np.asarray(resolved_target["position"], dtype=float) - np.asarray(current["position"], dtype=float)
+        rot_err = self._rotation_error(current["rotation"], resolved_target["rotation"])
         jacp = np.zeros((3, self.model.nv), dtype=float)
         jacr = np.zeros((3, self.model.nv), dtype=float)
         mujoco.mj_jac(self.model, self.data, jacp, jacr, np.asarray(current["position"], dtype=float), self._body_ids[arm])  # type: ignore
@@ -125,6 +161,11 @@ class IKController:
             return np.zeros(3, dtype=float)
         angle = 2.0 * math.atan2(norm, max(q_err[0], 1e-9))
         return q_err[1:] / norm * angle
+
+    def _quat_matrix(self, quat_wxyz: tuple[float, ...]) -> np.ndarray:
+        rotation = np.empty(9, dtype=float)
+        mujoco.mju_quat2Mat(rotation, np.asarray(quat_wxyz, dtype=float))  # type: ignore
+        return rotation.reshape(3, 3)
 
     def _quat_conj(self, quat: np.ndarray) -> np.ndarray:
         return np.array([quat[0], -quat[1], -quat[2], -quat[3]], dtype=float)
