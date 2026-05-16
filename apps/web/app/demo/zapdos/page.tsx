@@ -3,21 +3,19 @@
 import { Suspense, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-import { ZapdosScene } from "../../../components/zapdos/ZapdosScene";
 import {
+  ZapdosScene,
   buildRobotModelHref,
-  getRobotModelKeyFromUsd,
-  readPersistedRobotModelKey,
-  resolveEffectiveRobotUsd,
-  writePersistedRobotModelKey,
-  type RobotModelKey,
-} from "../../../components/zapdos/robot-model";
-import {
   buildZapdosInitStreamUrl,
   buildZapdosSessionStorageKey,
+  getRobotModelKeyFromUsd,
   parseZapdosInitEvent,
+  readPersistedRobotModelKey,
+  resolveEffectiveRobotUsd,
+  type RobotModelKey,
   type ZapdosInitPhase,
-} from "../../../components/zapdos/zapdos-import";
+  writePersistedRobotModelKey,
+} from "../../../components/zapdos";
 import { useLocalUUID } from "../../../utils/hooks";
 
 function ZapdosStatus({ message }: { message: string }) {

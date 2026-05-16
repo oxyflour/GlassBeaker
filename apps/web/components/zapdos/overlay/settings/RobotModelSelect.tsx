@@ -2,7 +2,7 @@
 
 import type { ChangeEvent } from "react";
 
-import type { RobotModelKey } from "./robot-model";
+import type { RobotModelKey } from "../../session/robot-model";
 
 export function RobotModelSelect({
   activeRobotModelKey,

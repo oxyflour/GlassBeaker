@@ -2,13 +2,13 @@
 
 import { useState } from "react";
 
-import { AddBenchmarkTableButton } from "./AddBenchmarkTableButton";
-import { CameraOverrideSaveButton } from "./CameraOverrideSaveButton";
-import { GrabTheAppleButton } from "./GrabTheAppleButton";
-import { PlaceTheAppleButton } from "./PlaceTheAppleButton";
-import { RobotModelSelect } from "./RobotModelSelect";
-import { SpaceMouseModeSelect } from "./SpaceMouseModeSelect";
-import type { RobotModelKey } from "./robot-model";
+import { AddBenchmarkTableButton } from "./debug/AddBenchmarkTableButton";
+import { GrabTheAppleButton } from "./debug/GrabTheAppleButton";
+import { PlaceTheAppleButton } from "./debug/PlaceTheAppleButton";
+import { CameraOverrideSaveButton } from "./settings/CameraOverrideSaveButton";
+import { RobotModelSelect } from "./settings/RobotModelSelect";
+import { SpaceMouseModeSelect } from "./settings/SpaceMouseModeSelect";
+import type { RobotModelKey } from "../session/robot-model";
 
 export function ZapdosTopOverlay({
   activeRobotModelKey,

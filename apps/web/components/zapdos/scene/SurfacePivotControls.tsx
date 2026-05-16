@@ -13,7 +13,7 @@ import {
     updateGesture,
     type SurfacePivotGesture,
     type SurfacePivotRig,
-} from "../../utils/surfacePivotMath"
+} from "../../../utils/surfacePivotMath"
 
 const DEFAULT_PIVOT = new Vector3(0, 0, 0)
 const DOLLY_SPEED = 0.002

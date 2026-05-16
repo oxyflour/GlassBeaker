@@ -3,7 +3,7 @@ import {
   setSceneAssets,
   type SceneOperationStreamFactory,
   type SetSceneAssetsInput,
-} from "./zapdos-tool-api";
+} from "../../agent/zapdos-tool-api";
 
 const BENCHMARK_TABLE_ASSETS: SetSceneAssetsInput["assets"] = [{
   asset_id: "benchmark_table_000",

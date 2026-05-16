@@ -7,7 +7,6 @@ import mujoco  # type: ignore
 import numpy as np
 
 from .arm_config import get_arm_config
-from .grasp_frame import apply_grasp_frame, load_grasp_frames, matrix_to_pose
 from utils.zapdos.bundle import ensure_render_bundle
 from utils.zapdos.physics.mujoco_tools import body_world_pose
 
@@ -23,7 +22,6 @@ class IKController:
         self._body_ids = {}
         self._joint_limits = {}
         self._torso_joint_names = []
-        self._grasp_frames = load_grasp_frames(robot_usd.resolve())
         for name in TORSO_JOINT_NAMES:
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)  # type: ignore
             if joint_id >= 0:
@@ -63,7 +61,13 @@ class IKController:
         mujoco.mj_forward(self.model, self.data)  # type: ignore
 
     def get_end_effector_pose(self, arm: str) -> dict[str, tuple[float, ...]]:
-        position, rotation = matrix_to_pose(self._grasp_world_pose(arm))
+        matrix = body_world_pose(self.data, self._body_ids[arm])
+        quat = np.empty(4, dtype=float)
+        mujoco.mju_mat2Quat(quat, np.asarray(matrix[:3, :3], dtype=float).reshape(-1))  # type: ignore
+        if quat[0] < 0:
+            quat = -quat
+        position = tuple(float(value) for value in matrix[:3, 3])
+        rotation = tuple(float(value) for value in quat)
         return {
             "position": position,
             "rotation": rotation,
@@ -109,9 +113,6 @@ class IKController:
             "name": [*joint_names, *config.gripper_joint_names], # type: ignore
             "position": [*positions, grip, -grip],
         }
-
-    def _grasp_world_pose(self, arm: str) -> np.ndarray:
-        return apply_grasp_frame(body_world_pose(self.data, self._body_ids[arm]), self._grasp_frames[arm])
 
     def _rotation_error(self, current: tuple[float, ...], target: tuple[float, ...]) -> np.ndarray:
         q_current = np.asarray(current, dtype=float)

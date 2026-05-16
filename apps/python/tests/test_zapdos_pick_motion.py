@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -22,7 +20,6 @@ from utils.zapdos.manipulation.executor import PickExecutor  # noqa: E402
 from utils.zapdos.physics.mujoco_physics import MujocoPhysics  # noqa: E402
 
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
-LEFT_GRASP_FRAME_POS = [0.0, 0.0, -0.03689]
 
 
 class _SurfacePhysics:
@@ -179,23 +176,8 @@ class ZapdosPickMotionTest(unittest.TestCase):
             finally:
                 physics.close()
 
-    def test_execute_attachment_uses_configured_grasp_frame_as_parent_reference(self):
+    def test_attachment_uses_gripper_joint_as_parent_reference(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            default_path = Path(tmpdir) / "desktop-config.json"
-            default_path.write_text(json.dumps({
-                "override": {
-                    "ik": {
-                        "r1pro": {
-                            "left_gripper": {
-                                "grasp_frame": {
-                                    "pos": LEFT_GRASP_FRAME_POS,
-                                    "quat": [1.0, 0.0, 0.0, 0.0],
-                                }
-                            }
-                        }
-                    }
-                }
-            }), encoding="utf-8")
             scene_path = Path(tmpdir) / "scene_pick.usda"
             stage = Usd.Stage.CreateNew(str(scene_path))
             stage.SetMetadata("metersPerUnit", 1.0)
@@ -208,45 +190,22 @@ class ZapdosPickMotionTest(unittest.TestCase):
             UsdGeom.Cube.Define(stage, "/World/Crate/Visual").CreateSizeAttr(0.02)
             stage.GetRootLayer().Save()
 
-            with mock.patch("utils.user_config.default_config_path", return_value=default_path):
-                with mock.patch.dict(os.environ, {"USERPROFILE": ""}, clear=False):
-                    bundle = ensure_render_bundle(ROBOT_USD, scene_path)
-                    body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
-                    physics = MujocoPhysics("grab-apple-grasp-frame", bundle, body_map)
-                    physics.model.opt.gravity[:] = 0.0
-                    target_body = sanitize_name("/Scene/Crate")
-                    executor = PickExecutor(physics, bundle)
-                    try:
-                        ik = executor._ensure_ik()
-                        arm = "left"
-                        ik.sync_joint_state(physics.joint_state_msg())
-                        grasp_center = ik.get_end_effector_pose(arm)
-                        physics.set_body_pose(target_body, list(grasp_center["position"]), [1.0, 0.0, 0.0, 0.0])
+            bundle = ensure_render_bundle(ROBOT_USD, scene_path)
+            body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
+            physics = MujocoPhysics("grab-apple-gripper-joint", bundle, body_map)
+            physics.model.opt.gravity[:] = 0.0
+            target_body = sanitize_name("/Scene/Crate")
+            try:
+                arm = "left"
+                gripper_pose = physics.get_pose()[get_arm_config(arm).end_effector_body]
+                gripper_position = [float(gripper_pose[index]) for index in (12, 13, 14)]
+                physics.set_body_pose(target_body, gripper_position, [1.0, 0.0, 0.0, 0.0])
 
-                        result = executor.execute({
-                            "arm": arm,
-                            "target_body": target_body,
-                            "grasp_tolerance": 0.05,
-                            "attach_tolerance": 0.05,
-                            "stages": [
-                                {
-                                    "name": "descend_to_grasp",
-                                    "kind": "move_pose",
-                                    "pose": {
-                                        "position": list(grasp_center["position"]),
-                                        "quat_wxyz": list(grasp_center["rotation"]),
-                                    },
-                                    "position_only": True,
-                                    "tolerance": 0.05,
-                                },
-                                {"name": "close_gripper", "kind": "gripper", "width": 0.0},
-                            ],
-                        })
+                attachment = physics.attach_body(get_arm_config(arm).end_effector_body, target_body)
 
-                        self.assertTrue(result["ok"])
-                        self.assertLess(math.dist(result["attachment"]["relative_position"], (0.0, 0.0, 0.0)), 0.01)
-                    finally:
-                        physics.close()
+                self.assertLess(math.dist(attachment["relative_position"], (0.0, 0.0, 0.0)), 0.01)
+            finally:
+                physics.close()
 
 
 def _matrix_at(x: float, y: float, z: float) -> list[float]:

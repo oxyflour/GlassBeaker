@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { getZapdosRuntimeErrorMessage } from "./zapdos-runtime";
+import { getZapdosRuntimeErrorMessage } from "../zapdos-runtime";
 import {
   buildCompositeCameraSlices,
   buildCompositeCameraStreamUrl,

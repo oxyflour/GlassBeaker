@@ -1,15 +1,15 @@
 import {
   createManipulationToolRequest,
-} from "./zapdos-manipulation-tool-api";
+} from "../../agent/zapdos-manipulation-tool-api";
 
-export function createGrabTheAppleRequest(): RequestInit {
+export function createPlaceTheAppleRequest(): RequestInit {
   return createManipulationToolRequest([]);
 }
 
-export async function grabTheApple(sess: string) {
+export async function placeTheApple(sess: string) {
   const response = await fetch(
-    `/python/zapdos/${sess}/call/grab_apple`,
-    createGrabTheAppleRequest(),
+    `/python/zapdos/${sess}/call/place_apple`,
+    createPlaceTheAppleRequest(),
   );
   if (!response.ok) {
     throw new Error(await response.text());

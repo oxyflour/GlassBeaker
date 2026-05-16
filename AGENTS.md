@@ -6,6 +6,7 @@
 - Attention: codex will inject ELECTRON_RUN_AS_NODE and will break debugging
 - **DO NOT KEEP ASKING ME QUESTIONS AFTER THINKING**. Prepare your questions and let me answer them at once.
 - use zod to define parameters in CopilotKit
+- Ask me before you switch branch
 
 # Coding styles
 - Try to limit content of each file in 200 lines

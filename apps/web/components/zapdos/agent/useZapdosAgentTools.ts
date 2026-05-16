@@ -1,7 +1,7 @@
 import { useCopilotAdditionalInstructions } from "@copilotkit/react-core";
 
-import { SEARCH_ASSETS_DESCRIPTION } from "../genie-sim";
-import { postToolJson } from "../genie-sim/tool-client";
+import { SEARCH_ASSETS_DESCRIPTION } from "../../genie-sim";
+import { postToolJson } from "../../genie-sim/tool-client";
 import { ZAPDOS_SET_SCENE_ASSETS_EXAMPLE } from "./zapdos-agent-examples";
 import { ZAPDOS_ADDITIONAL_INSTRUCTIONS } from "./zapdos-agent-instructions";
 import {
@@ -20,7 +20,7 @@ import {
 } from "./zapdos-manipulation-tool-schemas";
 import { listSceneObjects, pickObject } from "./zapdos-manipulation-tool-api";
 import { listSceneBodies, removeAssetFromScene, setSceneAssets } from "./zapdos-tool-api";
-import { useTypedTool } from "../../utils/agent/tool";
+import { useTypedTool } from "../../../utils/agent/tool";
 
 export const SET_SCENE_ASSETS_DESCRIPTION = [
   "Replace the session-local Zapdos overlay asset list and rebuild the runtime once.",

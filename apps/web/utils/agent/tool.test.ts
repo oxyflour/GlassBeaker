@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { setSceneAssetsToolArgsSchema } from "../../components/zapdos/zapdos-agent-tool-schemas";
-import { pickObjectToolArgsSchema } from "../../components/zapdos/zapdos-manipulation-tool-schemas";
+import { setSceneAssetsToolArgsSchema } from "../../components/zapdos/agent/zapdos-agent-tool-schemas";
+import { pickObjectToolArgsSchema } from "../../components/zapdos/agent/zapdos-manipulation-tool-schemas";
 import { buildToolParametersFromZod, formatToolError } from "./tool";
 
 test("buildToolParametersFromZod exposes set_scene_assets assets as an array parameter", () => {
