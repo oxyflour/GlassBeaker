@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -72,6 +73,7 @@ class _StaticIK:
         arm: str,
         target_pose: dict[str, tuple[float, ...]],
         gripper_opening: float,
+        **_kwargs: object,
     ) -> dict[str, list[object]]:
         return {"name": [], "position": []}
 
@@ -91,9 +93,26 @@ class _MutableIK:
         arm: str,
         target_pose: dict[str, tuple[float, ...]],
         gripper_opening: float,
+        **_kwargs: object,
     ) -> dict[str, list[object]]:
         self.pose = target_pose
         return {"name": [], "position": []}
+
+
+class _RecordingIK(_MutableIK):
+    def __init__(self, pose: dict[str, tuple[float, ...]]) -> None:
+        super().__init__(pose)
+        self.solve_kwargs: list[dict[str, object]] = []
+
+    def solve_step(
+        self,
+        arm: str,
+        target_pose: dict[str, tuple[float, ...]],
+        gripper_opening: float,
+        **kwargs: object,
+    ) -> dict[str, list[object]]:
+        self.solve_kwargs.append(dict(kwargs))
+        return super().solve_step(arm, target_pose, gripper_opening, **kwargs)
 
 
 class PickExecutorTest(unittest.TestCase):
@@ -112,7 +131,7 @@ class PickExecutorTest(unittest.TestCase):
             ],
         }
 
-        def drive(_ik_controller, _arm, target, _gripper, steps=12):
+        def drive(_ik_controller, _arm, target, _gripper, steps=12, **_kwargs):
             del steps
             visited.append(target["position"])
             ik.pose = target
@@ -130,6 +149,26 @@ class PickExecutorTest(unittest.TestCase):
             executor.execute(_staged_plan())
 
         self.assertIn("descend_to_grasp", err.exception.detail)
+
+    def test_execute_uses_arm_only_full_pose_ik_for_staged_moves(self):
+        ik = _RecordingIK(_pose(0.0, 0.0, 0.08))
+        executor = PickExecutor(_FakePhysics(), bundle=_bundle(), ik_controller=ik)
+
+        executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "stages": [
+                {
+                    "name": "raise_to_transit",
+                    "kind": "move_pose",
+                    "pose": {"position": [0.0, 0.0, 0.16], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                },
+            ],
+        })
+
+        self.assertTrue(ik.solve_kwargs)
+        self.assertTrue(all(call.get("include_torso") in {None, False} for call in ik.solve_kwargs))
+        self.assertTrue(all(call.get("position_only") in {None, False} for call in ik.solve_kwargs))
 
     def test_execute_rejects_gripper_stage_before_grasp_stage(self):
         physics = _FakePhysics()
@@ -184,7 +223,7 @@ class PickExecutorTest(unittest.TestCase):
         ik = _MutableIK(_pose(0.0, 0.0, 0.08))
         executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
 
-        def drive(_ik_controller, _arm, target, _gripper, steps=12):
+        def drive(_ik_controller, _arm, target, _gripper, steps=12, **_kwargs):
             del _ik_controller, _arm, _gripper, steps
             if target["position"] != (0.0, 0.0, 0.22):
                 ik.pose = target
@@ -202,7 +241,7 @@ class PickExecutorTest(unittest.TestCase):
         ik = _MutableIK(_pose(0.0, 0.0, 0.08))
         executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
 
-        def drive(_ik_controller, _arm, target, _gripper, steps=12):
+        def drive(_ik_controller, _arm, target, _gripper, steps=12, **_kwargs):
             del _ik_controller, _arm, _gripper, steps
             if target["position"] != (0.0, 0.03, 0.02):
                 ik.pose = target
@@ -312,9 +351,77 @@ class PickExecutorTest(unittest.TestCase):
                 self.assertEqual(result["attachment"]["child_body"], target_body)
                 self.assertEqual(result["attachment"]["parent_body"], "Root_r1_pro_with_gripper_left_gripper_link")
                 self.assertGreater(gripper["position"][1], crate_pos[1] + 0.005)
-                self.assertGreater(float(pose[13]), crate_pos[1] + 0.005)
+                body_xyz = tuple(float(pose[index]) for index in (12, 13, 14))
+                self.assertGreater(math.dist(body_xyz, crate_pos), 0.005)
             finally:
                 physics.close()
+
+    def test_execute_vertical_stage_reports_unreachable_motion(self):
+        robot_usd = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
+        scene_usd = REPO_ROOT / "apps" / "python" / "assets" / "default_scene.usda"
+        bundle = ensure_render_bundle(robot_usd, scene_usd)
+        body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
+        physics = MujocoPhysics("pick-executor-raise", bundle, body_map)
+        executor = PickExecutor(physics, bundle)
+        try:
+            ik = executor._ensure_ik()
+            arm = "left"
+            ik.sync_joint_state(physics.joint_state_msg())
+            start = ik.get_end_effector_pose(arm)
+            target = [start["position"][0], start["position"][1], start["position"][2] + 0.08]
+
+            with self.assertRaises(HTTPException) as err:
+                executor.execute({
+                    "arm": arm,
+                    "target_body": "unused",
+                    "stages": [
+                        {
+                            "name": "raise_to_transit",
+                            "kind": "move_pose",
+                            "pose": {"position": target, "quat_wxyz": list(start["rotation"])},
+                        },
+                    ],
+                })
+
+            self.assertEqual(err.exception.status_code, 409)
+            self.assertIn("raise_to_transit", err.exception.detail)
+        finally:
+            physics.close()
+
+    def test_execute_right_vertical_stage_stops_before_large_backward_drift(self):
+        robot_usd = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
+        scene_usd = REPO_ROOT / "apps" / "python" / "assets" / "default_scene.usda"
+        bundle = ensure_render_bundle(robot_usd, scene_usd)
+        body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
+        physics = MujocoPhysics("pick-executor-right-raise", bundle, body_map)
+        executor = PickExecutor(physics, bundle)
+        try:
+            ik = executor._ensure_ik()
+            arm = "right"
+            ik.sync_joint_state(physics.joint_state_msg())
+            start = ik.get_end_effector_pose(arm)
+            target = [start["position"][0], start["position"][1], start["position"][2] + 0.08]
+
+            with self.assertRaises(HTTPException) as err:
+                executor.execute({
+                    "arm": arm,
+                    "target_body": "unused",
+                    "stages": [
+                        {
+                            "name": "raise_to_transit",
+                            "kind": "move_pose",
+                            "pose": {"position": target, "quat_wxyz": list(start["rotation"])},
+                        },
+                    ],
+                })
+
+            ik.sync_joint_state(physics.joint_state_msg())
+            reached = ik.get_end_effector_pose(arm)
+            self.assertEqual(err.exception.status_code, 409)
+            self.assertIn("raise_to_transit", err.exception.detail)
+            self.assertLess(abs(reached["position"][0] - start["position"][0]), 0.06)
+        finally:
+            physics.close()
 
     def test_execute_escapes_support_footprint_before_pregrasp_when_start_under_support(self):
         physics = _FakePhysics()
@@ -323,7 +430,7 @@ class PickExecutorTest(unittest.TestCase):
         executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
         driven: list[tuple[tuple[float, ...], float]] = []
 
-        def drive(ik_controller, arm: str, target: dict[str, tuple[float, ...]], gripper: float, steps: int = 12) -> None:
+        def drive(ik_controller, arm: str, target: dict[str, tuple[float, ...]], gripper: float, steps: int = 12, **_kwargs: object) -> None:
             del ik_controller, arm, steps
             driven.append((target["position"], gripper))
             ik.pose = target

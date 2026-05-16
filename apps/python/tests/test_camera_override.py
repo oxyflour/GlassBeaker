@@ -56,6 +56,43 @@ class CameraOverrideTest(unittest.TestCase):
         self.assertEqual(payload["keep"]["value"], 1)
         self.assertEqual(payload["override"]["camera"]["/MyRobot/zed_link"]["head_camera"]["fovy"], 60.0)
 
+    def test_save_camera_overrides_does_not_copy_repo_defaults_into_user_file(self):
+        snapshot = [{
+            "name": "head_camera",
+            "parent_prim": "/MyRobot/zed_link",
+            "pos": [0.1, 0.2, 0.3],
+            "quat": [1.0, 0.0, 0.0, 0.0],
+            "fovy": 60.0,
+            "horizontal_aperture": 30.0,
+            "vertical_aperture": 20.0,
+            "clipping_range": [0.2, 80.0],
+        }]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            default_path = root / "desktop-config.json"
+            default_path.write_text(json.dumps({
+                "override": {
+                    "position": {
+                        "r1pro": {
+                            "left_arm_joint1": 0.12,
+                        }
+                    }
+                }
+            }, indent=2), encoding="utf-8")
+            config_path = root / ".glass-beaker" / "config.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text("{}", encoding="utf-8")
+
+            with mock.patch("utils.user_config.default_config_path", return_value=default_path):
+                with mock.patch.dict(os.environ, {"USERPROFILE": tmp}, clear=False):
+                    save_camera_overrides(snapshot)
+
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertNotIn("position", payload.get("override", {}))
+        self.assertEqual(payload["override"]["camera"]["/MyRobot/zed_link"]["head_camera"]["fovy"], 60.0)
+
     def test_apply_camera_overrides_updates_only_matching_camera(self):
         cameras = [
             RenderCamera(

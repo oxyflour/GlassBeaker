@@ -1,0 +1,80 @@
+{
+  "override": {
+    "position": {
+      "r1pro": {
+        "left_arm_joint1":  0.1,
+        "left_arm_joint4": -0.2,
+        "right_arm_joint1":  0.1,
+        "right_arm_joint4": -0.2
+      }
+    },
+    "camera": {
+      "/MyRobot/Root_r1_pro_with_gripper_left_realsense_link": {
+        "left_wrist_camera": {
+          "clipping_range": [
+            0.009999999776482582,
+            100.0
+          ],
+          "fovy": 45.00000374036145,
+          "horizontal_aperture": 32.0,
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            6.123234262925839e-17,
+            -0.7071067690849304,
+            0.7071067690849304,
+            4.329780301713277e-17
+          ],
+          "vertical_aperture": 24.0
+        }
+      },
+      "/MyRobot/Root_r1_pro_with_gripper_right_realsense_link": {
+        "right_wrist_camera": {
+          "clipping_range": [
+            0.009999999776482582,
+            100.0
+          ],
+          "fovy": 45.000001073006395,
+          "horizontal_aperture": 32.0,
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            6.123234262925839e-17,
+            -0.7071067690849304,
+            0.7071067690849304,
+            4.329780301713277e-17
+          ],
+          "vertical_aperture": 24.0
+        }
+      },
+      "/MyRobot/Root_r1_pro_with_gripper_zed_link": {
+        "head_camera": {
+          "clipping_range": [
+            0.009999999776482582,
+            100.0
+          ],
+          "fovy": 43.60281897270362,
+          "horizontal_aperture": 32.0,
+          "pos": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "quat": [
+            6.123234262925839e-17,
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "vertical_aperture": 24.0
+        }
+      }
+    }
+  }
+}

@@ -687,6 +687,60 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "max": [1.7, 2.2, 3.2],
         })
 
+    def test_mesh_world_aabb_uses_vertices_not_bounding_sphere(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mesh_path = root / "thin_table.obj"
+            mesh_path.write_text(
+                "\n".join((
+                    "v -0.3 -0.6 0.0",
+                    "v 0.3 -0.6 0.0",
+                    "v 0.3 0.6 0.0",
+                    "v -0.3 0.6 0.0",
+                    "v -0.3 -0.6 0.05",
+                    "v 0.3 -0.6 0.05",
+                    "v 0.3 0.6 0.05",
+                    "v -0.3 0.6 0.05",
+                    "f 1 2 3",
+                    "f 1 3 4",
+                    "f 5 8 7",
+                    "f 5 7 6",
+                    "f 1 5 6",
+                    "f 1 6 2",
+                    "f 2 6 7",
+                    "f 2 7 3",
+                    "f 3 7 8",
+                    "f 3 8 4",
+                    "f 4 8 5",
+                    "f 4 5 1",
+                )),
+                encoding="utf-8",
+            )
+            xml_path = root / "scene.xml"
+            xml_path.write_text(
+                f"""
+<mujoco>
+  <asset>
+    <mesh name="thin_table" file="{mesh_path.as_posix()}"/>
+  </asset>
+  <worldbody>
+    <body name="Scene_Table" pos="0.5 0 0.4">
+      <geom name="table-mesh" type="mesh" mesh="thin_table" rgba="1 0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+""".strip(),
+                encoding="utf-8",
+            )
+            physics = ZapdosPhysics("sess-1", SimpleNamespace(mjcf=xml_path), {"Scene_Table": "Table"})
+            try:
+                self.assertEqual(physics.body_world_aabb("Scene_Table"), {
+                    "min": [0.2, -0.6, 0.4],
+                    "max": [0.8, 0.6, 0.45],
+                })
+            finally:
+                physics.close()
+
     def test_get_visual_attaches_descendant_scene_mesh_to_editable_ancestor(self):
         session = self.build_nested_pose_edit_session()
 

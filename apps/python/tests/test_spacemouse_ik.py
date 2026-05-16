@@ -92,6 +92,39 @@ class SpaceMouseIKControllerTest(unittest.TestCase):
         finally:
             physics.close()
 
+    def test_left_arm_position_only_with_torso_reaches_vertical_target(self):
+        body_map = json.loads(self.controller.bundle.body_map_json.read_text(encoding="utf-8"))
+        physics = MujocoPhysics("ik-test", self.controller.bundle, body_map)
+        arm = "left"
+        try:
+            self.controller.sync_joint_state(physics.joint_state_msg())
+            start = self.controller.get_end_effector_pose(arm)
+            target = {
+                "position": (start["position"][0], start["position"][1], start["position"][2] + 0.08),
+                "rotation": start["rotation"],
+            }
+
+            for _ in range(300):
+                self.controller.sync_joint_state(physics.joint_state_msg())
+                physics.apply_joint_command(self.controller.solve_step(
+                    arm,
+                    target,
+                    0.02,
+                    include_torso=True,
+                    position_only=True,
+                ))
+                physics.step()
+
+            self.controller.sync_joint_state(physics.joint_state_msg())
+            reached = self.controller.get_end_effector_pose(arm)
+
+            self.assertLess(pose_error(reached, target), 0.015)
+            self.assertGreater(reached["position"][2] - start["position"][2], 0.06)
+            self.assertLess(abs(reached["position"][0] - start["position"][0]), 0.02)
+            self.assertLess(abs(reached["position"][1] - start["position"][1]), 0.02)
+        finally:
+            physics.close()
+
 
 if __name__ == "__main__":
     unittest.main()

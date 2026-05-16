@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from utils.zapdos.bundle.camera_specs import RenderCamera
-from utils.user_config import read_user_config, write_user_config
+from utils.user_config import read_raw_user_config, read_user_config, write_user_config
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ def apply_camera_overrides(
 
 
 def save_camera_overrides(snapshot: list[dict[str, Any]]) -> tuple[Path, int]:
-    payload = read_user_config()
+    payload = read_raw_user_config()
     override = payload.setdefault("override", {})
     if not isinstance(override, dict):
         raise RuntimeError("override must be a JSON object.")

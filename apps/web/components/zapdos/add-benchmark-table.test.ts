@@ -19,6 +19,16 @@ test("createAddBenchmarkTableRequest posts the benchmark table shortcut payload"
           z_offset: 0,
           yaw: 0,
         },
+      }, {
+        asset_id: "apple",
+        motion: "dynamic",
+        placement: {
+          kind: "on_top_of_body",
+          body: "Scene_benchmark_table_000_01",
+          xy: [0.5, 0],
+          gap: 0,
+          yaw: 0,
+        },
       }],
     ]),
   });
@@ -48,6 +58,10 @@ test("addBenchmarkTable posts to the zapdos set_scene_assets route", async () =>
         body: "Scene_benchmark_table_000_01",
         instance_id: "benchmark_table_000_01",
         asset_id: "benchmark_table_000",
+      }, {
+        body: "Scene_apple_01",
+        instance_id: "apple_01",
+        asset_id: "apple",
       }],
       scene_revision: "rev-2",
     });

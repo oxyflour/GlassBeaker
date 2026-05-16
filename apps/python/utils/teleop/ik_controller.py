@@ -9,6 +9,8 @@ import numpy as np
 from .arm_config import get_arm_config
 from utils.zapdos.bundle import ensure_render_bundle
 
+TORSO_JOINT_NAMES = ("torso_joint1", "torso_joint2", "torso_joint3", "torso_joint4")
+
 
 class IKController:
     def __init__(self, robot_usd: Path, scene_usd: Path) -> None:
@@ -18,6 +20,13 @@ class IKController:
         self._joint_ids = {}
         self._body_ids = {}
         self._joint_limits = {}
+        self._torso_joint_names = []
+        for name in TORSO_JOINT_NAMES:
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)  # type: ignore
+            if joint_id >= 0:
+                lower, upper = self.model.jnt_range[joint_id]
+                self._joint_limits[name] = (float(lower), float(upper))
+                self._torso_joint_names.append(name)
         for arm in ("left", "right"):
             config = get_arm_config(arm)
             self._joint_ids[arm] = tuple(
@@ -59,9 +68,23 @@ class IKController:
             "rotation": tuple(float(v) for v in quat),
         }
 
-    def solve_step(self, arm: str, target_pose: dict, gripper_opening: float) -> dict[str, list[float]]:
+    def solve_step(
+        self,
+        arm: str,
+        target_pose: dict,
+        gripper_opening: float,
+        *,
+        include_torso: bool = False,
+        position_only: bool = False,
+    ) -> dict[str, list[float]]:
         config = get_arm_config(arm)
-        joint_ids = self._joint_ids[arm]
+        joint_names = config.joint_names
+        if include_torso:
+            joint_names = (*self._torso_joint_names, *joint_names)
+        joint_ids = tuple(
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)  # type: ignore
+            for name in joint_names
+        )
         current = self.get_end_effector_pose(arm)
         pos_err = np.asarray(target_pose["position"], dtype=float) - np.asarray(current["position"], dtype=float)
         rot_err = self._rotation_error(current["rotation"], target_pose["rotation"])
@@ -69,20 +92,20 @@ class IKController:
         jacr = np.zeros((3, self.model.nv), dtype=float)
         mujoco.mj_jacBody(self.model, self.data, jacp, jacr, self._body_ids[arm])  # type: ignore
         dof_ids = [int(self.model.jnt_dofadr[joint_id]) for joint_id in joint_ids]
-        J = np.vstack([jacp[:, dof_ids], jacr[:, dof_ids]])
-        err = np.concatenate([pos_err, rot_err])
+        J = jacp[:, dof_ids] if position_only else np.vstack([jacp[:, dof_ids], jacr[:, dof_ids]])
+        err = pos_err if position_only else np.concatenate([pos_err, rot_err])
         damping = 1e-3
-        dq = J.T @ np.linalg.solve(J @ J.T + damping * np.eye(6), err)
+        dq = J.T @ np.linalg.solve(J @ J.T + damping * np.eye(len(err)), err)
         dq = np.clip(dq, -0.05, 0.05)
         positions = []
-        for joint_name, joint_id, delta in zip(config.joint_names, joint_ids, dq):
+        for joint_name, joint_id, delta in zip(joint_names, joint_ids, dq):
             qpos_adr = int(self.model.jnt_qposadr[joint_id])
             lower, upper = self._joint_limits[joint_name]
             next_pos = float(np.clip(self.data.qpos[qpos_adr] + delta, lower, upper))
             positions.append(next_pos)
         grip = float(np.clip(gripper_opening, 0.0, self._joint_limits[config.gripper_joint_names[0]][1]))
         return {
-            "name": [*config.joint_names, *config.gripper_joint_names], # type: ignore
+            "name": [*joint_names, *config.gripper_joint_names], # type: ignore
             "position": [*positions, grip, -grip],
         }
 

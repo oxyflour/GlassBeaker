@@ -10,6 +10,7 @@ import mujoco.viewer
 import numpy as np
 from fastapi import HTTPException
 
+from utils.user_config import read_user_config
 from utils.zapdos.physics.attachment import BodyAttachment, attachment_world_pose, create_attachment
 from utils.zapdos.physics.body_capabilities import build_body_capabilities
 from utils.zapdos.physics.mujoco_tools import (
@@ -22,6 +23,7 @@ from utils.zapdos.physics.mujoco_tools import (
     mesh_world_pose,
 )
 from utils.zapdos.physics.visuals import SceneVisuals, serialize_body, serialize_mesh
+from utils.zapdos.robot_model import get_robot_model_key_from_usd
 
 RGB_TEXTURE_ROLE = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)  # type: ignore
 PRIMITIVE_TYPES = {
@@ -65,6 +67,9 @@ class MujocoPhysics:
         self.selection_body_by_name = capabilities.selection_body_by_name
         self.actuator_name_to_id = self._actuator_map()
         self.joint_name_to_actuator = self._joint_command_map()
+        robot_usd = getattr(bundle, "robot_usd", None)
+        if robot_usd is not None:
+            self._apply_idle_pose(Path(robot_usd))
         self.attachments: dict[str, BodyAttachment] = {}
         self.data.ctrl[:] = 0
         for joint_name, actuator_id in self.joint_name_to_actuator.items():
@@ -74,6 +79,37 @@ class MujocoPhysics:
                 qpos_adr = int(self.model.jnt_qposadr[joint_id])
                 self.data.ctrl[actuator_id] = float(self.data.qpos[qpos_adr])
         mujoco.mj_forward(self.model, self.data)  # type: ignore
+
+    def _apply_idle_pose(self, robot_usd: Path) -> None:
+        robot_key = get_robot_model_key_from_usd(robot_usd)
+        if robot_key is None:
+            return
+        override = read_user_config().get("override")
+        if override is None:
+            return
+        if not isinstance(override, dict):
+            raise RuntimeError("override must be a JSON object.")
+        position = override.get("position")
+        if position is None:
+            return
+        if not isinstance(position, dict):
+            raise RuntimeError("override.position must be a JSON object.")
+        robot_position = position.get(robot_key)
+        if robot_position is None:
+            return
+        if not isinstance(robot_position, dict):
+            raise RuntimeError(f"override.position.{robot_key} must be a JSON object.")
+        for joint_name, value in robot_position.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise RuntimeError(f"override.position.{robot_key}.{joint_name} must be numeric.")
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)  # type: ignore
+            if joint_id < 0:
+                continue
+            qpos_adr = int(self.model.jnt_qposadr[joint_id])
+            next_qpos_adr = int(self.model.nq if joint_id + 1 >= self.model.njnt else self.model.jnt_qposadr[joint_id + 1])
+            if next_qpos_adr - qpos_adr != 1:
+                raise RuntimeError(f"override.position.{robot_key}.{joint_name} must target a 1-DOF joint.")
+            self.data.qpos[qpos_adr] = float(value)
 
     def _build_geometry(self, asset_root: Path) -> dict[str, ZapdosGeometry]:
         geoms: dict[str, ZapdosGeometry] = {}
@@ -350,6 +386,17 @@ class MujocoPhysics:
         kind = PRIMITIVE_TYPES.get(int(self.model.geom_type[geom_id])) or ""
         if kind == "plane" or not kind:
             return None
+        if kind == "mesh":
+            mesh_id = int(self.model.geom_dataid[geom_id])
+            if mesh_id >= 0:
+                vert_adr = int(self.model.mesh_vertadr[mesh_id])
+                vert_num = int(self.model.mesh_vertnum[mesh_id])
+                if vert_num > 0:
+                    vertices = np.array(self.model.mesh_vert[vert_adr:vert_adr + vert_num], dtype=float)
+                    rotation = np.array(self.data.geom_xmat[geom_id], dtype=float).reshape(3, 3)
+                    center = np.array(self.data.geom_xpos[geom_id], dtype=float)
+                    world_vertices = vertices @ rotation.T + center
+                    return world_vertices.min(axis=0), world_vertices.max(axis=0)
         half_extents = self._geom_half_extents(geom_id, kind)
         rotation = np.abs(np.array(self.data.geom_xmat[geom_id], dtype=float).reshape(3, 3))
         center = np.array(self.data.geom_xpos[geom_id], dtype=float)

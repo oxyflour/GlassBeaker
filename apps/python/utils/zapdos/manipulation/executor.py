@@ -15,6 +15,9 @@ LIFT_POSE_TOLERANCE = 0.08
 DRIVE_POSE_TOLERANCE = 0.01
 DRIVE_ROTATION_TOLERANCE = 0.05
 DRIVE_SETTLE_STEPS = 72
+DRIVE_STAGNATION_STEPS = 24
+DRIVE_MIN_PROGRESS = 0.01
+DRIVE_DIVERGENCE_MARGIN = 0.001
 SUPPORT_ESCAPE_MARGIN = 0.06
 
 
@@ -51,7 +54,16 @@ class PickExecutor:
                 if stage_kind == "move_pose":
                     target = self._pose(stage["pose"])
                     grasp_pose = target if stage_name == "descend_to_grasp" else grasp_pose
-                    self._drive_pose(ik, arm, target, closed_width if attached else open_width)
+                    include_torso = bool(stage.get("include_torso", False))
+                    position_only = bool(stage.get("position_only", False))
+                    self._drive_pose(
+                        ik,
+                        arm,
+                        target,
+                        closed_width if attached else open_width,
+                        include_torso=include_torso,
+                        position_only=position_only,
+                    )
                     self._require_pose_reached(
                         ik,
                         arm,
@@ -81,25 +93,71 @@ class PickExecutor:
             self.ik_controller = IKController(Path(self.bundle.robot_usd), Path(self.bundle.scene_usd))
         return self.ik_controller
 
-    def _drive_pose(self, ik: IKController, arm: str, target: dict[str, tuple[float, ...]], gripper: float, steps: int = 12) -> None:
+    def _drive_pose(
+        self,
+        ik: IKController,
+        arm: str,
+        target: dict[str, tuple[float, ...]],
+        gripper: float,
+        steps: int = 12,
+        *,
+        include_torso: bool = False,
+        position_only: bool = False,
+    ) -> None:
         start = ik.get_end_effector_pose(arm)
+        initial_error = self._distance(start["position"], target["position"])
+        required_progress = min(DRIVE_MIN_PROGRESS, initial_error * 0.25)
+        best_error = initial_error
+        total_steps = 0
         for index in range(max(steps, 1)):
             alpha = float(index + 1) / float(max(steps, 1))
             pose = {
                 "position": tuple((1.0 - alpha) * a + alpha * b for a, b in zip(start["position"], target["position"])),
                 "rotation": tuple(self._normalize((1.0 - alpha) * np.asarray(start["rotation"]) + alpha * np.asarray(target["rotation"]))),
             }
-            self.physics.apply_joint_command(ik.solve_step(arm, pose, gripper))
+            self.physics.apply_joint_command(ik.solve_step(
+                arm,
+                pose,
+                gripper,
+                include_torso=include_torso,
+                position_only=position_only,
+            ))
             self.physics.step()
             ik.sync_joint_state(self.physics.joint_state_msg())
+            current = ik.get_end_effector_pose(arm)
+            current_error = self._distance(current["position"], target["position"])
+            best_error = min(best_error, current_error)
+            total_steps += 1
+            if (
+                total_steps >= DRIVE_STAGNATION_STEPS
+                and best_error >= initial_error - required_progress
+                and current_error >= initial_error + DRIVE_DIVERGENCE_MARGIN
+            ):
+                return
         for _ in range(DRIVE_SETTLE_STEPS):
             current = ik.get_end_effector_pose(arm)
             if self._distance(current["position"], target["position"]) <= DRIVE_POSE_TOLERANCE:
-                if self._rotation_error(current["rotation"], target["rotation"]) <= DRIVE_ROTATION_TOLERANCE:
+                if position_only or self._rotation_error(current["rotation"], target["rotation"]) <= DRIVE_ROTATION_TOLERANCE:
                     return
-            self.physics.apply_joint_command(ik.solve_step(arm, target, gripper))
+            self.physics.apply_joint_command(ik.solve_step(
+                arm,
+                target,
+                gripper,
+                include_torso=include_torso,
+                position_only=position_only,
+            ))
             self.physics.step()
             ik.sync_joint_state(self.physics.joint_state_msg())
+            current = ik.get_end_effector_pose(arm)
+            current_error = self._distance(current["position"], target["position"])
+            best_error = min(best_error, current_error)
+            total_steps += 1
+            if (
+                total_steps >= DRIVE_STAGNATION_STEPS
+                and best_error >= initial_error - required_progress
+                and current_error >= initial_error + DRIVE_DIVERGENCE_MARGIN
+            ):
+                return
 
     def _pose(self, raw: object) -> dict[str, tuple[float, ...]]:
         pose = raw if isinstance(raw, dict) else {}
