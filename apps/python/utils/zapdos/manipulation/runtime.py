@@ -142,8 +142,8 @@ class ManipulationRuntime:
             "kind": "pick",
             "arm": arm,
             "target_body": target["body"],
-            "grasp_tolerance": 0.16,
-            "attach_tolerance": 0.11,
+            "grasp_tolerance": 0.05,
+            "attach_tolerance": 0.03,
             "stages": [
                 {
                     "name": "open_gripper",

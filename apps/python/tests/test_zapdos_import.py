@@ -1558,8 +1558,8 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         plan = executor.execute.call_args.args[0]
         self.assertEqual(plan["arm"], "left")
         self.assertEqual(plan["target_body"], "Scene_apple_1")
-        self.assertEqual(plan["attach_tolerance"], 0.11)
-        self.assertEqual(plan["grasp_tolerance"], 0.16)
+        self.assertEqual(plan["attach_tolerance"], 0.03)
+        self.assertEqual(plan["grasp_tolerance"], 0.05)
         self.assertEqual([stage["name"] for stage in plan["stages"]], [
             "open_gripper",
             "descend_to_grasp",
