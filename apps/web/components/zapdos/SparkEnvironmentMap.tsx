@@ -174,11 +174,6 @@ export function createHalfFloatSparkEnvCapture() {
         camera.coordinateSystem = renderer.coordinateSystem;
         camera.updateCoordinateSystem();
       }
-      const objectVisibility = new Map<Object3D, boolean>();
-      for (const object of hideObjects) {
-        objectVisibility.set(object, object.visible);
-        object.visible = false;
-      }
       const previousTarget = renderer.getRenderTarget();
       const previousCubeFace = renderer.getActiveCubeFace();
       const previousMipmapLevel = renderer.getActiveMipmapLevel();
@@ -186,39 +181,40 @@ export function createHalfFloatSparkEnvCapture() {
       const previousAutoClear = renderer.autoClear;
       const generateMipmaps = target.texture.generateMipmaps;
       try {
-        await withSparkCaptureState(spark, async () => {
-          if (update) {
+        await captureSparkSceneForEnvironmentMap({
+          hideObjects,
+          render: async () => {
+            target.texture.generateMipmaps = false;
+            renderer.xr.enabled = false;
+            renderer.autoClear = true;
+            const [cameraPX, cameraNX, cameraPY, cameraNY, cameraPZ, cameraNZ] = camera.children as Camera[];
+            renderer.setRenderTarget(target, 0, camera.activeMipmapLevel);
+            spark.render(scene, cameraPX);
+            renderer.setRenderTarget(target, 1, camera.activeMipmapLevel);
+            spark.render(scene, cameraNX);
+            renderer.setRenderTarget(target, 2, camera.activeMipmapLevel);
+            spark.render(scene, cameraPY);
+            renderer.setRenderTarget(target, 3, camera.activeMipmapLevel);
+            spark.render(scene, cameraNY);
+            renderer.setRenderTarget(target, 4, camera.activeMipmapLevel);
+            spark.render(scene, cameraPZ);
+            target.texture.generateMipmaps = generateMipmaps;
+            renderer.setRenderTarget(target, 5, camera.activeMipmapLevel);
+            spark.render(scene, cameraNZ);
+          },
+          spark,
+          update: update ? async () => {
             const tempCamera = new Camera();
             tempCamera.position.copy(worldCenter);
             tempCamera.updateMatrixWorld(true);
             await spark.update({ scene, camera: tempCamera });
-          }
-          target.texture.generateMipmaps = false;
-          renderer.xr.enabled = false;
-          renderer.autoClear = true;
-          const [cameraPX, cameraNX, cameraPY, cameraNY, cameraPZ, cameraNZ] = camera.children as Camera[];
-          renderer.setRenderTarget(target, 0, camera.activeMipmapLevel);
-          spark.render(scene, cameraPX);
-          renderer.setRenderTarget(target, 1, camera.activeMipmapLevel);
-          spark.render(scene, cameraNX);
-          renderer.setRenderTarget(target, 2, camera.activeMipmapLevel);
-          spark.render(scene, cameraPY);
-          renderer.setRenderTarget(target, 3, camera.activeMipmapLevel);
-          spark.render(scene, cameraNY);
-          renderer.setRenderTarget(target, 4, camera.activeMipmapLevel);
-          spark.render(scene, cameraPZ);
-          target.texture.generateMipmaps = generateMipmaps;
-          renderer.setRenderTarget(target, 5, camera.activeMipmapLevel);
-          spark.render(scene, cameraNZ);
+          } : undefined,
         });
       } finally {
         target.texture.generateMipmaps = generateMipmaps;
         renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
         renderer.xr.enabled = previousXrEnabled;
         renderer.autoClear = previousAutoClear;
-        for (const [object, visible] of objectVisibility.entries()) {
-          object.visible = visible;
-        }
       }
       target.texture.needsPMREMUpdate = true;
       return pmrem.fromCubemap(target.texture).texture;
@@ -231,6 +227,34 @@ export function createHalfFloatSparkEnvCapture() {
       pmremRenderer = null;
     },
   };
+}
+
+export async function captureSparkSceneForEnvironmentMap({
+  hideObjects,
+  render,
+  spark,
+  update,
+}: {
+  hideObjects: Object3D[];
+  render: () => Promise<void>;
+  spark: Pick<SparkRenderer, "autoUpdate" | "encodeLinear">;
+  update?: () => Promise<void>;
+}) {
+  if (update) {
+    await withSparkCaptureState(spark, update);
+  }
+  const objectVisibility = new Map<Object3D, boolean>();
+  for (const object of hideObjects) {
+    objectVisibility.set(object, object.visible);
+    object.visible = false;
+  }
+  try {
+    await withSparkCaptureState(spark, render);
+  } finally {
+    for (const [object, visible] of objectVisibility.entries()) {
+      object.visible = visible;
+    }
+  }
 }
 
 export async function withSparkCaptureState<T>(

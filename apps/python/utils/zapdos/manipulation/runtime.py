@@ -11,6 +11,10 @@ from utils.zapdos.manipulation.grounding import ground_pick_target
 from utils.zapdos.manipulation.planner import plan_pick
 from utils.zapdos.manipulation.types import GroundedPick, PickPlan, SceneObject
 
+GRAB_APPLE_ARM = "left"
+GRAB_APPLE_TARGET_QUERY = "apple"
+GRAB_APPLE_SUPPORT_QUERY = "benchmark table"
+
 
 class ManipulationRuntime:
     def __init__(
@@ -48,6 +52,19 @@ class ManipulationRuntime:
             **self._plan_pick(grounded, arm=arm, objects=objects),
             "arm": arm,
         })
+        return {**result, "scene_revision": self.session.editor.scene_revision}
+
+    def grab_apple(self) -> dict[str, object]:
+        objects = self._scene_objects()
+        grounded = self._ground_target({
+            "target_query": GRAB_APPLE_TARGET_QUERY,
+            "support_query": GRAB_APPLE_SUPPORT_QUERY,
+        }, objects)
+        target = grounded["target"]
+        if target.get("motion") != "dynamic":
+            raise HTTPException(status_code=400, detail="Pick target must be a dynamic scene object")
+        self._sync_executor_state()
+        result = self.executor.execute(self._grab_apple_plan(target, arm=GRAB_APPLE_ARM))
         return {**result, "scene_revision": self.session.editor.scene_revision}
 
     def _scene_objects(self) -> list[SceneObject]:
@@ -90,3 +107,59 @@ class ManipulationRuntime:
     def _sync_executor_state(self) -> None:
         self.executor.physics = self.session.physics
         self.executor.bundle = self.session.bundle
+
+    def _grab_apple_plan(self, target: SceneObject, *, arm: str) -> dict[str, object]:
+        center = self._target_center(target)
+        side = 1.0 if arm == "left" else -1.0
+        current_pose = self.executor.current_pose(arm)
+        return {
+            "kind": "pick",
+            "arm": arm,
+            "target_body": target["body"],
+            "grasp_tolerance": 0.16,
+            "attach_tolerance": 0.11,
+            "stages": [
+                {
+                    "name": "descend_to_grasp",
+                    "kind": "move_pose",
+                    "pose": {
+                        "position": [
+                            round(center[0] - 0.02, 6),
+                            round(center[1] + side * 0.06, 6),
+                            round(center[2] - 0.01, 6),
+                        ],
+                        "quat_wxyz": list(current_pose["quat_wxyz"]),
+                    },
+                    "position_only": True,
+                    "tolerance": 0.16,
+                },
+                {"name": "close_gripper", "kind": "gripper", "width": 0.0},
+                {
+                    "name": "retreat",
+                    "kind": "move_pose",
+                    "pose": {
+                        "position": [
+                            round(center[0] - 0.10, 6),
+                            round(center[1] + side * 0.18, 6),
+                            round(center[2] + 0.09, 6),
+                        ],
+                        "quat_wxyz": list(current_pose["quat_wxyz"]),
+                    },
+                    "position_only": True,
+                    "tolerance": 0.08,
+                },
+            ],
+        }
+
+    def _target_center(self, target: SceneObject) -> tuple[float, float, float]:
+        aabb = target.get("world_aabb")
+        if aabb is not None:
+            return (
+                0.5 * (float(aabb["min"][0]) + float(aabb["max"][0])),
+                0.5 * (float(aabb["min"][1]) + float(aabb["max"][1])),
+                0.5 * (float(aabb["min"][2]) + float(aabb["max"][2])),
+            )
+        position = target.get("position")
+        if position is not None:
+            return float(position[0]), float(position[1]), float(position[2])
+        raise HTTPException(status_code=400, detail=f"Grab apple requires world position for {target['body']}")

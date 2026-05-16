@@ -1448,15 +1448,19 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.runtime = mock.Mock(
             list_scene_objects=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}], "scene_revision": "rev-1"}),
+            grab_apple=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1", "scene_revision": "rev-1"}),
             pick_object=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-1"}),
         )
 
         listed = MODULE.ZapdosSession.call_once(session, "list_scene_objects", ())
+        grabbed = MODULE.ZapdosSession.call_once(session, "grab_apple", ())
         picked = MODULE.ZapdosSession.call_once(session, "pick_object", ({"target_query": "crate"},))
 
         self.assertEqual(listed["items"][0]["body"], "Scene_Crate")
+        self.assertEqual(grabbed["target_body"], "Scene_apple_1")
         self.assertEqual(picked["target_body"], "Scene_Crate")
         session.runtime.list_scene_objects.assert_called_once_with()
+        session.runtime.grab_apple.assert_called_once_with()
         session.runtime.pick_object.assert_called_once_with({"target_query": "crate"})
 
     def test_manipulation_runtime_executes_grounded_pick_plan(self):
@@ -1501,6 +1505,66 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             start_pose={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
         )
         executor.execute.assert_called_once_with({"kind": "pick", "target_body": "Scene_Crate", "arm": "left"})
+
+    def test_manipulation_runtime_executes_arm_only_grab_apple_plan(self):
+        from utils.zapdos.manipulation.runtime import ManipulationRuntime
+
+        target = {
+            "body": "Scene_apple_1",
+            "label": "apple",
+            "motion": "dynamic",
+            "position": [0.5, 0.0, 0.83],
+            "world_aabb": {"min": [0.454, -0.046, 0.784], "max": [0.546, 0.046, 0.876]},
+        }
+        support = {
+            "body": "table_body",
+            "label": "benchmark table",
+            "motion": "static",
+            "position": [0.5, 0.0, 0.75],
+            "world_aabb": {"min": [0.1, -0.3, 0.7], "max": [0.9, 0.3, 0.8]},
+        }
+        session = SimpleNamespace(
+            editor=SimpleNamespace(
+                scene_revision="rev-1",
+                overlay_state={},
+                list_scene_bodies=mock.Mock(return_value={"items": []}),
+            ),
+            bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
+            physics=mock.Mock(),
+        )
+        executor = mock.Mock(
+            current_pose=mock.Mock(return_value={"position": [-0.068666, 0.251999, 0.72023], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
+            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1"}),
+        )
+        catalog_loader = mock.Mock(return_value=[target, support])
+        grounder = mock.Mock(return_value={"target": target, "support": support})
+
+        runtime = ManipulationRuntime(
+            session,
+            catalog_loader=catalog_loader,
+            grounding_fn=grounder,
+            executor=executor,
+        )
+        result = runtime.grab_apple()
+
+        self.assertEqual(result["target_body"], "Scene_apple_1")
+        self.assertEqual(result["scene_revision"], "rev-1")
+        grounder.assert_called_once_with(catalog_loader.return_value, target_query="apple", support_query="benchmark table")
+        executor.execute.assert_called_once()
+        plan = executor.execute.call_args.args[0]
+        self.assertEqual(plan["arm"], "left")
+        self.assertEqual(plan["target_body"], "Scene_apple_1")
+        self.assertEqual(plan["attach_tolerance"], 0.11)
+        self.assertEqual(plan["grasp_tolerance"], 0.16)
+        self.assertEqual([stage["name"] for stage in plan["stages"]], [
+            "descend_to_grasp",
+            "close_gripper",
+            "retreat",
+        ])
+        self.assertTrue(plan["stages"][0]["position_only"])
+        self.assertFalse(plan["stages"][0].get("include_torso", False))
+        self.assertEqual(plan["stages"][0]["pose"]["position"], [0.48, 0.06, 0.82])
+        self.assertEqual(plan["stages"][2]["pose"]["position"], [0.4, 0.18, 0.92])
 
     def test_manipulation_runtime_passes_start_pose_and_scene_objects_to_planner(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime

@@ -4,12 +4,14 @@ import { useState } from "react";
 
 import { AddBenchmarkTableButton } from "./AddBenchmarkTableButton";
 import { CameraOverrideSaveButton } from "./CameraOverrideSaveButton";
+import { GrabTheAppleButton } from "./GrabTheAppleButton";
 import { RobotModelSelect } from "./RobotModelSelect";
 import { SpaceMouseModeSelect } from "./SpaceMouseModeSelect";
 import type { RobotModelKey } from "./robot-model";
 
 export function ZapdosTopOverlay({
   activeRobotModelKey,
+  defaultDebugOpen = false,
   defaultSettingsOpen = false,
   mode = "translate",
   onRobotModelChange,
@@ -18,6 +20,7 @@ export function ZapdosTopOverlay({
   sse,
 }: {
   activeRobotModelKey: RobotModelKey | null
+  defaultDebugOpen?: boolean
   defaultSettingsOpen?: boolean
   mode?: "translate" | "rotate"
   onRobotModelChange: (key: RobotModelKey) => void
@@ -25,7 +28,9 @@ export function ZapdosTopOverlay({
   sess: string
   sse: number
 }) {
-  const [open, setOpen] = useState(defaultSettingsOpen);
+  const [configOpen, setConfigOpen] = useState(defaultSettingsOpen);
+  const [debugOpen, setDebugOpen] = useState(defaultDebugOpen);
+  const overlayButtonClassName = "rounded-md border border-white/20 bg-black/60 px-3 py-2 text-sm text-white backdrop-blur-sm";
 
   return <>
     <div className="absolute left-8 top-8">
@@ -35,22 +40,48 @@ export function ZapdosTopOverlay({
         <div>Mode { mode }</div>
       </div>
     </div>
-    <div className="absolute right-8 top-8">
+    <div className="absolute right-8 top-8 flex items-start gap-3">
       <div className="relative">
         <button
-          aria-expanded={ open }
+          aria-expanded={ configOpen }
           aria-haspopup="dialog"
-          aria-label={ open ? "Close settings" : "Open settings" }
-          className="rounded-md border border-white/20 bg-black/60 px-3 py-2 text-sm text-white backdrop-blur-sm"
-          onClick={ () => setOpen(current => !current) }
+          aria-label={ configOpen ? "Close config" : "Open config" }
+          className={ overlayButtonClassName }
+          onClick={ () => {
+            setConfigOpen(current => {
+              const next = !current;
+              if (next) setDebugOpen(false);
+              return next;
+            });
+          } }
           type="button">
           Config
         </button>
-        { open ? <div className="absolute right-0 mt-3 flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-3">
+        { configOpen ? <div className="absolute right-0 mt-3 flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-3">
           <RobotModelSelect activeRobotModelKey={ activeRobotModelKey } onChange={ onRobotModelChange } />
           <SpaceMouseModeSelect />
-          <AddBenchmarkTableButton sess={ sess } />
           <CameraOverrideSaveButton sess={ sess } />
+        </div> : null }
+      </div>
+      <div className="relative">
+        <button
+          aria-expanded={ debugOpen }
+          aria-haspopup="dialog"
+          aria-label={ debugOpen ? "Close debug" : "Open debug" }
+          className={ overlayButtonClassName }
+          onClick={ () => {
+            setDebugOpen(current => {
+              const next = !current;
+              if (next) setConfigOpen(false);
+              return next;
+            });
+          } }
+          type="button">
+          Debug
+        </button>
+        { debugOpen ? <div className="absolute right-0 mt-3 flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-3">
+          <AddBenchmarkTableButton sess={ sess } />
+          <GrabTheAppleButton sess={ sess } />
         </div> : null }
       </div>
     </div>

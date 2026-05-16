@@ -6,8 +6,11 @@ export type ListSceneObjectsResult = {
 };
 
 export type PickObjectResult = {
+  arm?: string;
+  ok?: boolean;
   scene_revision: string;
   status?: string;
+  target_body?: string;
 };
 
 export function createManipulationToolRequest(args: unknown[]): RequestInit {

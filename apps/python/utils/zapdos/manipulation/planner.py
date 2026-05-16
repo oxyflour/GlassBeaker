@@ -90,7 +90,13 @@ def _pose(x: float, y: float, z: float) -> PickPose:
     }
 
 
-def _move_stage(name: str, x: float, y: float, z: float, quat_wxyz: list[float]) -> PickStage:
+def _move_stage(
+    name: str,
+    x: float,
+    y: float,
+    z: float,
+    quat_wxyz: list[float],
+) -> PickStage:
     return {
         "name": name,
         "kind": "move_pose",

@@ -333,7 +333,8 @@ export function ZapdosScene({
     } } className="h-full w-full">
       <Perf />
       <SparkRendererBridge ref={ setSpark } />
-      <SceneEnvironment spark={ spark } splatReady={ splatReady } splatRoot={ splatRoot } />
+      { /* TODO: enable splatRoot after resolving issue with environment rendering */ }
+      <SceneEnvironment spark={ spark } splatReady={ splatReady } splatRoot={ null } />
       <ambientLight intensity={ 1.2 } />
       <SurfacePivotControls enabled={ !transformDragging } pickRootName={ PIVOT_PICK_ROOT } />
       <EffectComposer multisampling={ 8 }><N8AO aoRadius={ 1 } distanceFalloff={ 1 } intensity={ 4 } /></EffectComposer>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,10 @@ DRIVE_STAGNATION_STEPS = 24
 DRIVE_MIN_PROGRESS = 0.01
 DRIVE_DIVERGENCE_MARGIN = 0.001
 SUPPORT_ESCAPE_MARGIN = 0.06
+POSITION_STAGE_SEGMENT_LENGTH = 0.05
+POSITION_STAGE_SEGMENT_STEPS = 32
+POSITION_STAGE_SUBGOAL_TOLERANCE = 0.02
+POSITION_STAGE_STEP_SCALE = 0.0005
 
 
 class PickExecutor:
@@ -43,6 +48,8 @@ class PickExecutor:
         target_body = str(plan["target_body"])
         open_width = float(plan.get("open_gripper", 0.04))
         closed_width = 0.0
+        grasp_tolerance = float(plan.get("grasp_tolerance", GRASP_POSE_TOLERANCE))
+        attach_tolerance = float(plan.get("attach_tolerance", TARGET_ATTACH_TOLERANCE))
         attached = False
         stages = plan["stages"] if "stages" in plan else self._legacy_stages(plan)
         grasp_pose: dict[str, tuple[float, ...]] | None = None
@@ -78,8 +85,8 @@ class PickExecutor:
                 if grasp_pose is None:
                     raise HTTPException(status_code=409, detail=f"Pick failed: missing descend_to_grasp stage before {stage_name}")
                 self._drive_pose(ik, arm, grasp_pose, closed_width, steps=6)
-                self._require_pose_reached(ik, arm, grasp_pose, GRASP_POSE_TOLERANCE, stage_name)
-                self._require_target_near_gripper(ik, arm, target_body, TARGET_ATTACH_TOLERANCE)
+                self._require_pose_reached(ik, arm, grasp_pose, grasp_tolerance, stage_name)
+                self._require_target_near_gripper(ik, arm, target_body, attach_tolerance)
                 self.physics.attach_body(str(plan.get("gripper_body") or get_arm_config(arm).end_effector_body), target_body)
                 attached = True
         except Exception:
@@ -105,6 +112,47 @@ class PickExecutor:
         position_only: bool = False,
     ) -> None:
         start = ik.get_end_effector_pose(arm)
+        if position_only:
+            dx = abs(float(target["position"][0]) - float(start["position"][0]))
+            dy = abs(float(target["position"][1]) - float(start["position"][1]))
+            position_error = self._distance(start["position"], target["position"])
+            if dx <= POSITION_STAGE_SUBGOAL_TOLERANCE and dy <= POSITION_STAGE_SUBGOAL_TOLERANCE:
+                max_steps = max(DRIVE_SETTLE_STEPS, int(math.ceil(position_error / POSITION_STAGE_STEP_SCALE)))
+                for _ in range(max_steps):
+                    current = ik.get_end_effector_pose(arm)
+                    if self._distance(current["position"], target["position"]) <= DRIVE_POSE_TOLERANCE:
+                        return
+                    self.physics.apply_joint_command(ik.solve_step(
+                        arm,
+                        target,
+                        gripper,
+                        include_torso=include_torso,
+                        position_only=True,
+                    ))
+                    self.physics.step()
+                    ik.sync_joint_state(self.physics.joint_state_msg())
+                return
+            segments = max(1, int(math.ceil(position_error / POSITION_STAGE_SEGMENT_LENGTH)))
+            for index in range(segments):
+                alpha = float(index + 1) / float(segments)
+                subgoal = {
+                    "position": tuple((1.0 - alpha) * a + alpha * b for a, b in zip(start["position"], target["position"])),
+                    "rotation": target["rotation"],
+                }
+                for _ in range(POSITION_STAGE_SEGMENT_STEPS):
+                    current = ik.get_end_effector_pose(arm)
+                    if self._distance(current["position"], subgoal["position"]) <= POSITION_STAGE_SUBGOAL_TOLERANCE:
+                        break
+                    self.physics.apply_joint_command(ik.solve_step(
+                        arm,
+                        subgoal,
+                        gripper,
+                        include_torso=include_torso,
+                        position_only=True,
+                    ))
+                    self.physics.step()
+                    ik.sync_joint_state(self.physics.joint_state_msg())
+            return
         initial_error = self._distance(start["position"], target["position"])
         required_progress = min(DRIVE_MIN_PROGRESS, initial_error * 0.25)
         best_error = initial_error
@@ -226,9 +274,9 @@ class PickExecutor:
             aabb = body_world_aabb(target_body)
             if aabb is not None:
                 target_position = (
-                    0.5 * (float(aabb["min"][0]) + float(aabb["max"][0])),
-                    0.5 * (float(aabb["min"][1]) + float(aabb["max"][1])),
-                    0.5 * (float(aabb["min"][2]) + float(aabb["max"][2])),
+                    min(max(float(gripper["position"][0]), float(aabb["min"][0])), float(aabb["max"][0])),
+                    min(max(float(gripper["position"][1]), float(aabb["min"][1])), float(aabb["max"][1])),
+                    min(max(float(gripper["position"][2]), float(aabb["min"][2])), float(aabb["max"][2])),
                 )
         if target_position is None:
             target_pose = self.physics.get_pose().get(target_body)

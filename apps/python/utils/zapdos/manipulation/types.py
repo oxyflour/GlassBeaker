@@ -57,6 +57,9 @@ class PickStage(TypedDict):
     name: str
     kind: str
     pose: NotRequired[PickPose]
+    include_torso: NotRequired[bool]
+    position_only: NotRequired[bool]
+    tolerance: NotRequired[float]
     width: NotRequired[float]
 
 
@@ -64,6 +67,8 @@ class PickPlan(TypedDict):
     kind: str
     target_body: str
     orientation: PickOrientation
+    attach_tolerance: NotRequired[float]
+    grasp_tolerance: NotRequired[float]
     stages: NotRequired[list[PickStage]]
     pre_grasp: NotRequired[PickPose]
     grasp: NotRequired[PickPose]
