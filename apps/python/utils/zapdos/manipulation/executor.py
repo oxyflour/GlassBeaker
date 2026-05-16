@@ -42,6 +42,9 @@ class PickExecutor:
         }
 
     def execute(self, plan: dict[str, object]) -> dict[str, object]:
+        if str(plan.get("kind") or "pick") == "release":
+            return self._execute_release(plan)
+
         arm = str(plan.get("arm") or "left")
         ik = self._ensure_ik()
         ik.sync_joint_state(self.physics.joint_state_msg())
@@ -104,6 +107,30 @@ class PickExecutor:
             if attached:
                 self.physics.detach_body(target_body)
             raise
+        return {"ok": True, "arm": arm, "target_body": target_body, "attachment": self.physics.get_attachment(target_body)}
+
+    def _execute_release(self, plan: dict[str, object]) -> dict[str, object]:
+        arm = str(plan.get("arm") or "left")
+        target_body = str(plan["target_body"])
+        attachment = self.physics.get_attachment(target_body)
+        if attachment is None:
+            raise HTTPException(status_code=409, detail=f"Release failed: {target_body} is not attached")
+
+        ik = self._ensure_ik()
+        ik.sync_joint_state(self.physics.joint_state_msg())
+        hold_pose = ik.get_end_effector_pose(arm)
+        for raw_stage in plan.get("stages", []):
+            stage = raw_stage if isinstance(raw_stage, dict) else {}
+            if str(stage.get("kind")) != "gripper":
+                raise HTTPException(status_code=409, detail=f"Release failed: unsupported stage kind {stage.get('kind')}")
+            self._drive_pose(
+                ik,
+                arm,
+                hold_pose,
+                float(stage.get("width", 0.0)),
+                steps=max(1, int(stage.get("steps", 6))),
+            )
+        self.physics.detach_body(target_body)
         return {"ok": True, "arm": arm, "target_body": target_body, "attachment": self.physics.get_attachment(target_body)}
 
     def _ensure_ik(self) -> IKController:

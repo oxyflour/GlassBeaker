@@ -263,6 +263,48 @@ class PickExecutorTest(unittest.TestCase):
         self.assertIn("missing descend_to_grasp", err.exception.detail)
         self.assertEqual(physics.attached, [])
 
+    def test_execute_release_opens_gripper_and_detaches_attached_target(self):
+        physics = _FakePhysics()
+        physics.attached.append(("Root_r1_pro_with_gripper_left_gripper_link", "Scene_Crate"))
+        ik = _MutableIK(_pose(0.0, 0.0, 0.08))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+        driven: list[tuple[tuple[float, ...], float, int]] = []
+
+        def drive(_ik_controller, _arm, target, gripper, steps=12, **_kwargs):
+            driven.append((target["position"], gripper, steps))
+            ik.pose = target
+
+        with mock.patch.object(executor, "_drive_pose", side_effect=drive):
+            result = executor.execute({
+                "kind": "release",
+                "arm": "left",
+                "target_body": "Scene_Crate",
+                "stages": [
+                    {"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 18},
+                ],
+            })
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(driven, [((0.0, 0.0, 0.08), 0.05, 18)])
+        self.assertEqual(physics.detached, ["Scene_Crate"])
+        self.assertIsNone(result["attachment"])
+
+    def test_execute_release_rejects_target_that_is_not_attached(self):
+        executor = PickExecutor(_FakePhysics(), bundle=_bundle(), ik_controller=_MutableIK(_pose(0.0, 0.0, 0.08)))
+
+        with self.assertRaises(HTTPException) as err:
+            executor.execute({
+                "kind": "release",
+                "arm": "left",
+                "target_body": "Scene_Crate",
+                "stages": [
+                    {"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 18},
+                ],
+            })
+
+        self.assertEqual(err.exception.status_code, 409)
+        self.assertIn("not attached", err.exception.detail)
+
     def test_execute_rejects_unsupported_stage_kind(self):
         executor = PickExecutor(_FakePhysics(), bundle=_bundle(), ik_controller=_MutableIK(_pose(0.0, 0.0, 0.08)))
 
