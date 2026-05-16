@@ -1449,18 +1449,22 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.runtime = mock.Mock(
             list_scene_objects=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}], "scene_revision": "rev-1"}),
             grab_apple=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1", "scene_revision": "rev-1"}),
+            place_apple=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1", "scene_revision": "rev-2"}),
             pick_object=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-1"}),
         )
 
         listed = MODULE.ZapdosSession.call_once(session, "list_scene_objects", ())
         grabbed = MODULE.ZapdosSession.call_once(session, "grab_apple", ())
+        placed = MODULE.ZapdosSession.call_once(session, "place_apple", ())
         picked = MODULE.ZapdosSession.call_once(session, "pick_object", ({"target_query": "crate"},))
 
         self.assertEqual(listed["items"][0]["body"], "Scene_Crate")
         self.assertEqual(grabbed["target_body"], "Scene_apple_1")
+        self.assertEqual(placed["target_body"], "Scene_apple_1")
         self.assertEqual(picked["target_body"], "Scene_Crate")
         session.runtime.list_scene_objects.assert_called_once_with()
         session.runtime.grab_apple.assert_called_once_with()
+        session.runtime.place_apple.assert_called_once_with()
         session.runtime.pick_object.assert_called_once_with({"target_query": "crate"})
 
     def test_manipulation_runtime_executes_grounded_pick_plan(self):
@@ -1570,6 +1574,63 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["stages"][1]["pose"]["position"], [0.5, 0.0, 0.83])
         self.assertEqual(plan["stages"][3]["steps"], 20)
         self.assertEqual(plan["stages"][3]["pose"]["position"], [0.4, 0.18, 0.92])
+
+    def test_manipulation_runtime_executes_arm_only_place_apple_plan(self):
+        from utils.zapdos.manipulation.runtime import ManipulationRuntime
+
+        target = {
+            "body": "Scene_apple_1",
+            "label": "apple",
+            "motion": "dynamic",
+            "position": [0.5, 0.0, 0.83],
+            "world_aabb": {"min": [0.454, -0.046, 0.784], "max": [0.546, 0.046, 0.876]},
+        }
+        support = {
+            "body": "table_body",
+            "label": "benchmark table",
+            "motion": "static",
+            "position": [0.5, 0.0, 0.75],
+            "world_aabb": {"min": [0.1, -0.3, 0.7], "max": [0.9, 0.3, 0.8]},
+        }
+        physics = mock.Mock()
+        physics.get_attachment.return_value = {
+            "parent_body": "Root_r1_pro_with_gripper_left_gripper_link",
+            "child_body": "Scene_apple_1",
+            "relative_position": [0.0, 0.0, 0.0],
+            "relative_quat": [1.0, 0.0, 0.0, 0.0],
+        }
+        session = SimpleNamespace(
+            editor=SimpleNamespace(
+                scene_revision="rev-2",
+                overlay_state={},
+                list_scene_bodies=mock.Mock(return_value={"items": []}),
+            ),
+            bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
+            physics=physics,
+        )
+        executor = mock.Mock(
+            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1", "attachment": None}),
+        )
+        catalog_loader = mock.Mock(return_value=[target, support])
+        grounder = mock.Mock(return_value={"target": target, "support": support})
+
+        runtime = ManipulationRuntime(
+            session,
+            catalog_loader=catalog_loader,
+            grounding_fn=grounder,
+            executor=executor,
+        )
+        result = runtime.place_apple()
+
+        self.assertEqual(result["target_body"], "Scene_apple_1")
+        self.assertEqual(result["scene_revision"], "rev-2")
+        physics.get_attachment.assert_called_once_with("Scene_apple_1")
+        executor.execute.assert_called_once_with({
+            "kind": "release",
+            "arm": "left",
+            "target_body": "Scene_apple_1",
+            "stages": [{"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 18}],
+        })
 
     def test_manipulation_runtime_passes_start_pose_and_scene_objects_to_planner(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime

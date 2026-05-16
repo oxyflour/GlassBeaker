@@ -68,6 +68,31 @@ class ManipulationRuntime:
         result = self.executor.execute(self._grab_apple_plan(target, arm=GRAB_APPLE_ARM))
         return {**result, "scene_revision": self.session.editor.scene_revision}
 
+    def place_apple(self) -> dict[str, object]:
+        objects = self._scene_objects()
+        grounded = self._ground_target({
+            "target_query": GRAB_APPLE_TARGET_QUERY,
+            "support_query": GRAB_APPLE_SUPPORT_QUERY,
+        }, objects)
+        target = grounded["target"]
+        if self.session.physics.get_attachment(target["body"]) is None:
+            raise HTTPException(status_code=409, detail=f"Place apple requires {target['body']} to be attached")
+        self._sync_executor_state()
+        result = self.executor.execute({
+            "kind": "release",
+            "arm": GRAB_APPLE_ARM,
+            "target_body": target["body"],
+            "stages": [
+                {
+                    "name": "open_gripper",
+                    "kind": "gripper",
+                    "width": GRAB_APPLE_OPEN_WIDTH,
+                    "steps": 18,
+                },
+            ],
+        })
+        return {**result, "scene_revision": self.session.editor.scene_revision}
+
     def _scene_objects(self) -> list[SceneObject]:
         return self.catalog_loader(
             self.session.editor.list_scene_bodies(),

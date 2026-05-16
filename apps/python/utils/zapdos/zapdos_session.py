@@ -75,6 +75,8 @@ class ZapdosSession(Session):
             return self.runtime.list_scene_objects()
         if method == "grab_apple":
             return self.runtime.grab_apple()
+        if method == "place_apple":
+            return self.runtime.place_apple()
         if method == "set_scene_assets":
             return self.editor.set_scene_assets(*args)
         if method == "remove_asset_from_scene":
