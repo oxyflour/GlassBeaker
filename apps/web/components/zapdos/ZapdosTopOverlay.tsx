@@ -5,6 +5,7 @@ import { useState } from "react";
 import { AddBenchmarkTableButton } from "./AddBenchmarkTableButton";
 import { CameraOverrideSaveButton } from "./CameraOverrideSaveButton";
 import { GrabTheAppleButton } from "./GrabTheAppleButton";
+import { PlaceTheAppleButton } from "./PlaceTheAppleButton";
 import { RobotModelSelect } from "./RobotModelSelect";
 import { SpaceMouseModeSelect } from "./SpaceMouseModeSelect";
 import type { RobotModelKey } from "./robot-model";
@@ -82,6 +83,7 @@ export function ZapdosTopOverlay({
         { debugOpen ? <div className="absolute right-0 mt-3 flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-3">
           <AddBenchmarkTableButton sess={ sess } />
           <GrabTheAppleButton sess={ sess } />
+          <PlaceTheAppleButton sess={ sess } />
         </div> : null }
       </div>
     </div>

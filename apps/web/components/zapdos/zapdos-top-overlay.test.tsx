@@ -54,6 +54,7 @@ test("ZapdosTopOverlay renders Add benchmark table in the debug menu", () => {
 
   assert.match(html, /Add benchmark table/);
   assert.match(html, /Grab the apple/);
+  assert.match(html, /Place the apple/);
   assert.doesNotMatch(html, /Save camera override/);
   assert.doesNotMatch(html, /Robot model/);
   assert.doesNotMatch(html, /SpaceMouse/);
