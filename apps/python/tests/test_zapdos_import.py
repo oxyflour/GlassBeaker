@@ -1558,10 +1558,11 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         plan = executor.execute.call_args.args[0]
         self.assertEqual(plan["arm"], "left")
         self.assertEqual(plan["target_body"], "Scene_apple_1")
-        self.assertEqual(plan["attach_tolerance"], 0.03)
-        self.assertEqual(plan["grasp_tolerance"], 0.05)
+        self.assertEqual(plan["attach_tolerance"], 0.015)
+        self.assertEqual(plan["grasp_tolerance"], 0.025)
         self.assertEqual([stage["name"] for stage in plan["stages"]], [
             "open_gripper",
+            "approach_above",
             "descend_to_grasp",
             "close_gripper",
             "retreat",
@@ -1569,11 +1570,15 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["stages"][0]["width"], 0.05)
         self.assertEqual(plan["stages"][0]["steps"], 18)
         self.assertTrue(plan["stages"][1]["position_only"])
-        self.assertEqual(plan["stages"][1]["steps"], 24)
+        self.assertEqual(plan["stages"][1]["steps"], 20)
         self.assertFalse(plan["stages"][1].get("include_torso", False))
-        self.assertEqual(plan["stages"][1]["pose"]["position"], [0.5, 0.0, 0.83])
-        self.assertEqual(plan["stages"][3]["steps"], 20)
-        self.assertEqual(plan["stages"][3]["pose"]["position"], [0.4, 0.18, 0.92])
+        self.assertEqual(plan["stages"][1]["pose"]["position"], [0.5, 0.0, 0.95])
+        self.assertTrue(plan["stages"][2]["position_only"])
+        self.assertEqual(plan["stages"][2]["steps"], 24)
+        self.assertFalse(plan["stages"][2].get("include_torso", False))
+        self.assertEqual(plan["stages"][2]["pose"]["position"], [0.5, 0.0, 0.83])
+        self.assertEqual(plan["stages"][4]["steps"], 20)
+        self.assertEqual(plan["stages"][4]["pose"]["position"], [0.4, 0.18, 0.92])
 
     def test_manipulation_runtime_executes_arm_only_place_apple_plan(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime

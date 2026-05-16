@@ -138,12 +138,14 @@ class ManipulationRuntime:
         center = self._target_center(target)
         side = 1.0 if arm == "left" else -1.0
         current_pose = self.executor.current_pose(arm)
+        grasp_position = [round(center[0], 6), round(center[1], 6), round(center[2], 6)]
+        above_position = [grasp_position[0], grasp_position[1], round(center[2] + 0.12, 6)]
         return {
             "kind": "pick",
             "arm": arm,
             "target_body": target["body"],
-            "grasp_tolerance": 0.05,
-            "attach_tolerance": 0.03,
+            "grasp_tolerance": 0.025,
+            "attach_tolerance": 0.015,
             "stages": [
                 {
                     "name": "open_gripper",
@@ -152,19 +154,26 @@ class ManipulationRuntime:
                     "steps": 18,
                 },
                 {
+                    "name": "approach_above",
+                    "kind": "move_pose",
+                    "pose": {
+                        "position": above_position,
+                        "quat_wxyz": list(current_pose["quat_wxyz"]),
+                    },
+                    "position_only": True,
+                    "steps": 20,
+                    "tolerance": 0.05,
+                },
+                {
                     "name": "descend_to_grasp",
                     "kind": "move_pose",
                     "pose": {
-                        "position": [
-                            round(center[0], 6),
-                            round(center[1], 6),
-                            round(center[2], 6),
-                        ],
+                        "position": grasp_position,
                         "quat_wxyz": list(current_pose["quat_wxyz"]),
                     },
                     "position_only": True,
                     "steps": 24,
-                    "tolerance": 0.16,
+                    "tolerance": 0.05,
                 },
                 {"name": "close_gripper", "kind": "gripper", "width": 0.0},
                 {
