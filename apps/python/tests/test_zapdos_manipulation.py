@@ -254,8 +254,8 @@ class ZapdosManipulationTest(unittest.TestCase):
         self.assertTrue(all(stage["kind"] == "move_pose" for stage in plan["stages"] if stage["name"] != "close_gripper"))
         self.assertEqual(plan["stages"][0]["pose"]["position"], [0.0, 0.0, 1.03])
         self.assertEqual(plan["stages"][1]["pose"]["position"], [0.5, 0.0, 1.03])
-        self.assertEqual(plan["stages"][2]["pose"]["position"], [0.5, 0.0, 0.98689])
-        self.assertEqual(plan["stages"][3]["pose"]["position"], [0.5, 0.0, 0.86689])
+        self.assertEqual(plan["stages"][2]["pose"]["position"], [0.5, 0.0, 0.95])
+        self.assertEqual(plan["stages"][3]["pose"]["position"], [0.5, 0.0, 0.83])
         self.assertEqual(plan["stages"][4]["width"], 0.0)
         self.assertEqual(plan["stages"][5]["pose"]["position"], [0.5, 0.0, 1.03])
 
@@ -393,11 +393,11 @@ class ZapdosManipulationTest(unittest.TestCase):
             start_pose={"position": [0.0, 0.0, 1.1], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
         )
 
-        self.assertEqual(plan["pre_grasp"]["position"], [0.6, -0.1, 0.95689])
-        self.assertEqual(plan["grasp"]["position"], [0.6, -0.1, 0.83689])
+        self.assertEqual(plan["pre_grasp"]["position"], [0.6, -0.1, 0.92])
+        self.assertEqual(plan["grasp"]["position"], [0.6, -0.1, 0.8])
         self.assertEqual(plan["stages"][0]["pose"]["position"], [0.6, -0.1, 1.1])
-        self.assertEqual(plan["stages"][1]["pose"]["position"], [0.6, -0.1, 0.95689])
-        self.assertEqual(plan["stages"][2]["pose"]["position"], [0.6, -0.1, 0.83689])
+        self.assertEqual(plan["stages"][1]["pose"]["position"], [0.6, -0.1, 0.92])
+        self.assertEqual(plan["stages"][2]["pose"]["position"], [0.6, -0.1, 0.8])
 
     @mock.patch("utils.zapdos.manipulation.catalog.asset_local_bounds")
     @mock.patch("utils.zapdos.manipulation.catalog.resolve_asset_record")

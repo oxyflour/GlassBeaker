@@ -1,5 +1,39 @@
 {
   "override": {
+    "ik": {
+      "r1pro": {
+        "left_gripper": {
+          "grasp_frame": {
+            "pos": [
+              0.0,
+              0.0,
+              -0.02
+            ],
+            "quat": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "right_gripper": {
+          "grasp_frame": {
+            "pos": [
+              0.0,
+              0.0,
+              -0.02
+            ],
+            "quat": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
     "position": {
       "r1pro": {
         "left_arm_joint1":  0.1,

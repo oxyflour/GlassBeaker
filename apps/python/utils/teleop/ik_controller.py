@@ -7,7 +7,9 @@ import mujoco  # type: ignore
 import numpy as np
 
 from .arm_config import get_arm_config
+from .grasp_frame import apply_grasp_frame, load_grasp_frames, matrix_to_pose
 from utils.zapdos.bundle import ensure_render_bundle
+from utils.zapdos.physics.mujoco_tools import body_world_pose
 
 TORSO_JOINT_NAMES = ("torso_joint1", "torso_joint2", "torso_joint3", "torso_joint4")
 
@@ -21,6 +23,7 @@ class IKController:
         self._body_ids = {}
         self._joint_limits = {}
         self._torso_joint_names = []
+        self._grasp_frames = load_grasp_frames(robot_usd.resolve())
         for name in TORSO_JOINT_NAMES:
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)  # type: ignore
             if joint_id >= 0:
@@ -60,12 +63,10 @@ class IKController:
         mujoco.mj_forward(self.model, self.data)  # type: ignore
 
     def get_end_effector_pose(self, arm: str) -> dict[str, tuple[float, ...]]:
-        body_id = self._body_ids[arm]
-        quat = np.empty(4, dtype=float)
-        mujoco.mju_mat2Quat(quat, np.array(self.data.xmat[body_id], dtype=float).reshape(-1))  # type: ignore
+        position, rotation = matrix_to_pose(self._grasp_world_pose(arm))
         return {
-            "position": tuple(float(v) for v in self.data.xpos[body_id]),
-            "rotation": tuple(float(v) for v in quat),
+            "position": position,
+            "rotation": rotation,
         }
 
     def solve_step(
@@ -90,7 +91,7 @@ class IKController:
         rot_err = self._rotation_error(current["rotation"], target_pose["rotation"])
         jacp = np.zeros((3, self.model.nv), dtype=float)
         jacr = np.zeros((3, self.model.nv), dtype=float)
-        mujoco.mj_jacBody(self.model, self.data, jacp, jacr, self._body_ids[arm])  # type: ignore
+        mujoco.mj_jac(self.model, self.data, jacp, jacr, np.asarray(current["position"], dtype=float), self._body_ids[arm])  # type: ignore
         dof_ids = [int(self.model.jnt_dofadr[joint_id]) for joint_id in joint_ids]
         J = jacp[:, dof_ids] if position_only else np.vstack([jacp[:, dof_ids], jacr[:, dof_ids]])
         err = pos_err if position_only else np.concatenate([pos_err, rot_err])
@@ -108,6 +109,9 @@ class IKController:
             "name": [*joint_names, *config.gripper_joint_names], # type: ignore
             "position": [*positions, grip, -grip],
         }
+
+    def _grasp_world_pose(self, arm: str) -> np.ndarray:
+        return apply_grasp_frame(body_world_pose(self.data, self._body_ids[arm]), self._grasp_frames[arm])
 
     def _rotation_error(self, current: tuple[float, ...], target: tuple[float, ...]) -> np.ndarray:
         q_current = np.asarray(current, dtype=float)

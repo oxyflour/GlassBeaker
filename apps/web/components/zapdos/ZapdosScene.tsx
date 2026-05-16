@@ -340,7 +340,12 @@ export function ZapdosScene({
       <EffectComposer multisampling={ 8 }><N8AO aoRadius={ 1 } distanceFalloff={ 1 } intensity={ 4 } /></EffectComposer>
       <group name={ PIVOT_PICK_ROOT }>
         <group position={ [0, 2, 1.2] } rotation={ [-Math.PI*0.55, 0, 0] } ref={ setSplatRoot }>
-          <SparkSplat onReadyChange={ setSplatReady } url="/tmp/point_cloud.ply" />
+          {
+            /**
+             * disabled
+            <SparkSplat onReadyChange={ setSplatReady } url="/tmp/point_cloud.ply" />
+             */
+          }
         </group>
       </group>
       <SceneRuntime

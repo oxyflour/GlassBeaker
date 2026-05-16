@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
@@ -15,6 +20,7 @@ from utils.zapdos.physics.mujoco_physics import MujocoPhysics  # noqa: E402
 
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 SCENE_USD = REPO_ROOT / "apps" / "python" / "assets" / "default_scene.usda"
+LEFT_GRASP_FRAME_POS = (0.0, 0.0, -0.03689)
 
 
 def pose_error(pose: dict[str, tuple[float, ...]], target: dict[str, tuple[float, ...]]) -> float:
@@ -60,37 +66,57 @@ class SpaceMouseIKControllerTest(unittest.TestCase):
             self.assertLessEqual(position, upper)
 
     def test_left_arm_reaches_nearby_target_in_mujoco_physics_loop(self):
-        body_map = json.loads(self.controller.bundle.body_map_json.read_text(encoding="utf-8"))
-        physics = MujocoPhysics("ik-test", self.controller.bundle, body_map)
-        arm = "left"
-        config = get_arm_config(arm)
-        try:
-            self.controller.sync_joint_state(physics.joint_state_msg())
-            start = self.controller.get_end_effector_pose(arm)
-            target = {
-                "position": (start["position"][0], start["position"][1] + 0.03, start["position"][2]),
-                "rotation": start["rotation"],
-            }
+        with tempfile.TemporaryDirectory() as tmp:
+            default_path = Path(tmp) / "desktop-config.json"
+            default_path.write_text(json.dumps({
+                "override": {
+                    "ik": {
+                        "r1pro": {
+                            "left_gripper": {
+                                "grasp_frame": {
+                                    "pos": list(LEFT_GRASP_FRAME_POS),
+                                    "quat": [1.0, 0.0, 0.0, 0.0],
+                                }
+                            }
+                        }
+                    }
+                }
+            }), encoding="utf-8")
+            with mock.patch("utils.user_config.default_config_path", return_value=default_path):
+                with mock.patch.dict(os.environ, {"USERPROFILE": ""}, clear=False):
+                    controller = IKController(ROBOT_USD, SCENE_USD)
+                    body_map = json.loads(controller.bundle.body_map_json.read_text(encoding="utf-8"))
+                    physics = MujocoPhysics("ik-test", controller.bundle, body_map)
+                    arm = "left"
+                    config = get_arm_config(arm)
+                    try:
+                        controller.sync_joint_state(physics.joint_state_msg())
+                        start = controller.get_end_effector_pose(arm)
+                        target = {
+                            "position": (start["position"][0], start["position"][1] + 0.03, start["position"][2]),
+                            "rotation": start["rotation"],
+                        }
 
-            before = pose_error(start, target)
-            for _ in range(80):
-                self.controller.sync_joint_state(physics.joint_state_msg())
-                physics.apply_joint_command(self.controller.solve_step(arm, target, 0.02))
-                physics.step()
+                        before = pose_error(start, target)
+                        for _ in range(80):
+                            controller.sync_joint_state(physics.joint_state_msg())
+                            physics.apply_joint_command(controller.solve_step(arm, target, 0.02))
+                            physics.step()
 
-            pose = physics.get_pose()[config.end_effector_body]
-            self.controller.sync_joint_state(physics.joint_state_msg())
-            reached = self.controller.get_end_effector_pose(arm)
-            after = pose_error(reached, target)
-            rotation_error = rotation_error_radians(reached["rotation"], target["rotation"])
+                        pose = physics.get_pose()[config.end_effector_body]
+                        controller.sync_joint_state(physics.joint_state_msg())
+                        reached = controller.get_end_effector_pose(arm)
+                        after = pose_error(reached, target)
+                        rotation_error = rotation_error_radians(reached["rotation"], target["rotation"])
 
-            ee_pose = tuple(float(pose[index]) for index in (12, 13, 14))
-            self.assertLess(after, before)
-            self.assertLess(after, 0.01)
-            self.assertLess(math.dist(ee_pose, reached["position"]), 0.002)
-            self.assertLess(rotation_error, 0.05)
-        finally:
-            physics.close()
+                        pose_matrix = np.array(pose, dtype=float).reshape(4, 4).T
+                        expected = pose_matrix[:3, 3] + pose_matrix[:3, :3] @ np.asarray(LEFT_GRASP_FRAME_POS, dtype=float)
+                        self.assertLess(after, before)
+                        self.assertLess(after, 0.01)
+                        self.assertLess(math.dist(tuple(expected.tolist()), reached["position"]), 0.002)
+                        self.assertLess(rotation_error, 0.05)
+                    finally:
+                        physics.close()
 
     def test_left_arm_position_only_with_torso_reaches_vertical_target(self):
         body_map = json.loads(self.controller.bundle.body_map_json.read_text(encoding="utf-8"))

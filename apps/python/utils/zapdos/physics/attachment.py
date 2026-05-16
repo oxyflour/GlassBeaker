@@ -10,6 +10,7 @@ import numpy as np
 class BodyAttachment:
     parent_body: str
     child_body: str
+    parent_frame: np.ndarray
     relative_pose: np.ndarray
 
     def to_payload(self) -> dict[str, object]:
@@ -27,12 +28,20 @@ def create_attachment(
     child_body: str,
     parent_pose: np.ndarray,
     child_pose: np.ndarray,
+    *,
+    parent_frame: np.ndarray | None = None,
 ) -> BodyAttachment:
-    return BodyAttachment(parent_body, child_body, np.linalg.inv(parent_pose) @ child_pose)
+    resolved_parent_frame = np.eye(4, dtype=float) if parent_frame is None else np.asarray(parent_frame, dtype=float)
+    return BodyAttachment(
+        parent_body,
+        child_body,
+        resolved_parent_frame,
+        np.linalg.inv(parent_pose @ resolved_parent_frame) @ child_pose,
+    )
 
 
 def attachment_world_pose(attachment: BodyAttachment, parent_pose: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    return matrix_to_pose(parent_pose @ attachment.relative_pose)
+    return matrix_to_pose(parent_pose @ attachment.parent_frame @ attachment.relative_pose)
 
 
 def matrix_to_pose(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

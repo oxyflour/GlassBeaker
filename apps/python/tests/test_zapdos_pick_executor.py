@@ -24,6 +24,7 @@ class _FakePhysics:
     def __init__(self) -> None:
         self.attached: list[tuple[str, str]] = []
         self.detached: list[str] = []
+        self.step_count = 0
         self.pose = {
             "Scene_Crate": _matrix_at(0.0, 0.0, 0.0),
         }
@@ -36,7 +37,7 @@ class _FakePhysics:
         pass
 
     def step(self) -> None:
-        pass
+        self.step_count += 1
 
     def attach_body(self, parent_body: str, child_body: str) -> dict[str, object]:
         self.attached.append((parent_body, child_body))
@@ -169,6 +170,86 @@ class PickExecutorTest(unittest.TestCase):
         self.assertTrue(ik.solve_kwargs)
         self.assertTrue(all(call.get("include_torso") in {None, False} for call in ik.solve_kwargs))
         self.assertTrue(all(call.get("position_only") in {None, False} for call in ik.solve_kwargs))
+
+    def test_execute_opens_gripper_before_descend_and_uses_stage_steps(self):
+        physics = _FakePhysics()
+        physics.aabbs["Scene_Crate"] = {
+            "min": [-0.01, -0.01, 0.01],
+            "max": [0.01, 0.01, 0.03],
+        }
+        ik = _MutableIK(_pose(0.1, 0.2, 0.3))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+        driven: list[tuple[tuple[float, ...], float, int]] = []
+
+        def drive(_ik_controller, _arm, target, gripper, steps=12, **_kwargs):
+            driven.append((target["position"], gripper, steps))
+            ik.pose = target
+
+        plan = {
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "grasp_tolerance": 0.16,
+            "attach_tolerance": 0.11,
+            "stages": [
+                {"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 18},
+                {
+                    "name": "descend_to_grasp",
+                    "kind": "move_pose",
+                    "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                    "position_only": True,
+                    "steps": 24,
+                    "tolerance": 0.16,
+                },
+                {"name": "close_gripper", "kind": "gripper", "width": 0.0},
+            ],
+        }
+
+        with mock.patch.object(executor, "_drive_pose", side_effect=drive):
+            result = executor.execute(plan)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(driven, [
+            ((0.1, 0.2, 0.3), 0.05, 18),
+            ((0.0, 0.0, 0.02), 0.05, 24),
+            ((0.0, 0.0, 0.02), 0.0, 6),
+        ])
+
+    def test_execute_position_only_stage_uses_explicit_steps_to_slow_motion(self):
+        target = {"position": [0.3, 0.0, 0.08], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}
+        default_physics = _FakePhysics()
+        slow_physics = _FakePhysics()
+        default_executor = PickExecutor(default_physics, bundle=_bundle(), ik_controller=_MutableIK(_pose(0.0, 0.0, 0.08)))
+        slow_executor = PickExecutor(slow_physics, bundle=_bundle(), ik_controller=_MutableIK(_pose(0.0, 0.0, 0.08)))
+
+        default_executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "stages": [
+                {
+                    "name": "descend_to_grasp",
+                    "kind": "move_pose",
+                    "pose": target,
+                    "position_only": True,
+                    "tolerance": 0.4,
+                },
+            ],
+        })
+        slow_executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "stages": [
+                {
+                    "name": "descend_to_grasp",
+                    "kind": "move_pose",
+                    "pose": target,
+                    "position_only": True,
+                    "steps": 20,
+                    "tolerance": 0.4,
+                },
+            ],
+        })
+
+        self.assertGreater(slow_physics.step_count, default_physics.step_count)
 
     def test_execute_rejects_gripper_stage_before_grasp_stage(self):
         physics = _FakePhysics()

@@ -10,6 +10,8 @@ import mujoco.viewer
 import numpy as np
 from fastapi import HTTPException
 
+from utils.teleop.arm_config import get_arm_config
+from utils.teleop.grasp_frame import ARMS, GraspFrame, apply_grasp_frame, load_grasp_frames
 from utils.user_config import read_user_config
 from utils.zapdos.physics.attachment import BodyAttachment, attachment_world_pose, create_attachment
 from utils.zapdos.physics.body_capabilities import build_body_capabilities
@@ -70,6 +72,11 @@ class MujocoPhysics:
         robot_usd = getattr(bundle, "robot_usd", None)
         if robot_usd is not None:
             self._apply_idle_pose(Path(robot_usd))
+        self.grasp_frames = load_grasp_frames(Path(robot_usd).resolve()) if robot_usd is not None else {arm: GraspFrame() for arm in ARMS}
+        self.grasp_frame_body_names = {
+            get_arm_config(arm).end_effector_body: self.grasp_frames[arm]
+            for arm in ARMS
+        }
         self.attachments: dict[str, BodyAttachment] = {}
         self.data.ctrl[:] = 0
         for joint_name, actuator_id in self.joint_name_to_actuator.items():
@@ -303,6 +310,7 @@ class MujocoPhysics:
             child_body,
             body_world_pose(self.data, parent_id),
             body_world_pose(self.data, child_id),
+            parent_frame=self._attachment_parent_frame(parent_body),
         )
         self.attachments[child_body] = attachment
         return attachment.to_payload()
@@ -381,6 +389,12 @@ class MujocoPhysics:
             changed = True
         if changed:
             mujoco.mj_forward(self.model, self.data)  # type: ignore
+
+    def _attachment_parent_frame(self, parent_body: str) -> np.ndarray:
+        frame = self.grasp_frame_body_names.get(parent_body)
+        if frame is None:
+            return np.eye(4, dtype=float)
+        return apply_grasp_frame(np.eye(4, dtype=float), frame)
 
     def _geom_world_bounds(self, geom_id: int) -> tuple[np.ndarray, np.ndarray] | None:
         kind = PRIMITIVE_TYPES.get(int(self.model.geom_type[geom_id])) or ""

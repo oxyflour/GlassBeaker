@@ -59,6 +59,7 @@ class PickStage(TypedDict):
     pose: NotRequired[PickPose]
     include_torso: NotRequired[bool]
     position_only: NotRequired[bool]
+    steps: NotRequired[int]
     tolerance: NotRequired[float]
     width: NotRequired[float]
 

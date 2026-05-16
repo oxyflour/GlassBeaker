@@ -14,6 +14,7 @@ from utils.zapdos.manipulation.types import GroundedPick, PickPlan, SceneObject
 GRAB_APPLE_ARM = "left"
 GRAB_APPLE_TARGET_QUERY = "apple"
 GRAB_APPLE_SUPPORT_QUERY = "benchmark table"
+GRAB_APPLE_OPEN_WIDTH = 0.05
 
 
 class ManipulationRuntime:
@@ -120,17 +121,24 @@ class ManipulationRuntime:
             "attach_tolerance": 0.11,
             "stages": [
                 {
+                    "name": "open_gripper",
+                    "kind": "gripper",
+                    "width": GRAB_APPLE_OPEN_WIDTH,
+                    "steps": 18,
+                },
+                {
                     "name": "descend_to_grasp",
                     "kind": "move_pose",
                     "pose": {
                         "position": [
-                            round(center[0] - 0.02, 6),
-                            round(center[1] + side * 0.06, 6),
-                            round(center[2] - 0.01, 6),
+                            round(center[0], 6),
+                            round(center[1], 6),
+                            round(center[2], 6),
                         ],
                         "quat_wxyz": list(current_pose["quat_wxyz"]),
                     },
                     "position_only": True,
+                    "steps": 24,
                     "tolerance": 0.16,
                 },
                 {"name": "close_gripper", "kind": "gripper", "width": 0.0},
@@ -146,6 +154,7 @@ class ManipulationRuntime:
                         "quat_wxyz": list(current_pose["quat_wxyz"]),
                     },
                     "position_only": True,
+                    "steps": 20,
                     "tolerance": 0.08,
                 },
             ],

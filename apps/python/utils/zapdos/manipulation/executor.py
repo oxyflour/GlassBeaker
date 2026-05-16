@@ -68,6 +68,7 @@ class PickExecutor:
                         arm,
                         target,
                         closed_width if attached else open_width,
+                        steps=max(1, int(stage.get("steps", 12))),
                         include_torso=include_torso,
                         position_only=position_only,
                     )
@@ -81,10 +82,20 @@ class PickExecutor:
                     continue
                 if stage_kind != "gripper":
                     raise HTTPException(status_code=409, detail=f"Pick failed: unsupported stage kind {stage_kind} at {stage_name}")
-                closed_width = float(stage.get("width", 0.0))
+                stage_width = float(stage.get("width", 0.0))
+                stage_steps = max(1, int(stage.get("steps", 6)))
+                if stage_name != "close_gripper":
+                    hold_pose = ik.get_end_effector_pose(arm)
+                    self._drive_pose(ik, arm, hold_pose, stage_width, steps=stage_steps)
+                    if attached:
+                        closed_width = stage_width
+                    else:
+                        open_width = stage_width
+                    continue
+                closed_width = stage_width
                 if grasp_pose is None:
                     raise HTTPException(status_code=409, detail=f"Pick failed: missing descend_to_grasp stage before {stage_name}")
-                self._drive_pose(ik, arm, grasp_pose, closed_width, steps=6)
+                self._drive_pose(ik, arm, grasp_pose, closed_width, steps=stage_steps)
                 self._require_pose_reached(ik, arm, grasp_pose, grasp_tolerance, stage_name)
                 self._require_target_near_gripper(ik, arm, target_body, attach_tolerance)
                 self.physics.attach_body(str(plan.get("gripper_body") or get_arm_config(arm).end_effector_body), target_body)
@@ -112,12 +123,13 @@ class PickExecutor:
         position_only: bool = False,
     ) -> None:
         start = ik.get_end_effector_pose(arm)
+        requested_steps = max(steps, 1)
         if position_only:
             dx = abs(float(target["position"][0]) - float(start["position"][0]))
             dy = abs(float(target["position"][1]) - float(start["position"][1]))
             position_error = self._distance(start["position"], target["position"])
             if dx <= POSITION_STAGE_SUBGOAL_TOLERANCE and dy <= POSITION_STAGE_SUBGOAL_TOLERANCE:
-                max_steps = max(DRIVE_SETTLE_STEPS, int(math.ceil(position_error / POSITION_STAGE_STEP_SCALE)))
+                max_steps = max(DRIVE_SETTLE_STEPS, requested_steps, int(math.ceil(position_error / POSITION_STAGE_STEP_SCALE)))
                 for _ in range(max_steps):
                     current = ik.get_end_effector_pose(arm)
                     if self._distance(current["position"], target["position"]) <= DRIVE_POSE_TOLERANCE:
@@ -132,7 +144,11 @@ class PickExecutor:
                     self.physics.step()
                     ik.sync_joint_state(self.physics.joint_state_msg())
                 return
-            segments = max(1, int(math.ceil(position_error / POSITION_STAGE_SEGMENT_LENGTH)))
+            segments = max(requested_steps, int(math.ceil(position_error / POSITION_STAGE_SEGMENT_LENGTH)))
+            subgoal_tolerance = min(
+                POSITION_STAGE_SUBGOAL_TOLERANCE,
+                max(position_error / float(segments), 1e-6) * 0.5,
+            )
             for index in range(segments):
                 alpha = float(index + 1) / float(segments)
                 subgoal = {
@@ -141,7 +157,7 @@ class PickExecutor:
                 }
                 for _ in range(POSITION_STAGE_SEGMENT_STEPS):
                     current = ik.get_end_effector_pose(arm)
-                    if self._distance(current["position"], subgoal["position"]) <= POSITION_STAGE_SUBGOAL_TOLERANCE:
+                    if self._distance(current["position"], subgoal["position"]) <= subgoal_tolerance:
                         break
                     self.physics.apply_joint_command(ik.solve_step(
                         arm,
@@ -157,8 +173,8 @@ class PickExecutor:
         required_progress = min(DRIVE_MIN_PROGRESS, initial_error * 0.25)
         best_error = initial_error
         total_steps = 0
-        for index in range(max(steps, 1)):
-            alpha = float(index + 1) / float(max(steps, 1))
+        for index in range(requested_steps):
+            alpha = float(index + 1) / float(requested_steps)
             pose = {
                 "position": tuple((1.0 - alpha) * a + alpha * b for a, b in zip(start["position"], target["position"])),
                 "rotation": tuple(self._normalize((1.0 - alpha) * np.asarray(start["rotation"]) + alpha * np.asarray(target["rotation"]))),

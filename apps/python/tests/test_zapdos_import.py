@@ -1557,14 +1557,19 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["attach_tolerance"], 0.11)
         self.assertEqual(plan["grasp_tolerance"], 0.16)
         self.assertEqual([stage["name"] for stage in plan["stages"]], [
+            "open_gripper",
             "descend_to_grasp",
             "close_gripper",
             "retreat",
         ])
-        self.assertTrue(plan["stages"][0]["position_only"])
-        self.assertFalse(plan["stages"][0].get("include_torso", False))
-        self.assertEqual(plan["stages"][0]["pose"]["position"], [0.48, 0.06, 0.82])
-        self.assertEqual(plan["stages"][2]["pose"]["position"], [0.4, 0.18, 0.92])
+        self.assertEqual(plan["stages"][0]["width"], 0.05)
+        self.assertEqual(plan["stages"][0]["steps"], 18)
+        self.assertTrue(plan["stages"][1]["position_only"])
+        self.assertEqual(plan["stages"][1]["steps"], 24)
+        self.assertFalse(plan["stages"][1].get("include_torso", False))
+        self.assertEqual(plan["stages"][1]["pose"]["position"], [0.5, 0.0, 0.83])
+        self.assertEqual(plan["stages"][3]["steps"], 20)
+        self.assertEqual(plan["stages"][3]["pose"]["position"], [0.4, 0.18, 0.92])
 
     def test_manipulation_runtime_passes_start_pose_and_scene_objects_to_planner(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime

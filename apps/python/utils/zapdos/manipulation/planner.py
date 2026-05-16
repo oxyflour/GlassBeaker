@@ -3,7 +3,6 @@ from __future__ import annotations
 from utils.zapdos.manipulation.types import PickPlan, PickPose, PickStage, PlanningPose, SceneObject, SupportSurface
 
 TOP_DOWN_QUAT_WXYZ = [1.0, 0.0, 0.0, 0.0]
-GRIPPER_LINK_TO_FINGER_MID_Z = 0.03689
 
 
 def plan_pick(
@@ -76,10 +75,10 @@ def _grasp_center(target: SceneObject) -> tuple[float, float, float] | None:
 
 def _grasp_z(target: SceneObject, center_z: float) -> float:
     if target.get("world_aabb") is not None or _world_aabb_from_bounds(target) is not None:
-        return center_z + GRIPPER_LINK_TO_FINGER_MID_Z
+        return center_z
     if target["bounds_min"] is not None and target["bounds_max"] is not None:
         center_z += 0.5 * (float(target["bounds_min"][2]) + float(target["bounds_max"][2]))
-    return center_z + GRIPPER_LINK_TO_FINGER_MID_Z
+    return center_z
 
 
 def _pose(x: float, y: float, z: float) -> PickPose:
