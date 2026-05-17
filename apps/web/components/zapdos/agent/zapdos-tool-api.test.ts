@@ -53,8 +53,8 @@ test("listSceneBodies posts to the zapdos route", async () => {
   }
 });
 
-test("setSceneAssets posts to the batch route", async () => {
-  const { createSceneOpStreamUrl, createSetSceneAssetsRequest, setSceneAssets } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
+test("setSceneAssets posts to the batch route and returns the started operation payload", async () => {
+  const { createSetSceneAssetsRequest, setSceneAssets } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
@@ -62,31 +62,26 @@ test("setSceneAssets posts to the batch route", async () => {
     return new Response(JSON.stringify({
       ok: true,
       op_id: "op-1",
-    }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  }) as typeof fetch;
-  const stream = new FakeEventSource(createSceneOpStreamUrl("sess-1", "op-1"));
-
-  try {
-    const pending = setSceneAssets("sess-1", {
-      assets: [{
-        asset_id: "table_000",
-        motion: "static",
-        placement: { kind: "floor_at_xy", xy: [0, 0], z_offset: 0, yaw: 0 },
-      }],
-    }, () => stream);
-    await waitFor(() => stream.listenerCount("done") > 0);
-    stream.dispatch("done", {
+      status: "started",
       items: [{
         asset_id: "table_000",
         body: "Scene_table_000_01",
         instance_id: "table_000_01",
       }],
-      scene_revision: "rev-2",
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
     });
-    const payload = await pending;
+  }) as typeof fetch;
+
+  try {
+    const payload = await setSceneAssets("sess-1", {
+      assets: [{
+        asset_id: "table_000",
+        motion: "static",
+        placement: { kind: "floor_at_xy", xy: [0, 0], z_offset: 0, yaw: 0 },
+      }],
+    });
     assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/set_scene_assets");
     assert.deepEqual(calls[0]?.init, createSetSceneAssetsRequest({
       assets: [{
@@ -95,8 +90,8 @@ test("setSceneAssets posts to the batch route", async () => {
         placement: { kind: "floor_at_xy", xy: [0, 0], z_offset: 0, yaw: 0 },
       }],
     }));
-    assert.equal(stream.url, "/python/zapdos/sess-1/op/op-1");
-    assert.equal(stream.closed, true);
+    assert.equal(payload.op_id, "op-1");
+    assert.equal(payload.status, "started");
     assert.equal(payload.items[0]?.instance_id, "table_000_01");
   } finally {
     globalThis.fetch = originalFetch;

@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
-from typing import Any, Callable
+from concurrent.futures import Future as ConcurrentFuture
+from typing import Any, Callable, Iterator
 
 from fastapi import HTTPException
 
+from utils.zapdos.editor.rebuild_events import (
+    create_scene_rebuild_job,
+    discard_scene_rebuild_job,
+    ensure_scene_rebuild_state,
+    fail_scene_rebuild_job,
+    lookup_scene_rebuild_job,
+    next_scene_rebuild_job_id,
+)
+from utils.zapdos.manipulation.apple_plan import build_grab_apple_plan
 from utils.zapdos.manipulation.catalog import build_scene_object_catalog
 from utils.zapdos.manipulation.executor import PickExecutor
 from utils.zapdos.manipulation.grounding import ground_pick_target
@@ -15,6 +26,14 @@ GRAB_APPLE_ARM = "left"
 GRAB_APPLE_TARGET_QUERY = "apple"
 GRAB_APPLE_SUPPORT_QUERY = "benchmark table"
 GRAB_APPLE_OPEN_WIDTH = 0.05
+
+
+def _advance_operation(iterator: Iterator[None]) -> dict[str, object] | None:
+    try:
+        next(iterator)
+    except StopIteration as stop:
+        return stop.value if isinstance(stop.value, dict) else {}
+    return None
 
 
 class ManipulationRuntime:
@@ -32,6 +51,7 @@ class ManipulationRuntime:
         self.grounding_fn = grounding_fn or ground_pick_target
         self.planning_fn = planning_fn or plan_pick
         self.executor = executor or PickExecutor(session.physics, session.bundle)
+        self.operation_tasks: dict[str, ConcurrentFuture[Any] | asyncio.Task[Any]] = {}
 
     def list_scene_objects(self) -> dict[str, object]:
         return {
@@ -49,11 +69,10 @@ class ManipulationRuntime:
         if target.get("motion") != "dynamic":
             raise HTTPException(status_code=400, detail="Pick target must be a dynamic scene object")
         self._sync_executor_state()
-        result = self.executor.execute({
+        return self._start_operation(self.executor.iter_execute({
             **self._plan_pick(grounded, arm=arm, objects=objects),
             "arm": arm,
-        })
-        return {**result, "scene_revision": self.session.editor.scene_revision}
+        }))
 
     def grab_apple(self) -> dict[str, object]:
         objects = self._scene_objects()
@@ -65,8 +84,12 @@ class ManipulationRuntime:
         if target.get("motion") != "dynamic":
             raise HTTPException(status_code=400, detail="Pick target must be a dynamic scene object")
         self._sync_executor_state()
-        result = self.executor.execute(self._grab_apple_plan(target, arm=GRAB_APPLE_ARM))
-        return {**result, "scene_revision": self.session.editor.scene_revision}
+        return self._start_operation(self.executor.iter_execute(build_grab_apple_plan(
+            target,
+            self.executor.current_pose(GRAB_APPLE_ARM),
+            arm=GRAB_APPLE_ARM,
+            open_width=GRAB_APPLE_OPEN_WIDTH,
+        )))
 
     def place_apple(self) -> dict[str, object]:
         objects = self._scene_objects()
@@ -78,7 +101,7 @@ class ManipulationRuntime:
         if self.session.physics.get_attachment(target["body"]) is None:
             raise HTTPException(status_code=409, detail=f"Place apple requires {target['body']} to be attached")
         self._sync_executor_state()
-        result = self.executor.execute({
+        return self._start_operation(self.executor.iter_execute({
             "kind": "release",
             "arm": GRAB_APPLE_ARM,
             "target_body": target["body"],
@@ -90,8 +113,7 @@ class ManipulationRuntime:
                     "steps": 18,
                 },
             ],
-        })
-        return {**result, "scene_revision": self.session.editor.scene_revision}
+        }))
 
     def _scene_objects(self) -> list[SceneObject]:
         return self.catalog_loader(
@@ -134,80 +156,45 @@ class ManipulationRuntime:
         self.executor.physics = self.session.physics
         self.executor.bundle = self.session.bundle
 
-    def _grab_apple_plan(self, target: SceneObject, *, arm: str) -> dict[str, object]:
-        center = self._target_center(target)
-        side = 1.0 if arm == "left" else -1.0
-        current_pose = self.executor.current_pose(arm)
-        quat_wxyz = list(current_pose["quat_wxyz"])
-        grasp_position = [round(center[0], 6), round(center[1], 6), round(center[2], 6)]
-        above_position = [grasp_position[0], grasp_position[1], round(center[2] + 0.12, 6)]
-        retreat_position = [
-            round(center[0] - 0.10, 6),
-            round(center[1] + side * 0.18, 6),
-            round(center[2] + 0.09, 6),
-        ]
-        return {
-            "kind": "pick",
-            "arm": arm,
-            "target_body": target["body"],
-            "grasp_tolerance": 0.025,
-            "attach_tolerance": 0.015,
-            "stages": [
-                {
-                    "name": "open_gripper",
-                    "kind": "gripper",
-                    "width": GRAB_APPLE_OPEN_WIDTH,
-                    "steps": 18,
-                },
-                {
-                    "name": "approach_above",
-                    "kind": "move_pose",
-                    "pose": {
-                        "position": above_position,
-                        "quat_wxyz": quat_wxyz,
-                    },
-                    "target_point": "finger_center",
-                    "position_only": True,
-                    "steps": 20,
-                    "tolerance": 0.05,
-                },
-                {
-                    "name": "descend_to_grasp",
-                    "kind": "move_pose",
-                    "pose": {
-                        "position": grasp_position,
-                        "quat_wxyz": quat_wxyz,
-                    },
-                    "target_point": "finger_center",
-                    "position_only": True,
-                    "steps": 24,
-                    "tolerance": 0.05,
-                },
-                {"name": "close_gripper", "kind": "gripper", "width": 0.0},
-                {
-                    "name": "retreat",
-                    "kind": "move_pose",
-                    "pose": {
-                        "position": retreat_position,
-                        "quat_wxyz": quat_wxyz,
-                    },
-                    "target_point": "finger_center",
-                    "position_only": True,
-                    "steps": 20,
-                    "tolerance": 0.08,
-                },
-            ],
-        }
+    def _start_operation(self, iterator: Iterator[None]) -> dict[str, object]:
+        if getattr(self.session.editor, "rebuilding_scene", False):
+            raise HTTPException(status_code=409, detail="Scene rebuild already in progress")
+        for current_op_id, task in list(self.operation_tasks.items()):
+            if task.done():
+                self.operation_tasks.pop(current_op_id, None)
+                continue
+            raise HTTPException(status_code=409, detail="Manipulation already in progress")
+        ensure_scene_rebuild_state(self.session.editor)
+        op_id = next_scene_rebuild_job_id(self.session.editor)
+        create_scene_rebuild_job(self.session.editor, op_id, {"ok": True})
+        try:
+            task = self.session.schedule_on_owner_loop(self._run_operation(op_id, iterator))
+        except Exception:
+            discard_scene_rebuild_job(self.session.editor, op_id)
+            raise
+        self.operation_tasks[op_id] = task
+        task.add_done_callback(lambda _task, current_op_id=op_id: self.operation_tasks.pop(current_op_id, None))
+        return {"ok": True, "op_id": op_id}
 
-    def _target_center(self, target: SceneObject) -> tuple[float, float, float]:
-        aabb = target.get("world_aabb")
-        if aabb is not None:
-            return (
-                0.5 * (float(aabb["min"][0]) + float(aabb["max"][0])),
-                0.5 * (float(aabb["min"][1]) + float(aabb["max"][1])),
-                0.5 * (float(aabb["min"][2]) + float(aabb["max"][2])),
-            )
-        position = target.get("position")
-        if position is not None:
-            return float(position[0]), float(position[1]), float(position[2])
-        raise HTTPException(status_code=400, detail=f"Grab apple requires world position for {target['body']}")
+    async def _run_operation(self, op_id: str, iterator: Iterator[None]) -> None:
+        try:
+            async with self.session.reserve_world() as world_token:
+                while True:
+                    payload = await self.session.run_sync(
+                        lambda _current: _advance_operation(iterator),
+                        world_token=world_token,
+                    )
+                    if payload is None:
+                        continue
+                    self._resolve_operation(op_id, payload)
+                    return
+        except asyncio.CancelledError:
+            fail_scene_rebuild_job(self.session.editor, op_id, RuntimeError("Manipulation cancelled"))
+            raise
+        except Exception as err:
+            fail_scene_rebuild_job(self.session.editor, op_id, err)
+
+    def _resolve_operation(self, op_id: str, payload: dict[str, object]) -> None:
+        job = lookup_scene_rebuild_job(self.session.editor, op_id)
+        if job is not None and not job.future.done():
+            job.future.set_result({**job.success_payload, **payload, "scene_revision": self.session.editor.scene_revision})

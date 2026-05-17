@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Generator, Iterator
 import math
 from pathlib import Path
 from typing import Any
@@ -47,8 +48,16 @@ class PickExecutor:
         }
 
     def execute(self, plan: dict[str, object]) -> dict[str, object]:
+        iterator = self.iter_execute(plan)
+        while True:
+            try:
+                next(iterator)
+            except StopIteration as stop:
+                return stop.value
+
+    def iter_execute(self, plan: dict[str, object]) -> Generator[None, None, dict[str, object]]:
         if str(plan.get("kind") or "pick") == "release":
-            return self._execute_release(plan)
+            return (yield from self._iter_execute_release(plan))
 
         arm = str(plan.get("arm") or "left")
         ik = self._ensure_ik()
@@ -76,7 +85,7 @@ class PickExecutor:
                     grasp_pose = target if stage_name == "descend_to_grasp" else grasp_pose
                     include_torso = bool(stage.get("include_torso", False))
                     position_only = bool(stage.get("position_only", False))
-                    self._drive_pose(
+                    yield from self._yield_drive_pose(
                         ik,
                         arm,
                         target,
@@ -99,7 +108,7 @@ class PickExecutor:
                 stage_steps = max(1, int(stage.get("steps", 6)))
                 if stage_name != "close_gripper":
                     hold_pose = ik.get_end_effector_pose(arm)
-                    self._drive_pose(ik, arm, hold_pose, stage_width, steps=stage_steps)
+                    yield from self._yield_drive_pose(ik, arm, hold_pose, stage_width, steps=stage_steps)
                     if attached:
                         closed_width = stage_width
                     else:
@@ -108,7 +117,7 @@ class PickExecutor:
                 closed_width = stage_width
                 if grasp_pose is None:
                     raise HTTPException(status_code=409, detail=f"Pick failed: missing descend_to_grasp stage before {stage_name}")
-                self._drive_pose(ik, arm, grasp_pose, closed_width, steps=stage_steps)
+                yield from self._yield_drive_pose(ik, arm, grasp_pose, closed_width, steps=stage_steps)
                 self._require_pose_reached(ik, arm, grasp_pose, grasp_tolerance, stage_name)
                 self._require_target_near_gripper(ik, arm, target_body, attach_tolerance)
                 self.physics.attach_body(str(plan.get("gripper_body") or get_arm_config(arm).end_effector_body), target_body)
@@ -119,7 +128,7 @@ class PickExecutor:
             raise
         return {"ok": True, "arm": arm, "target_body": target_body, "attachment": self.physics.get_attachment(target_body)}
 
-    def _execute_release(self, plan: dict[str, object]) -> dict[str, object]:
+    def _iter_execute_release(self, plan: dict[str, object]) -> Generator[None, None, dict[str, object]]:
         arm = str(plan.get("arm") or "left")
         target_body = str(plan["target_body"])
         attachment = self.physics.get_attachment(target_body)
@@ -133,7 +142,7 @@ class PickExecutor:
             stage = raw_stage if isinstance(raw_stage, dict) else {}
             if str(stage.get("kind")) != "gripper":
                 raise HTTPException(status_code=409, detail=f"Release failed: unsupported stage kind {stage.get('kind')}")
-            self._drive_pose(
+            yield from self._yield_drive_pose(
                 ik,
                 arm,
                 hold_pose,
@@ -148,6 +157,29 @@ class PickExecutor:
             self.ik_controller = IKController(Path(self.bundle.robot_usd), Path(self.bundle.scene_usd))
         return self.ik_controller
 
+    def _yield_drive_pose(
+        self,
+        ik: IKController,
+        arm: str,
+        target: dict[str, tuple[float, ...]],
+        gripper: float,
+        steps: int = 12,
+        *,
+        include_torso: bool = False,
+        position_only: bool = False,
+    ) -> Generator[None, None, None]:
+        result = self._drive_pose(
+            ik,
+            arm,
+            target,
+            gripper,
+            steps=steps,
+            include_torso=include_torso,
+            position_only=position_only,
+        )
+        if isinstance(result, Iterator):
+            yield from result
+
     def _drive_pose(
         self,
         ik: IKController,
@@ -158,7 +190,28 @@ class PickExecutor:
         *,
         include_torso: bool = False,
         position_only: bool = False,
-    ) -> None:
+    ) -> Generator[None, None, None]:
+        return self._drive_pose_iter(
+            ik,
+            arm,
+            target,
+            gripper,
+            steps=steps,
+            include_torso=include_torso,
+            position_only=position_only,
+        )
+
+    def _drive_pose_iter(
+        self,
+        ik: IKController,
+        arm: str,
+        target: dict[str, tuple[float, ...]],
+        gripper: float,
+        steps: int = 12,
+        *,
+        include_torso: bool = False,
+        position_only: bool = False,
+    ) -> Generator[None, None, None]:
         start = self._current_pose_for_target(ik, arm, target)
         requested_steps = max(steps, 1)
         if position_only:
@@ -180,6 +233,7 @@ class PickExecutor:
                     ))
                     self.physics.step()
                     ik.sync_joint_state(self.physics.joint_state_msg())
+                    yield
                 return
             segments = max(requested_steps, int(math.ceil(position_error / POSITION_STAGE_SEGMENT_LENGTH)))
             subgoal_tolerance = min(
@@ -207,6 +261,7 @@ class PickExecutor:
                     ))
                     self.physics.step()
                     ik.sync_joint_state(self.physics.joint_state_msg())
+                    yield
             return
         initial_error = self._distance(start["position"], target["position"])
         required_progress = min(DRIVE_MIN_PROGRESS, initial_error * 0.25)
@@ -229,6 +284,7 @@ class PickExecutor:
             ))
             self.physics.step()
             ik.sync_joint_state(self.physics.joint_state_msg())
+            yield
             current = self._current_pose_for_target(ik, arm, target)
             current_error = self._distance(current["position"], target["position"])
             best_error = min(best_error, current_error)
@@ -253,6 +309,7 @@ class PickExecutor:
             ))
             self.physics.step()
             ik.sync_joint_state(self.physics.joint_state_msg())
+            yield
             current = self._current_pose_for_target(ik, arm, target)
             current_error = self._distance(current["position"], target["position"])
             best_error = min(best_error, current_error)

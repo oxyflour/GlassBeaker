@@ -8,24 +8,27 @@ import {
 
 test("summarizeSetSceneAssetsResult returns a clear success message for one asset", () => {
   const result = summarizeSetSceneAssetsResult({
+    op_id: "op-1",
+    status: "started",
     items: [{
       asset_id: "table_000",
       body: "Scene_table_000_01",
       instance_id: "table_000_01",
     }],
-    scene_revision: "rev-2",
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.asset_count, 1);
   assert.equal(
     result.message,
-    "Replaced the Zapdos overlay with 1 asset. Created table_000_01 (table_000) on body Scene_table_000_01. Scene revision: rev-2.",
+    "Started replacing the Zapdos overlay with 1 asset. Planned instance: table_000_01 (table_000) on body Scene_table_000_01. Operation: op-1.",
   );
 });
 
 test("summarizeSetSceneAssetsResult lists multiple created instances", () => {
   const result = summarizeSetSceneAssetsResult({
+    op_id: "op-2",
+    status: "started",
     items: [
       {
         asset_id: "table_000",
@@ -38,13 +41,12 @@ test("summarizeSetSceneAssetsResult lists multiple created instances", () => {
         instance_id: "mug_000_01",
       },
     ],
-    scene_revision: "rev-3",
   });
 
   assert.equal(result.asset_count, 2);
   assert.equal(
     result.message,
-    "Replaced the Zapdos overlay with 2 assets. Created table_000_01 (table_000) on body Scene_table_000_01; mug_000_01 (mug_000) on body Scene_mug_000_01. Scene revision: rev-3.",
+    "Started replacing the Zapdos overlay with 2 assets. Planned instances: table_000_01 (table_000) on body Scene_table_000_01; mug_000_01 (mug_000) on body Scene_mug_000_01. Operation: op-2.",
   );
 });
 

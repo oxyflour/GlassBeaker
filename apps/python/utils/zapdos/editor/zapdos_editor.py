@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import mujoco  # type: ignore
@@ -11,9 +10,9 @@ from utils.genie_sim import resolve_assets_root
 from utils.zapdos.bundle.camera_specs import camera_name_to_index
 from utils.zapdos.editor.commands import build_remove_asset_overlay, build_set_scene_assets_overlay
 from utils.zapdos.editor.rebuild_events import (
+    SceneRebuildState,
     discard_scene_rebuild_job,
     emit_scene_rebuild_progress,
-    ensure_scene_rebuild_state,
     scene_rebuild_future,
     stream_scene_rebuild_job,
 )
@@ -46,23 +45,25 @@ class ZapdosEditor:
             save_overlay_state(self.overlay_path, self.overlay_state)
         self.scene_revision = scene_revision(self.base_scene_usd, self.overlay_state)
         self.rebuilding_scene = False
-        self.overlay_executor = ThreadPoolExecutor(max_workers=1)
-        ensure_scene_rebuild_state(self)
+        self.scene_rebuild_state = SceneRebuildState()
 
     @property
     def msgs(self):
         return self.session.msgs
 
     def close(self) -> None:
-        with self.scene_rebuild_jobs_lock:
-            for job in self.scene_rebuild_jobs.values():
-                job.future.cancel()
-            self.scene_rebuild_jobs.clear()
-        self.overlay_executor.shutdown(wait=False)
+        with self.scene_rebuild_state.lock:
+            tasks = list(self.scene_rebuild_state.tasks.values())
+            jobs = list(self.scene_rebuild_state.jobs.values())
+            self.scene_rebuild_state.jobs.clear()
+            self.scene_rebuild_state.tasks.clear()
+        for task in tasks:
+            task.cancel()
+        for job in jobs:
+            job.future.cancel()
 
     def stream_rebuild_job(self, op_id: str):
         return stream_scene_rebuild_job(self, op_id)
-
     def list_scene_bodies(self) -> dict[str, object]:
         support_infos = self._build_support_infos()
         items = []
@@ -104,15 +105,11 @@ class ZapdosEditor:
         save_overlay_state(self.overlay_path, self.overlay_state)
         return result
 
-    def drain_completions(self) -> None:
-        rebuild_manager.drain_overlay_completions(self)
-
     def scene_rebuild_future(self, op_id: str):
         return scene_rebuild_future(self, op_id)
 
     def discard_scene_rebuild_job(self, op_id: str) -> None:
         discard_scene_rebuild_job(self, op_id)
-
     def _build_support_infos(self) -> dict[str, dict[str, float]]:
         infos: dict[str, dict[str, float]] = {}
         assets_root = resolve_assets_root(self.overlay_state.get("assets_root"))
@@ -144,30 +141,12 @@ class ZapdosEditor:
 
     def _start_overlay_operation(self, next_overlay, success_payload: dict[str, object]) -> dict[str, object]:
         return rebuild_manager.start_overlay_operation(self, next_overlay, success_payload)
-
     def _prepare_overlay_rebuild(self, next_overlay, support_infos, previous_overlay, previous_revision, op_id: str | None = None):
-        return rebuild_manager.prepare_overlay_rebuild(
-            self,
-            next_overlay,
-            support_infos,
-            previous_overlay,
-            previous_revision,
-            op_id=op_id,
-        )
-
-    def _run_overlay_rebuild_background(self, op_id: str, next_overlay, support_infos, previous_overlay, previous_revision: str) -> None:
-        rebuild_manager.run_overlay_rebuild_background(
-            self,
-            op_id,
-            next_overlay,
-            support_infos,
-            previous_overlay,
-            previous_revision,
-        )
-
+        return rebuild_manager.prepare_overlay_rebuild(self, next_overlay, support_infos, previous_overlay, previous_revision, op_id=op_id)
+    def _run_overlay_rebuild(self, op_id: str, next_overlay, previous_overlay, previous_revision: str):
+        return rebuild_manager.run_overlay_rebuild(self, op_id, next_overlay, previous_overlay, previous_revision)
     def _apply_prepared_overlay_rebuild(self, prepared, op_id: str | None = None) -> str:
         return rebuild_manager.apply_prepared_overlay_rebuild(self, prepared, op_id)
-
     def _swap_runtime_bundle(self, bundle, overlay_state, op_id: str | None = None) -> None:
         emit_scene_rebuild_progress(self, op_id, "swap_runtime_bundle.started")
         old_physics = self.session.physics

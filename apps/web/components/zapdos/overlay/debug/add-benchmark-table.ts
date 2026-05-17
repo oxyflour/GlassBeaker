@@ -1,7 +1,6 @@
 import {
   createSetSceneAssetsRequest,
   setSceneAssets,
-  type SceneOperationStreamFactory,
   type SetSceneAssetsInput,
 } from "../../agent/zapdos-tool-api";
 
@@ -32,20 +31,17 @@ export function createAddBenchmarkTableRequest(): RequestInit {
   });
 }
 
-export async function addBenchmarkTable(
-  sess: string,
-  createEventSource?: SceneOperationStreamFactory,
-) {
+export async function addBenchmarkTable(sess: string) {
   const payload = await setSceneAssets(sess, {
     assets: BENCHMARK_TABLE_ASSETS,
-  }, createEventSource);
+  });
   const item = payload.items.find((candidate) => candidate.asset_id === "benchmark_table_000");
   if (!item) {
     throw new Error("Benchmark table was not created");
   }
   return {
+    op_id: payload.op_id,
     body: item.body,
     instance_id: item.instance_id,
-    scene_revision: payload.scene_revision,
   };
 }

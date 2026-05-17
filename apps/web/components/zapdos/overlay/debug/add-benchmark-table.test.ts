@@ -43,17 +43,7 @@ test("addBenchmarkTable posts to the zapdos set_scene_assets route", async () =>
     return new Response(JSON.stringify({
       ok: true,
       op_id: "op-1",
-    }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  }) as typeof fetch;
-  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-1");
-
-  try {
-    const pending = addBenchmarkTable("sess-1", () => stream);
-    await waitFor(() => stream.listenerCount("done") > 0);
-    stream.dispatch("done", {
+      status: "started",
       items: [{
         body: "Scene_benchmark_table_000_01",
         instance_id: "benchmark_table_000_01",
@@ -63,12 +53,17 @@ test("addBenchmarkTable posts to the zapdos set_scene_assets route", async () =>
         instance_id: "apple_01",
         asset_id: "apple",
       }],
-      scene_revision: "rev-2",
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
     });
-    const payload = await pending;
+  }) as typeof fetch;
+
+  try {
+    const payload = await addBenchmarkTable("sess-1");
     assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/set_scene_assets");
     assert.deepEqual(calls[0]?.init, createAddBenchmarkTableRequest());
-    assert.equal(stream.closed, true);
+    assert.equal(payload.op_id, "op-1");
     assert.equal(payload.instance_id, "benchmark_table_000_01");
   } finally {
     globalThis.fetch = originalFetch;
@@ -78,42 +73,4 @@ test("addBenchmarkTable posts to the zapdos set_scene_assets route", async () =>
 async function loadModule<TModule>(specifier: string): Promise<TModule> {
   const loaded = await import(specifier);
   return (loaded.default ?? loaded["module.exports"] ?? loaded) as TModule;
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) {
-      throw new Error("Timed out waiting for test condition");
-    }
-    await Promise.resolve();
-  }
-}
-
-class FakeEventSource {
-  closed = false;
-  onerror: ((event: Event) => void) | null = null;
-  private readonly listeners = new Map<string, Array<(event: MessageEvent) => void>>();
-
-  constructor(readonly url: string) {}
-
-  addEventListener(type: string, listener: (event: MessageEvent) => void) {
-    const current = this.listeners.get(type) ?? [];
-    current.push(listener);
-    this.listeners.set(type, current);
-  }
-
-  close() {
-    this.closed = true;
-  }
-
-  dispatch(type: string, payload: unknown) {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(new MessageEvent(type, { data: JSON.stringify(payload) }));
-    }
-  }
-
-  listenerCount(type: string) {
-    return this.listeners.get(type)?.length ?? 0;
-  }
 }

@@ -44,7 +44,7 @@ class ZapdosSession(Session):
         self.runtime = ManipulationRuntime(self)
         super().__init__()
         self.timers.append(Timer(ROS_DT, self.send_sse))
-        asyncio.run_coroutine_threadsafe(self.send_ros(), self.loop)
+        self.ros_future = self.schedule_on_owner_loop(self.send_ros())
 
     def _create_physics(self, bundle: RenderBundle) -> ZapdosPhysics:
         return ZapdosPhysics(self.sess, bundle, json.loads(bundle.body_map_json.read_text(encoding="utf-8")))
@@ -127,7 +127,6 @@ class ZapdosSession(Session):
         return latest
 
     def step_once(self):
-        self.editor.drain_completions()
         self.physics.apply_joint_command(self._latest_joint_command())
         self.physics.step()
         return super().step_once()

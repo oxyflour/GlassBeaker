@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import queue
+import asyncio
 from copy import deepcopy
 from typing import Any, Callable
 
 from utils.zapdos.bundle import RenderBundle
 from utils.zapdos.editor.rebuild_events import (
     create_scene_rebuild_job,
+    discard_scene_rebuild_task,
     emit_scene_rebuild_progress,
     ensure_scene_rebuild_state,
     fail_scene_rebuild_job,
     lookup_scene_rebuild_job,
     next_scene_rebuild_job_id,
+    register_scene_rebuild_task,
 )
-from utils.zapdos.editor.rebuild_types import OverlayRebuildCompletion, PreparedOverlayRebuild
+from utils.zapdos.editor.rebuild_types import PreparedOverlayRebuild
 from utils.zapdos.editor.repository import save_overlay_state
 
 
@@ -23,25 +25,31 @@ def start_overlay_operation(
     success_payload: dict[str, object],
 ) -> dict[str, object]:
     ensure_scene_rebuild_state(session)
+    owner_session = getattr(session, "session", session)
     previous_overlay = deepcopy(session.overlay_state)
     previous_revision = session.scene_revision
     op_id = next_scene_rebuild_job_id(session)
     create_scene_rebuild_job(session, op_id, deepcopy(success_payload))
     session.rebuilding_scene = True
     try:
-        session.overlay_executor.submit(
-            session._run_overlay_rebuild_background,
+        task = owner_session.schedule_on_owner_loop(session._run_overlay_rebuild(
             op_id,
             next_overlay,
-            session._build_support_infos(),
             previous_overlay,
             previous_revision,
-        )
+        ))
+        register_scene_rebuild_task(session, op_id, task)
+        task.add_done_callback(lambda _task, current_op_id=op_id: discard_scene_rebuild_task(session, current_op_id))
     except Exception:
         session.rebuilding_scene = False
         session.discard_scene_rebuild_job(op_id)
         raise
-    return {"ok": True, "op_id": op_id}
+    return {
+        **deepcopy(success_payload),
+        "ok": True,
+        "op_id": op_id,
+        "status": "started",
+    }
 
 
 def prepare_overlay_rebuild(
@@ -76,18 +84,22 @@ def prepare_overlay_rebuild(
     )
 
 
-def run_overlay_rebuild_background(
+async def run_overlay_rebuild(
     session: Any,
     op_id: str,
     next_overlay: dict[str, object],
-    support_infos: dict[str, dict[str, float]],
     previous_overlay: dict[str, object],
     previous_revision: str,
 ) -> None:
     ensure_scene_rebuild_state(session)
+    owner_session = getattr(session, "session", session)
     try:
+        support_infos = await owner_session.run_sync(
+            lambda current: getattr(current, "editor", current)._build_support_infos(),
+        )
         emit_scene_rebuild_progress(session, op_id, "prepare_overlay_rebuild.started")
-        prepared = session._prepare_overlay_rebuild(
+        prepared = await asyncio.to_thread(
+            session._prepare_overlay_rebuild,
             next_overlay,
             support_infos,
             previous_overlay,
@@ -95,9 +107,27 @@ def run_overlay_rebuild_background(
             op_id=op_id,
         )
         emit_scene_rebuild_progress(session, op_id, "prepare_overlay_rebuild.done")
-        session.overlay_completions.put_nowait(OverlayRebuildCompletion(op_id=op_id, prepared=prepared))
+        async with owner_session.reserve_world() as world_token:
+            emit_scene_rebuild_progress(session, op_id, "apply_overlay_rebuild.started")
+            revision = await owner_session.run_sync(
+                lambda current: getattr(current, "editor", current)._apply_prepared_overlay_rebuild(prepared, op_id),
+                world_token=world_token,
+            )
+        emit_scene_rebuild_progress(
+            session,
+            op_id,
+            "apply_overlay_rebuild.done",
+            scene_revision=revision,
+        )
+    except asyncio.CancelledError as err:
+        fail_scene_rebuild_job(session, op_id, RuntimeError("Scene rebuild cancelled"))
+        raise err
     except Exception as err:
         fail_scene_rebuild_job(session, op_id, err)
+        return
+    job = lookup_scene_rebuild_job(session, op_id)
+    if job is not None and not job.future.done():
+        job.future.set_result({**job.success_payload, "scene_revision": revision})
 
 
 def apply_prepared_overlay_rebuild(
@@ -122,16 +152,6 @@ def apply_prepared_overlay_rebuild(
         session.rebuilding_scene = False
 
 
-def drain_overlay_completions(session: Any) -> None:
-    ensure_scene_rebuild_state(session)
-    while not session.overlay_completions.empty():
-        try:
-            completion = session.overlay_completions.get_nowait()
-        except queue.Empty:
-            break
-        _complete_overlay_rebuild(session, completion)
-
-
 def _run_overlay_rebuild_inline(
     request_payload: dict[str, object],
     stage_logger: Callable[[str], None] | None = None,
@@ -139,31 +159,3 @@ def _run_overlay_rebuild_inline(
     from utils.zapdos.editor.rebuild_runner import prepare_overlay_rebuild_request
 
     return prepare_overlay_rebuild_request(request_payload, stage_logger)
-
-
-def _complete_overlay_rebuild(session: Any, completion: OverlayRebuildCompletion) -> None:
-    job = lookup_scene_rebuild_job(session, completion.op_id)
-    if completion.error is not None:
-        fail_scene_rebuild_job(session, completion.op_id, completion.error)
-        return
-    if completion.prepared is None:
-        session.rebuilding_scene = False
-        err = RuntimeError(f"Scene rebuild job {completion.op_id} completed without payload")
-        if job is not None and not job.future.done():
-            job.future.set_exception(err)
-        return
-    try:
-        emit_scene_rebuild_progress(session, completion.op_id, "apply_overlay_rebuild.started")
-        revision = session._apply_prepared_overlay_rebuild(completion.prepared, completion.op_id)
-        emit_scene_rebuild_progress(
-            session,
-            completion.op_id,
-            "apply_overlay_rebuild.done",
-            scene_revision=revision,
-        )
-    except Exception as err:
-        if job is not None and not job.future.done():
-            job.future.set_exception(err)
-        return
-    if job is not None and not job.future.done():
-        job.future.set_result({**job.success_payload, "scene_revision": revision})

@@ -5,6 +5,7 @@ import json
 import queue
 import threading
 from concurrent.futures import Future as ConcurrentFuture
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import HTTPException
@@ -14,21 +15,25 @@ from utils.zapdos.editor.rebuild_job import SceneRebuildJob
 SCENE_REBUILD_POLL_SEC = 0.1
 
 
-def ensure_scene_rebuild_state(session: Any) -> None:
-    if not hasattr(session, "overlay_completions"):
-        session.overlay_completions = queue.Queue()
-    if not hasattr(session, "scene_rebuild_job_counter"):
-        session.scene_rebuild_job_counter = 0
-    if not hasattr(session, "scene_rebuild_jobs"):
-        session.scene_rebuild_jobs = {}
-    if not hasattr(session, "scene_rebuild_jobs_lock"):
-        session.scene_rebuild_jobs_lock = threading.Lock()
+@dataclass(slots=True)
+class SceneRebuildState:
+    job_counter: int = 0
+    jobs: dict[str, SceneRebuildJob] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    tasks: dict[str, ConcurrentFuture[Any] | asyncio.Future[Any]] = field(default_factory=dict)
+
+
+def ensure_scene_rebuild_state(session: Any) -> SceneRebuildState:
+    state = getattr(session, "scene_rebuild_state", None)
+    if state is None:
+        raise AttributeError("scene_rebuild_state must be initialized explicitly")
+    return state
 
 
 def create_scene_rebuild_job(session: Any, op_id: str, success_payload: dict[str, object]) -> None:
-    ensure_scene_rebuild_state(session)
-    with session.scene_rebuild_jobs_lock:
-        session.scene_rebuild_jobs[op_id] = SceneRebuildJob(
+    state = ensure_scene_rebuild_state(session)
+    with state.lock:
+        state.jobs[op_id] = SceneRebuildJob(
             future=ConcurrentFuture(),
             success_payload=success_payload,
             events=queue.Queue(),
@@ -36,9 +41,9 @@ def create_scene_rebuild_job(session: Any, op_id: str, success_payload: dict[str
 
 
 def next_scene_rebuild_job_id(session: Any) -> str:
-    ensure_scene_rebuild_state(session)
-    session.scene_rebuild_job_counter += 1
-    return f"op-{session.scene_rebuild_job_counter}"
+    state = ensure_scene_rebuild_state(session)
+    state.job_counter += 1
+    return f"op-{state.job_counter}"
 
 
 def scene_rebuild_future(session: Any, op_id: str) -> ConcurrentFuture:
@@ -49,9 +54,10 @@ def scene_rebuild_future(session: Any, op_id: str) -> ConcurrentFuture:
 
 
 def discard_scene_rebuild_job(session: Any, op_id: str) -> None:
-    ensure_scene_rebuild_state(session)
-    with session.scene_rebuild_jobs_lock:
-        session.scene_rebuild_jobs.pop(op_id, None)
+    state = ensure_scene_rebuild_state(session)
+    with state.lock:
+        state.jobs.pop(op_id, None)
+        state.tasks.pop(op_id, None)
 
 
 async def stream_scene_rebuild_job(session: Any, op_id: str):
@@ -97,9 +103,21 @@ def fail_scene_rebuild_job(session: Any, op_id: str, error: Exception) -> None:
 
 
 def lookup_scene_rebuild_job(session: Any, op_id: str) -> SceneRebuildJob | None:
-    ensure_scene_rebuild_state(session)
-    with session.scene_rebuild_jobs_lock:
-        return session.scene_rebuild_jobs.get(op_id)
+    state = ensure_scene_rebuild_state(session)
+    with state.lock:
+        return state.jobs.get(op_id)
+
+
+def register_scene_rebuild_task(session: Any, op_id: str, task: ConcurrentFuture[Any] | asyncio.Future[Any]) -> None:
+    state = ensure_scene_rebuild_state(session)
+    with state.lock:
+        state.tasks[op_id] = task
+
+
+def discard_scene_rebuild_task(session: Any, op_id: str) -> None:
+    state = ensure_scene_rebuild_state(session)
+    with state.lock:
+        state.tasks.pop(op_id, None)
 
 
 def drain_scene_rebuild_events(session: Any, op_id: str) -> list[tuple[str, dict[str, object]]]:

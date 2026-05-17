@@ -7,8 +7,10 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import Future as ConcurrentFuture
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -21,8 +23,9 @@ sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
 import utils.zapdos.editor.commands as EDITOR_COMMANDS_MODULE
 from utils.zapdos.editor.rebuild_job import SceneRebuildJob
+import utils.zapdos.editor.rebuild_events as EDITOR_REBUILD_EVENTS
 import utils.zapdos.editor.rebuild_manager as EDITOR_REBUILD_MANAGER
-from utils.zapdos.editor.rebuild_types import OverlayRebuildCompletion, PreparedOverlayRebuild
+from utils.zapdos.editor.rebuild_types import PreparedOverlayRebuild
 from utils.zapdos.editor.state import default_overlay_state
 import utils.zapdos.editor.zapdos_editor as EDITOR_SESSION_MODULE
 from utils.zapdos.physics.mujoco_physics import MujocoPhysics as ZapdosPhysics
@@ -43,6 +46,53 @@ MOZ1_USDA = REPO_ROOT / "deps" / "spirit01_model" / "USD" / "Moz1_robot_only.usd
 class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         MODULE.sessions.clear()
+
+    def _shutdown_session(self, session: Session) -> None:
+        session.timeout = 0.001
+        session.active = 0
+        session.proc.join(timeout=1)
+
+    def _build_manipulation_session(
+        self,
+        *,
+        scene_revision: str,
+        physics,
+    ):
+        scheduled: list[asyncio.Task[object]] = []
+        reservations: list[str] = []
+
+        @asynccontextmanager
+        async def reserve_world():
+            token = object()
+            reservations.append("enter")
+            try:
+                yield token
+            finally:
+                reservations.append("exit")
+
+        async def run_sync(fn, world_token=None):
+            del world_token
+            return fn(session)
+
+        def schedule_on_owner_loop(coro):
+            task = asyncio.create_task(coro)
+            scheduled.append(task)
+            return task
+
+        session = SimpleNamespace(
+            editor=SimpleNamespace(
+                scene_revision=scene_revision,
+                overlay_state={},
+                list_scene_bodies=mock.Mock(return_value={"items": []}),
+                scene_rebuild_state=EDITOR_REBUILD_EVENTS.SceneRebuildState(),
+            ),
+            bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
+            physics=physics,
+            reserve_world=reserve_world,
+            run_sync=run_sync,
+            schedule_on_owner_loop=mock.Mock(side_effect=schedule_on_owner_loop),
+        )
+        return session, scheduled, reservations
 
     def test_action_module_reexports_split_runtime_symbols(self):
         self.assertEqual(MODULE.ZapdosSession.__module__, "utils.zapdos.zapdos_session")
@@ -873,7 +923,16 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "resolve_asset_record",
             return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
         ):
-            with mock.patch.object(editor, "_start_overlay_operation", return_value={"ok": True, "op_id": "op-1"}) as start_op:
+            with mock.patch.object(editor, "_start_overlay_operation", return_value={
+                "ok": True,
+                "op_id": "op-1",
+                "status": "started",
+                "items": [{
+                    "asset_id": "table_000",
+                    "instance_id": "table_000_01",
+                    "body": "Scene_table_000_01",
+                }],
+            }) as start_op:
                 result = session.editor.set_scene_assets(
                     [{
                         "asset_id": "table_000",
@@ -882,7 +941,16 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                     }],
                 )
 
-        self.assertEqual(result, {"ok": True, "op_id": "op-1"})
+        self.assertEqual(result, {
+            "ok": True,
+            "op_id": "op-1",
+            "status": "started",
+            "items": [{
+                "asset_id": "table_000",
+                "instance_id": "table_000_01",
+                "body": "Scene_table_000_01",
+            }],
+        })
         start_args = start_op.call_args.args
         self.assertEqual(start_args[0]["instances"], [{
             "id": "table_000_01",
@@ -1084,43 +1152,80 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.editor.overlay_state["pose_overrides"]["Scene_Crate"]["pos"], [4.0, 5.0, 6.0])
         save_overlay.assert_called_once()
 
-    def test_set_scene_assets_rejects_broken_existing_overlay_asset(self):
-        session = self.build_pose_edit_session()
-        editor = session.editor
-        editor.base_scene_usd = Path("scene.usda")
-        editor.robot_usd = Path("robot.usda")
-        editor.overlay_state = default_overlay_state("C:/assets")
-        editor.overlay_state["instances"] = [{
-            "id": "Crate",
-            "asset_id": "crate_000",
-            "url": "objects/crate_000/Aligned.usda",
+    async def test_set_scene_assets_reports_broken_existing_overlay_asset_via_failed_rebuild_job(self):
+        class RuntimeSession(Session):
+            def __init__(self) -> None:
+                self.sess = "sess-broken-overlay-asset"
+                self.bundle = SimpleNamespace(cameras=[])
+                self.default_ticks = 0
+                super().__init__(30)
+                self.editor = EDITOR_SESSION_MODULE.ZapdosEditor(
+                    self,
+                    repo_root=SESSION_MODULE.REPO_ROOT,
+                    default_robot_usd=SESSION_MODULE.DEFAULT_ROBOT_USD,
+                    default_scene_usd=MODULE.DEFAULT_SCENE_USD,
+                )
+
+            def call_once(self, method: str, args: tuple):
+                if method == "set_scene_assets":
+                    return self.editor.set_scene_assets(*args)
+                return super().call_once(method, args)
+
+            def step_once(self):
+                self.default_ticks += 1
+                time.sleep(0.001)
+
+            def destroy(self):
+                pass
+
+        session = RuntimeSession()
+        self.addCleanup(self._shutdown_session, session)
+
+        while session.default_ticks == 0:
+            await asyncio.sleep(0.001)
+
+        next_overlay = default_overlay_state("C:/assets")
+        next_overlay["instances"] = [{
+            "id": "benchmark_table_000_01",
+            "asset_id": "benchmark_table_000",
+            "url": "objects/benchmark/table/benchmark_table_000/Aligned.usda",
             "motion": "static",
             "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
         }]
-        editor.scene_revision = "rev-1"
-        editor.overlay_path = Path("overlay.json")
-        editor.composed_scene_usd = Path("overlay_scene.usda")
-        editor.rebuilding_scene = False
+        items = [{
+            "asset_id": "benchmark_table_000",
+            "instance_id": "benchmark_table_000_01",
+            "body": "Scene_benchmark_table_000_01",
+        }]
 
-        with mock.patch.object(
-            EDITOR_COMMANDS_MODULE,
-            "resolve_asset_record",
-            return_value={"asset_id": "benchmark_table_000", "url": "objects/benchmark/table/benchmark_table_000/Aligned.usda", "description": {}},
-        ):
+        with mock.patch.object(EDITOR_SESSION_MODULE, "build_set_scene_assets_overlay", return_value=(next_overlay, items)):
             with mock.patch.object(
-                EDITOR_SESSION_MODULE,
-                "asset_local_bounds",
-                side_effect=RuntimeError("Failed to open asset stage: C:/assets/objects/crate_000/Aligned.usda"),
+                session.editor,
+                "_build_support_infos",
+                side_effect=HTTPException(status_code=409, detail="Existing overlay asset unavailable: Crate"),
             ):
+                result = await asyncio.wait_for(
+                    session.call("set_scene_assets", [{"asset_id": "benchmark_table_000"}]),
+                    timeout=0.2,
+                )
+                stream = MODULE._stream_scene_rebuild_job(session, result["op_id"])
+                started = await asyncio.wait_for(anext(stream), timeout=0.2)
                 with self.assertRaises(HTTPException) as err:
-                    session.editor.set_scene_assets([{
-                        "asset_id": "benchmark_table_000",
-                        "motion": "static",
-                        "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
-                    }])
+                    await asyncio.wait_for(anext(stream), timeout=0.2)
 
+        self.assertEqual(result, {
+            "ok": True,
+            "op_id": "op-1",
+            "status": "started",
+            "items": [{
+                "asset_id": "benchmark_table_000",
+                "instance_id": "benchmark_table_000_01",
+                "body": "Scene_benchmark_table_000_01",
+            }],
+        })
+        self.assertEqual(started, 'event: started\ndata: {"op_id": "op-1"}\n\n')
         self.assertEqual(err.exception.status_code, 409)
-        self.assertIn("Crate", err.exception.detail)
+        self.assertIn("Existing overlay asset unavailable: Crate", err.exception.detail)
 
     def test_remove_asset_from_scene_delegates_to_editor(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
@@ -1448,9 +1553,9 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.runtime = mock.Mock(
             list_scene_objects=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}], "scene_revision": "rev-1"}),
-            grab_apple=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1", "scene_revision": "rev-1"}),
-            place_apple=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1", "scene_revision": "rev-2"}),
-            pick_object=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-1"}),
+            grab_apple=mock.Mock(return_value={"ok": True, "op_id": "op-1"}),
+            place_apple=mock.Mock(return_value={"ok": True, "op_id": "op-2"}),
+            pick_object=mock.Mock(return_value={"ok": True, "op_id": "op-3"}),
         )
 
         listed = MODULE.ZapdosSession.call_once(session, "list_scene_objects", ())
@@ -1459,29 +1564,29 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         picked = MODULE.ZapdosSession.call_once(session, "pick_object", ({"target_query": "crate"},))
 
         self.assertEqual(listed["items"][0]["body"], "Scene_Crate")
-        self.assertEqual(grabbed["target_body"], "Scene_apple_1")
-        self.assertEqual(placed["target_body"], "Scene_apple_1")
-        self.assertEqual(picked["target_body"], "Scene_Crate")
+        self.assertEqual(grabbed["op_id"], "op-1")
+        self.assertEqual(placed["op_id"], "op-2")
+        self.assertEqual(picked["op_id"], "op-3")
         session.runtime.list_scene_objects.assert_called_once_with()
         session.runtime.grab_apple.assert_called_once_with()
         session.runtime.place_apple.assert_called_once_with()
         session.runtime.pick_object.assert_called_once_with({"target_query": "crate"})
 
-    def test_manipulation_runtime_executes_grounded_pick_plan(self):
+    async def test_manipulation_runtime_executes_grounded_pick_plan(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
-        session = SimpleNamespace(
-            editor=SimpleNamespace(
-                scene_revision="rev-1",
-                overlay_state={},
-                list_scene_bodies=mock.Mock(return_value={"items": []}),
-            ),
-            bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
+        session, scheduled, reservations = self._build_manipulation_session(
+            scene_revision="rev-1",
             physics=mock.Mock(),
         )
+
+        def run_pick():
+            yield None
+            return {"ok": True, "target_body": "Scene_Crate"}
+
         executor = mock.Mock(
             current_pose=mock.Mock(return_value={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
-            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate"}),
+            iter_execute=mock.Mock(return_value=run_pick()),
         )
         catalog_loader = mock.Mock(return_value=[{"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}])
         grounder = mock.Mock(return_value={"target": {"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}, "support": None})
@@ -1496,8 +1601,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         )
         result = runtime.pick_object({"target_query": "crate"})
 
-        self.assertEqual(result["target_body"], "Scene_Crate")
-        self.assertEqual(result["scene_revision"], "rev-1")
+        self.assertEqual(result, {"ok": True, "op_id": "op-1"})
         session.editor.list_scene_bodies.assert_called_once_with()
         catalog_loader.assert_called_once_with({"items": []}, {})
         grounder.assert_called_once_with(catalog_loader.return_value, target_query="crate", support_query=None)
@@ -1508,9 +1612,16 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             arm="left",
             start_pose={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
         )
-        executor.execute.assert_called_once_with({"kind": "pick", "target_body": "Scene_Crate", "arm": "left"})
+        executor.iter_execute.assert_called_once_with({"kind": "pick", "target_body": "Scene_Crate", "arm": "left"})
+        session.schedule_on_owner_loop.assert_called_once()
+        await asyncio.gather(*scheduled)
+        self.assertEqual(reservations, ["enter", "exit"])
+        self.assertEqual(
+            session.editor.scene_rebuild_state.jobs["op-1"].future.result(timeout=1),
+            {"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-1"},
+        )
 
-    def test_manipulation_runtime_executes_arm_only_grab_apple_plan(self):
+    async def test_manipulation_runtime_executes_arm_only_grab_apple_plan(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
         target = {
@@ -1527,18 +1638,18 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "position": [0.5, 0.0, 0.75],
             "world_aabb": {"min": [0.1, -0.3, 0.7], "max": [0.9, 0.3, 0.8]},
         }
-        session = SimpleNamespace(
-            editor=SimpleNamespace(
-                scene_revision="rev-1",
-                overlay_state={},
-                list_scene_bodies=mock.Mock(return_value={"items": []}),
-            ),
-            bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
+        session, scheduled, reservations = self._build_manipulation_session(
+            scene_revision="rev-1",
             physics=mock.Mock(),
         )
+
+        def run_grab():
+            yield None
+            return {"ok": True, "target_body": "Scene_apple_1"}
+
         executor = mock.Mock(
             current_pose=mock.Mock(return_value={"position": [-0.068666, 0.251999, 0.72023], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
-            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1"}),
+            iter_execute=mock.Mock(return_value=run_grab()),
         )
         catalog_loader = mock.Mock(return_value=[target, support])
         grounder = mock.Mock(return_value={"target": target, "support": support})
@@ -1551,11 +1662,10 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         )
         result = runtime.grab_apple()
 
-        self.assertEqual(result["target_body"], "Scene_apple_1")
-        self.assertEqual(result["scene_revision"], "rev-1")
+        self.assertEqual(result, {"ok": True, "op_id": "op-1"})
         grounder.assert_called_once_with(catalog_loader.return_value, target_query="apple", support_query="benchmark table")
-        executor.execute.assert_called_once()
-        plan = executor.execute.call_args.args[0]
+        executor.iter_execute.assert_called_once()
+        plan = executor.iter_execute.call_args.args[0]
         self.assertEqual(plan["arm"], "left")
         self.assertEqual(plan["target_body"], "Scene_apple_1")
         self.assertEqual(plan["attach_tolerance"], 0.015)
@@ -1582,8 +1692,15 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["stages"][4]["steps"], 20)
         self.assertEqual(plan["stages"][4]["target_point"], "finger_center")
         self.assertEqual(plan["stages"][4]["pose"]["position"], [0.4, 0.18, 0.92])
+        session.schedule_on_owner_loop.assert_called_once()
+        await asyncio.gather(*scheduled)
+        self.assertEqual(reservations, ["enter", "exit"])
+        self.assertEqual(
+            session.editor.scene_rebuild_state.jobs["op-1"].future.result(timeout=1),
+            {"ok": True, "target_body": "Scene_apple_1", "scene_revision": "rev-1"},
+        )
 
-    def test_manipulation_runtime_executes_arm_only_place_apple_plan(self):
+    async def test_manipulation_runtime_executes_arm_only_place_apple_plan(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
         target = {
@@ -1607,17 +1724,17 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "relative_position": [0.0, 0.0, 0.0],
             "relative_quat": [1.0, 0.0, 0.0, 0.0],
         }
-        session = SimpleNamespace(
-            editor=SimpleNamespace(
-                scene_revision="rev-2",
-                overlay_state={},
-                list_scene_bodies=mock.Mock(return_value={"items": []}),
-            ),
-            bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
+        session, scheduled, reservations = self._build_manipulation_session(
+            scene_revision="rev-2",
             physics=physics,
         )
+
+        def run_release():
+            yield None
+            return {"ok": True, "target_body": "Scene_apple_1", "attachment": None}
+
         executor = mock.Mock(
-            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1", "attachment": None}),
+            iter_execute=mock.Mock(return_value=run_release()),
         )
         catalog_loader = mock.Mock(return_value=[target, support])
         grounder = mock.Mock(return_value={"target": target, "support": support})
@@ -1630,26 +1747,27 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         )
         result = runtime.place_apple()
 
-        self.assertEqual(result["target_body"], "Scene_apple_1")
-        self.assertEqual(result["scene_revision"], "rev-2")
+        self.assertEqual(result, {"ok": True, "op_id": "op-1"})
         physics.get_attachment.assert_called_once_with("Scene_apple_1")
-        executor.execute.assert_called_once_with({
+        executor.iter_execute.assert_called_once_with({
             "kind": "release",
             "arm": "left",
             "target_body": "Scene_apple_1",
             "stages": [{"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 18}],
         })
+        session.schedule_on_owner_loop.assert_called_once()
+        await asyncio.gather(*scheduled)
+        self.assertEqual(reservations, ["enter", "exit"])
+        self.assertEqual(
+            session.editor.scene_rebuild_state.jobs["op-1"].future.result(timeout=1),
+            {"ok": True, "target_body": "Scene_apple_1", "attachment": None, "scene_revision": "rev-2"},
+        )
 
-    def test_manipulation_runtime_passes_start_pose_and_scene_objects_to_planner(self):
+    async def test_manipulation_runtime_passes_start_pose_and_scene_objects_to_planner(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
-        session = SimpleNamespace(
-            editor=SimpleNamespace(
-                scene_revision="rev-1",
-                overlay_state={},
-                list_scene_bodies=mock.Mock(return_value={"items": []}),
-            ),
-            bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
+        session, scheduled, reservations = self._build_manipulation_session(
+            scene_revision="rev-1",
             physics=mock.Mock(name="physics"),
         )
         catalog_loader = mock.Mock(return_value=[{
@@ -1681,7 +1799,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         executor = mock.Mock(
             current_pose=mock.Mock(return_value={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
-            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate"}),
+            iter_execute=mock.Mock(return_value=iter(())),
         )
 
         runtime = ManipulationRuntime(
@@ -1692,6 +1810,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             executor=executor,
         )
         runtime.pick_object({"target_query": "crate"})
+        await asyncio.gather(*scheduled)
 
         self.assertEqual(planner_call, {
             "target": grounder.return_value["target"],
@@ -1700,29 +1819,26 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "arm": "left",
             "start_pose": {"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
         })
+        self.assertEqual(reservations, ["enter", "exit"])
 
     def test_pick_plan_keeps_stages_optional_for_unstaged_default_planner(self):
         from utils.zapdos.manipulation.types import PickPlan
 
         self.assertNotIn("stages", PickPlan.__required_keys__)
 
-    def test_manipulation_runtime_rebinds_executor_to_current_session_state(self):
+    async def test_manipulation_runtime_rebinds_executor_to_current_session_state(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
-        session = SimpleNamespace(
-            editor=SimpleNamespace(
-                scene_revision="rev-2",
-                overlay_state={},
-                list_scene_bodies=mock.Mock(return_value={"items": []}),
-            ),
-            bundle=SimpleNamespace(scene_usd=Path("next-scene.usda"), robot_usd=Path("robot.usda")),
+        session, scheduled, _reservations = self._build_manipulation_session(
+            scene_revision="rev-2",
             physics=mock.Mock(name="physics"),
         )
+        session.bundle = SimpleNamespace(scene_usd=Path("next-scene.usda"), robot_usd=Path("robot.usda"))
         executor = SimpleNamespace(
             physics="stale-physics",
             bundle="stale-bundle",
             current_pose=mock.Mock(return_value={"position": [0.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
-            execute=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate"}),
+            iter_execute=mock.Mock(return_value=iter(())),
         )
         runtime = ManipulationRuntime(
             session,
@@ -1733,54 +1849,336 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         )
 
         runtime.pick_object({"target_query": "crate"})
+        await asyncio.gather(*scheduled)
 
         self.assertIs(executor.physics, session.physics)
         self.assertIs(executor.bundle, session.bundle)
 
-    def test_run_overlay_rebuild_background_queues_completion_without_nested_session_call(self):
-        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.sess = "sess-1"
-        session.bundle = SimpleNamespace(cameras=[])
-        editor = self.attach_editor(session)
-        editor.overlay_completions = queue.Queue()
-        session.call = mock.Mock()
-        prepared = PreparedOverlayRebuild(
-            bundle=SimpleNamespace(),
-            next_overlay=default_overlay_state("C:/assets"),
-            previous_overlay=default_overlay_state("C:/assets"),
-            previous_revision="rev-1",
-            next_revision="rev-2",
+    async def test_manipulation_runtime_schedules_pick_across_real_session_boundary(self):
+        from utils.zapdos.manipulation.runtime import ManipulationRuntime
+
+        class RuntimeSession(Session):
+            def __init__(self) -> None:
+                self.editor = SimpleNamespace(
+                    scene_revision="rev-boundary",
+                    overlay_state={},
+                    list_scene_bodies=mock.Mock(return_value={"items": []}),
+                    scene_rebuild_state=EDITOR_REBUILD_EVENTS.SceneRebuildState(),
+                )
+                self.bundle = SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda"))
+                self.physics = mock.Mock(name="physics")
+                self.iterator_checks: list[tuple[int, bool]] = []
+                self.default_ticks = 0
+                super().__init__(30)
+                executor = SimpleNamespace(
+                    current_pose=mock.Mock(return_value={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
+                    iter_execute=mock.Mock(side_effect=lambda plan: self._run_pick(plan)),
+                )
+                self.runtime = ManipulationRuntime(
+                    self,
+                    catalog_loader=mock.Mock(return_value=[{"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}]),
+                    grounding_fn=mock.Mock(return_value={"target": {"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}, "support": None}),
+                    planning_fn=mock.Mock(return_value={"kind": "pick", "target_body": "Scene_Crate"}),
+                    executor=executor,
+                )
+
+            def _run_pick(self, _plan):
+                self.iterator_checks.append((threading.get_ident(), self.world_owned()))
+                yield None
+                self.iterator_checks.append((threading.get_ident(), self.world_owned()))
+                return {"ok": True, "target_body": "Scene_Crate"}
+
+            def call_once(self, method: str, args: tuple):
+                if method == "pick_object":
+                    return self.runtime.pick_object(*args)
+                return super().call_once(method, args)
+
+            def step_once(self):
+                self.default_ticks += 1
+                time.sleep(0.001)
+
+        session = RuntimeSession()
+        self.addCleanup(self._shutdown_session, session)
+
+        while session.default_ticks == 0:
+            await asyncio.sleep(0.001)
+
+        result = await asyncio.wait_for(session.call("pick_object", {"target_query": "crate"}), timeout=0.5)
+        payload = await asyncio.wait_for(
+            asyncio.wrap_future(session.editor.scene_rebuild_state.jobs[result["op_id"]].future),
+            timeout=0.5,
         )
 
-        with mock.patch.object(editor, "_prepare_overlay_rebuild", return_value=prepared):
-            editor._run_overlay_rebuild_background(
-                "op-1",
-                default_overlay_state("C:/assets"),
-                {},
-                default_overlay_state("C:/assets"),
-                "rev-1",
+        self.assertEqual(result, {"ok": True, "op_id": "op-1"})
+        self.assertEqual(session.iterator_checks, [
+            (session.proc.ident, True),
+            (session.proc.ident, True),
+        ])
+        self.assertEqual(payload, {"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-boundary"})
+
+    async def test_manipulation_blocks_unrelated_session_calls_until_operation_finishes(self):
+        from utils.zapdos.manipulation.runtime import ManipulationRuntime
+
+        class RuntimeSession(Session):
+            def __init__(self) -> None:
+                self.editor = SimpleNamespace(
+                    scene_revision="rev-blocked",
+                    overlay_state={},
+                    list_scene_bodies=mock.Mock(return_value={"items": []}),
+                    scene_rebuild_state=EDITOR_REBUILD_EVENTS.SceneRebuildState(),
+                )
+                self.bundle = SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda"))
+                self.physics = mock.Mock(name="physics")
+                self.pause_internal_step = asyncio.Event()
+                self.resume_internal_step = asyncio.Event()
+                self.default_ticks = 0
+                super().__init__(30)
+                executor = SimpleNamespace(
+                    current_pose=mock.Mock(return_value={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
+                    iter_execute=mock.Mock(side_effect=lambda plan: self._run_pick(plan)),
+                )
+                self.runtime = ManipulationRuntime(
+                    self,
+                    catalog_loader=mock.Mock(return_value=[{"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}]),
+                    grounding_fn=mock.Mock(return_value={"target": {"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}, "support": None}),
+                    planning_fn=mock.Mock(return_value={"kind": "pick", "target_body": "Scene_Crate"}),
+                    executor=executor,
+                )
+
+            async def run_sync(self, fn, world_token=None):
+                if self.world_owned() and self._looks_like_operation_step(fn) and not self.pause_internal_step.is_set():
+                    self.pause_internal_step.set()
+                    await self.resume_internal_step.wait()
+                try:
+                    return await super().run_sync(fn, world_token=world_token)
+                except TypeError:
+                    return await super().run_sync(fn)
+
+            @staticmethod
+            def _looks_like_operation_step(fn) -> bool:
+                closure = getattr(fn, "__closure__", None) or ()
+                return any(hasattr(cell.cell_contents, "__next__") for cell in closure)
+
+            def _run_pick(self, _plan):
+                yield None
+                return {"ok": True, "target_body": "Scene_Crate"}
+
+            def call_once(self, method: str, args: tuple):
+                if method == "pick_object":
+                    return self.runtime.pick_object(*args)
+                if method == "ping":
+                    return "pong"
+                return super().call_once(method, args)
+
+            def step_once(self):
+                self.default_ticks += 1
+                time.sleep(0.001)
+
+        session = RuntimeSession()
+        self.addCleanup(self._shutdown_session, session)
+
+        result = await asyncio.wait_for(session.call("pick_object", {"target_query": "crate"}), timeout=0.5)
+        await asyncio.wait_for(session.pause_internal_step.wait(), timeout=0.5)
+        blocked_call = asyncio.create_task(session.call("ping"))
+        try:
+            await asyncio.sleep(0.02)
+            self.assertFalse(blocked_call.done())
+
+            session.resume_internal_step.set()
+            payload = await asyncio.wait_for(
+                asyncio.wrap_future(session.editor.scene_rebuild_state.jobs[result["op_id"]].future),
+                timeout=0.5,
+            )
+            reply = await asyncio.wait_for(blocked_call, timeout=0.5)
+
+            self.assertEqual(result, {"ok": True, "op_id": "op-1"})
+            self.assertEqual(payload, {"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-blocked"})
+            self.assertEqual(reply, "pong")
+        finally:
+            session.resume_internal_step.set()
+            await asyncio.wait_for(
+                asyncio.wrap_future(session.editor.scene_rebuild_state.jobs[result["op_id"]].future),
+                timeout=0.5,
             )
 
-        completion = editor.overlay_completions.get_nowait()
-        self.assertEqual(completion.op_id, "op-1")
-        self.assertIs(completion.prepared, prepared)
-        self.assertIsNone(completion.error)
-        session.call.assert_not_called()
+    async def test_cancelling_manipulation_releases_world_and_fails_job(self):
+        from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
-    def test_drain_overlay_completions_resolves_scene_rebuild_job_future(self):
+        class RuntimeSession(Session):
+            def __init__(self) -> None:
+                self.editor = SimpleNamespace(
+                    scene_revision="rev-cancel",
+                    overlay_state={},
+                    list_scene_bodies=mock.Mock(return_value={"items": []}),
+                    scene_rebuild_state=EDITOR_REBUILD_EVENTS.SceneRebuildState(),
+                )
+                self.bundle = SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda"))
+                self.physics = mock.Mock(name="physics")
+                self.pause_internal_step = asyncio.Event()
+                self.resume_internal_step = asyncio.Event()
+                self.default_ticks = 0
+                super().__init__(30)
+                executor = SimpleNamespace(
+                    current_pose=mock.Mock(return_value={"position": [0.2, 0.1, 0.4], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
+                    iter_execute=mock.Mock(side_effect=lambda plan: self._run_pick(plan)),
+                )
+                self.runtime = ManipulationRuntime(
+                    self,
+                    catalog_loader=mock.Mock(return_value=[{"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}]),
+                    grounding_fn=mock.Mock(return_value={"target": {"body": "Scene_Crate", "label": "crate", "motion": "dynamic"}, "support": None}),
+                    planning_fn=mock.Mock(return_value={"kind": "pick", "target_body": "Scene_Crate"}),
+                    executor=executor,
+                )
+
+            async def run_sync(self, fn, world_token=None):
+                if self.world_owned() and self._looks_like_operation_step(fn) and not self.pause_internal_step.is_set():
+                    self.pause_internal_step.set()
+                    await self.resume_internal_step.wait()
+                try:
+                    return await super().run_sync(fn, world_token=world_token)
+                except TypeError:
+                    return await super().run_sync(fn)
+
+            @staticmethod
+            def _looks_like_operation_step(fn) -> bool:
+                closure = getattr(fn, "__closure__", None) or ()
+                return any(hasattr(cell.cell_contents, "__next__") for cell in closure)
+
+            def _run_pick(self, _plan):
+                yield None
+                return {"ok": True, "target_body": "Scene_Crate"}
+
+            def call_once(self, method: str, args: tuple):
+                if method == "pick_object":
+                    return self.runtime.pick_object(*args)
+                return super().call_once(method, args)
+
+            def step_once(self):
+                self.default_ticks += 1
+                time.sleep(0.001)
+
+        session = RuntimeSession()
+        self.addCleanup(self._shutdown_session, session)
+
+        while session.default_ticks == 0:
+            await asyncio.sleep(0.001)
+
+        result = await asyncio.wait_for(session.call("pick_object", {"target_query": "crate"}), timeout=0.5)
+        op_task = session.runtime.operation_tasks[result["op_id"]]
+        await asyncio.wait_for(session.pause_internal_step.wait(), timeout=0.5)
+        ticks_before_cancel = session.default_ticks
+
+        op_task.cancel()
+
+        with self.assertRaisesRegex(RuntimeError, "cancel"):
+            await asyncio.wait_for(
+                asyncio.wrap_future(session.editor.scene_rebuild_state.jobs[result["op_id"]].future),
+                timeout=0.5,
+            )
+
+        self.assertFalse(await session.run_sync(lambda current: current.world_owned()))
+
+        deadline = time.time() + 0.5
+        while session.default_ticks == ticks_before_cancel and time.time() < deadline:
+            await asyncio.sleep(0.001)
+
+        self.assertGreater(session.default_ticks, ticks_before_cancel)
+
+    def test_editor_initializes_explicit_scene_rebuild_state(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.sess = "sess-1"
         session.bundle = SimpleNamespace(cameras=[])
         editor = self.attach_editor(session)
-        editor.overlay_completions = queue.Queue()
-        editor.scene_rebuild_jobs = {
+
+        self.assertIs(EDITOR_REBUILD_EVENTS.ensure_scene_rebuild_state(editor), editor.scene_rebuild_state)
+        self.assertFalse(hasattr(editor, "overlay_completions"))
+        self.assertEqual(editor.scene_rebuild_state.job_counter, 0)
+        self.assertEqual(editor.scene_rebuild_state.jobs, {})
+
+    def test_editor_close_cancels_tracked_tasks_after_releasing_lock(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.sess = "sess-1"
+        session.bundle = SimpleNamespace(cameras=[])
+        editor = self.attach_editor(session)
+
+        class RecordingLock:
+            def __init__(self) -> None:
+                self.held = False
+
+            def __enter__(self):
+                if self.held:
+                    raise AssertionError("lock re-entered")
+                self.held = True
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.held = False
+
+        class FakeTask:
+            def __init__(self, lock: RecordingLock) -> None:
+                self.lock = lock
+                self.cancelled = False
+
+            def cancel(self) -> None:
+                if self.lock.held:
+                    raise AssertionError("task cancelled while rebuild lock held")
+                self.cancelled = True
+
+        class FakeFuture:
+            def __init__(self, lock: RecordingLock) -> None:
+                self.lock = lock
+                self.cancelled = False
+
+            def cancel(self) -> None:
+                if self.lock.held:
+                    raise AssertionError("future cancelled while rebuild lock held")
+                self.cancelled = True
+
+        fake_lock = RecordingLock()
+        fake_task = FakeTask(fake_lock)
+        fake_future = FakeFuture(fake_lock)
+        editor.scene_rebuild_state.lock = fake_lock
+        editor.scene_rebuild_state.tasks = {"op-1": fake_task}
+        editor.scene_rebuild_state.jobs = {
             "op-1": SceneRebuildJob(
-                future=ConcurrentFuture(),
-                success_payload={"ok": True, "items": []},
+                future=fake_future,
+                success_payload={"ok": True},
                 events=queue.Queue(),
             ),
         }
-        editor.scene_rebuild_jobs_lock = threading.Lock()
+
+        editor.close()
+
+        self.assertTrue(fake_task.cancelled)
+        self.assertTrue(fake_future.cancelled)
+        self.assertEqual(editor.scene_rebuild_state.tasks, {})
+        self.assertEqual(editor.scene_rebuild_state.jobs, {})
+
+    async def test_run_overlay_rebuild_resolves_scene_rebuild_job_future_without_manual_drain(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.sess = "sess-1"
+        session.bundle = SimpleNamespace(cameras=[])
+        editor = self.attach_editor(session)
+        session.editor = editor
+        editor.rebuilding_scene = True
+        reservations: list[str] = []
+        run_sync_tokens: list[object | None] = []
+
+        @asynccontextmanager
+        async def reserve_world():
+            token = object()
+            reservations.append("enter")
+            try:
+                yield token
+            finally:
+                reservations.append("exit")
+
+        async def run_sync(fn, world_token=None):
+            run_sync_tokens.append(world_token)
+            return fn(session)
+
+        session.reserve_world = reserve_world
+        session.run_sync = run_sync
         prepared = PreparedOverlayRebuild(
             bundle=SimpleNamespace(),
             next_overlay=default_overlay_state("C:/assets"),
@@ -1788,33 +2186,181 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             previous_revision="rev-1",
             next_revision="rev-2",
         )
-        editor.overlay_completions.put(OverlayRebuildCompletion(op_id="op-1", prepared=prepared))
+        EDITOR_REBUILD_EVENTS.create_scene_rebuild_job(editor, "op-1", {"ok": True, "items": []})
 
-        with mock.patch.object(editor, "_apply_prepared_overlay_rebuild", return_value="rev-2"):
-            editor.drain_completions()
+        with mock.patch.object(editor, "_build_support_infos", return_value={}) as build_support_infos:
+            with mock.patch.object(editor, "_prepare_overlay_rebuild", return_value=prepared) as prepare:
+                with mock.patch.object(
+                    editor,
+                    "_apply_prepared_overlay_rebuild",
+                    side_effect=lambda current_prepared, current_op_id: setattr(editor, "rebuilding_scene", False) or "rev-2",
+                ) as apply_prepared:
+                    with mock.patch(
+                        "utils.zapdos.editor.rebuild_manager.asyncio.to_thread",
+                        new=mock.AsyncMock(side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)),
+                    ) as to_thread:
+                        await EDITOR_REBUILD_MANAGER.run_overlay_rebuild(
+                            editor,
+                            "op-1",
+                            default_overlay_state("C:/assets"),
+                            default_overlay_state("C:/assets"),
+                            "rev-1",
+                        )
 
         self.assertEqual(
-            editor.scene_rebuild_jobs["op-1"].future.result(timeout=1),
+            editor.scene_rebuild_future("op-1").result(timeout=1),
             {"ok": True, "items": [], "scene_revision": "rev-2"},
         )
+        self.assertEqual(reservations, ["enter", "exit"])
+        self.assertEqual(len(run_sync_tokens), 2)
+        self.assertIsNone(run_sync_tokens[0])
+        self.assertIsNotNone(run_sync_tokens[1])
+        self.assertFalse(editor.rebuilding_scene)
+        self.assertFalse(hasattr(editor, "overlay_completions"))
+        to_thread.assert_awaited_once()
+        build_support_infos.assert_called_once_with()
+        prepare.assert_called_once_with(
+            default_overlay_state("C:/assets"),
+            {},
+            default_overlay_state("C:/assets"),
+            "rev-1",
+            op_id="op-1",
+        )
+        apply_prepared.assert_called_once_with(prepared, "op-1")
 
-    def test_step_once_drains_editor_completions(self):
+    async def test_set_scene_assets_returns_before_support_info_collection_runs(self):
+        release_support_infos = threading.Event()
+
+        class RuntimeSession(Session):
+            def __init__(self) -> None:
+                self.sess = "sess-set-scene-assets"
+                self.bundle = SimpleNamespace(cameras=[])
+                self.default_ticks = 0
+                super().__init__(30)
+                self.editor = EDITOR_SESSION_MODULE.ZapdosEditor(
+                    self,
+                    repo_root=SESSION_MODULE.REPO_ROOT,
+                    default_robot_usd=SESSION_MODULE.DEFAULT_ROBOT_USD,
+                    default_scene_usd=MODULE.DEFAULT_SCENE_USD,
+                )
+
+            def call_once(self, method: str, args: tuple):
+                if method == "set_scene_assets":
+                    return self.editor.set_scene_assets(*args)
+                return super().call_once(method, args)
+
+            def step_once(self):
+                self.default_ticks += 1
+                time.sleep(0.001)
+
+            def destroy(self):
+                pass
+
+        session = RuntimeSession()
+        self.addCleanup(self._shutdown_session, session)
+
+        while session.default_ticks == 0:
+            await asyncio.sleep(0.001)
+
+        next_overlay = default_overlay_state("C:/assets")
+        next_overlay["instances"] = [{
+            "id": "table_000_01",
+            "asset_id": "table_000",
+            "url": "objects/table_000/Aligned.usda",
+            "motion": "static",
+            "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
+        }]
+        items = [{
+            "asset_id": "table_000",
+            "instance_id": "table_000_01",
+            "body": "Scene_table_000_01",
+        }]
+        prepared = PreparedOverlayRebuild(
+            bundle=SimpleNamespace(),
+            next_overlay=next_overlay,
+            previous_overlay=default_overlay_state("C:/assets"),
+            previous_revision="rev-1",
+            next_revision="rev-2",
+        )
+
+        def block_support_infos():
+            release_support_infos.wait(timeout=5)
+            return {}
+
+        with mock.patch.object(EDITOR_SESSION_MODULE, "build_set_scene_assets_overlay", return_value=(next_overlay, items)):
+            with mock.patch.object(session.editor, "_build_support_infos", side_effect=block_support_infos):
+                with mock.patch.object(session.editor, "_prepare_overlay_rebuild", return_value=prepared):
+                    with mock.patch.object(
+                        session.editor,
+                        "_apply_prepared_overlay_rebuild",
+                        side_effect=lambda current_prepared, current_op_id: setattr(session.editor, "rebuilding_scene", False) or "rev-2",
+                    ):
+                        try:
+                            result = await asyncio.wait_for(
+                                session.call("set_scene_assets", [{"asset_id": "table_000"}]),
+                                timeout=0.2,
+                            )
+                        finally:
+                            release_support_infos.set()
+
+        self.assertEqual(result, {
+            "ok": True,
+            "op_id": "op-1",
+            "status": "started",
+            "items": items,
+        })
+
+    def test_start_overlay_operation_schedules_async_rebuild_without_overlay_completions(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
-        session.editor = mock.Mock(drain_completions=mock.Mock())
+        session.sess = "sess-1"
+        session.bundle = SimpleNamespace(cameras=[])
+        editor = self.attach_editor(session)
+        session.editor = editor
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.scene_revision = "rev-1"
+        scheduled: list[object] = []
+        scheduled_task = mock.Mock()
+
+        def schedule_on_owner_loop(coro):
+            scheduled.append(coro)
+            coro.close()
+            return scheduled_task
+
+        session.schedule_on_owner_loop = mock.Mock(side_effect=schedule_on_owner_loop)
+
+        with mock.patch.object(editor, "_build_support_infos") as build_support_infos:
+            result = editor._start_overlay_operation(default_overlay_state("C:/assets"), {"ok": True, "items": []})
+
+        self.assertEqual(result, {"ok": True, "op_id": "op-1", "status": "started", "items": []})
+        self.assertEqual(len(scheduled), 1)
+        self.assertIn("op-1", editor.scene_rebuild_state.jobs)
+        self.assertFalse(hasattr(editor, "overlay_completions"))
+        session.schedule_on_owner_loop.assert_called_once()
+        build_support_infos.assert_not_called()
+
+    def test_step_once_ticks_physics_without_draining_editor_completions(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.editor = SimpleNamespace()
         session.physics = mock.Mock(
             apply_joint_command=mock.Mock(),
             step=mock.Mock(),
         )
         session.command_msgs = queue.Queue()
+        session.command_msgs.put_nowait({"topic": "joint", "positions": [0.1]})
+        session.command_msgs.put_nowait({"topic": "joint", "positions": [0.2]})
 
         with mock.patch.object(Session, "step_once", return_value={"ok": True}) as base_step:
             result = MODULE.ZapdosSession.step_once(session)
 
         self.assertEqual(result, {"ok": True})
-        session.editor.drain_completions.assert_called_once_with()
-        session.physics.apply_joint_command.assert_called_once_with(None)
+        self.assertFalse(hasattr(session.editor, "drain_completions"))
+        session.physics.apply_joint_command.assert_called_once_with({"topic": "joint", "positions": [0.2]})
         session.physics.step.assert_called_once_with()
         base_step.assert_called_once_with()
+
+    def test_zapdos_session_does_not_override_idle_step_once(self):
+        self.assertNotIn("idle_step_once", MODULE.ZapdosSession.__dict__)
+        self.assertFalse(hasattr(MODULE.ZapdosSession, "idle_step_once"))
 
     async def test_stream_scene_rebuild_job_emits_done_event_and_discards_job(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
@@ -1823,14 +2369,11 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         editor = self.attach_editor(session)
         future = ConcurrentFuture()
         future.set_result({"ok": True, "items": [], "scene_revision": "rev-2"})
-        editor.scene_rebuild_jobs = {
-            "op-1": SceneRebuildJob(
-                future=future,
-                success_payload={"ok": True, "items": []},
-                events=queue.Queue(),
-            ),
-        }
-        editor.scene_rebuild_jobs_lock = threading.Lock()
+        editor.scene_rebuild_state.jobs["op-1"] = SceneRebuildJob(
+            future=future,
+            success_payload={"ok": True, "items": []},
+            events=queue.Queue(),
+        )
 
         events = [chunk async for chunk in MODULE._stream_scene_rebuild_job(session, "op-1")]
 
@@ -1838,7 +2381,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             'event: started\ndata: {"op_id": "op-1"}\n\n',
             'event: done\ndata: {"ok": true, "items": [], "scene_revision": "rev-2"}\n\n',
         ])
-        self.assertNotIn("op-1", editor.scene_rebuild_jobs)
+        self.assertNotIn("op-1", editor.scene_rebuild_state.jobs)
 
     async def test_stream_scene_rebuild_job_emits_started_event_before_completion(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
@@ -1846,14 +2389,11 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.bundle = SimpleNamespace(cameras=[])
         editor = self.attach_editor(session)
         future = ConcurrentFuture()
-        editor.scene_rebuild_jobs = {
-            "op-1": SceneRebuildJob(
-                future=future,
-                success_payload={"ok": True, "items": []},
-                events=queue.Queue(),
-            ),
-        }
-        editor.scene_rebuild_jobs_lock = threading.Lock()
+        editor.scene_rebuild_state.jobs["op-1"] = SceneRebuildJob(
+            future=future,
+            success_payload={"ok": True, "items": []},
+            events=queue.Queue(),
+        )
         stream = MODULE._stream_scene_rebuild_job(session, "op-1")
 
         started = await asyncio.wait_for(anext(stream), timeout=0.1)
@@ -1864,34 +2404,39 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(done, 'event: done\ndata: {"ok": true, "items": [], "scene_revision": "rev-2"}\n\n')
         with self.assertRaises(StopAsyncIteration):
             await anext(stream)
-        self.assertNotIn("op-1", editor.scene_rebuild_jobs)
+        self.assertNotIn("op-1", editor.scene_rebuild_state.jobs)
 
     async def test_stream_scene_rebuild_job_emits_failed_event_when_background_prepare_errors_without_drain(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.sess = "sess-1"
         session.bundle = SimpleNamespace(cameras=[])
         editor = self.attach_editor(session)
-        editor.overlay_completions = queue.Queue()
         editor.rebuilding_scene = True
-        editor.scene_rebuild_jobs = {
-            "op-1": SceneRebuildJob(
-                future=ConcurrentFuture(),
-                success_payload={"ok": True, "items": []},
-                events=queue.Queue(),
-            ),
-        }
-        editor.scene_rebuild_jobs_lock = threading.Lock()
+        EDITOR_REBUILD_EVENTS.create_scene_rebuild_job(editor, "op-1", {"ok": True, "items": []})
+        session.editor = editor
+
+        @asynccontextmanager
+        async def reserve_world():
+            token = object()
+            yield token
+
+        async def run_sync(fn, world_token=None):
+            return fn(session)
+
+        session.reserve_world = reserve_world
+        session.run_sync = run_sync
         stream = MODULE._stream_scene_rebuild_job(session, "op-1")
 
         started = await asyncio.wait_for(anext(stream), timeout=0.1)
-        with mock.patch.object(editor, "_prepare_overlay_rebuild", side_effect=RuntimeError("subprocess crashed")):
-            editor._run_overlay_rebuild_background(
-                "op-1",
-                default_overlay_state("C:/assets"),
-                {},
-                default_overlay_state("C:/assets"),
-                "rev-1",
-            )
+        with mock.patch.object(editor, "_build_support_infos", return_value={}):
+            with mock.patch.object(editor, "_prepare_overlay_rebuild", side_effect=RuntimeError("subprocess crashed")):
+                await EDITOR_REBUILD_MANAGER.run_overlay_rebuild(
+                    editor,
+                    "op-1",
+                    default_overlay_state("C:/assets"),
+                    default_overlay_state("C:/assets"),
+                    "rev-1",
+                )
         progress = await asyncio.wait_for(anext(stream), timeout=0.2)
         failed = await asyncio.wait_for(anext(stream), timeout=0.2)
 
@@ -1901,7 +2446,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(editor.rebuilding_scene)
         with self.assertRaises(StopAsyncIteration):
             await anext(stream)
-        self.assertNotIn("op-1", editor.scene_rebuild_jobs)
+        self.assertNotIn("op-1", editor.scene_rebuild_state.jobs)
 
     def test_save_camera_override_delegates_to_renderer(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)

@@ -21,19 +21,28 @@ test("placeTheApple posts to the zapdos place_apple route", async () => {
     calls.push({ input, init });
     return new Response(JSON.stringify({
       ok: true,
-      arm: "left",
-      target_body: "Scene_apple_01",
-      scene_revision: "rev-4",
+      op_id: "op-2",
     }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
   }) as typeof fetch;
+  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-2");
 
   try {
-    const payload = await placeTheApple("sess-1");
+    const pending = placeTheApple("sess-1", () => stream);
+    await waitFor(() => stream.listenerCount("done") > 0);
+    stream.dispatch("done", {
+      ok: true,
+      arm: "left",
+      target_body: "Scene_apple_01",
+      scene_revision: "rev-4",
+    });
+    const payload = await pending;
     assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/place_apple");
     assert.deepEqual(calls[0]?.init, createPlaceTheAppleRequest());
+    assert.equal(stream.url, "/python/zapdos/sess-1/op/op-2");
+    assert.equal(stream.closed, true);
     assert.equal(payload.target_body, "Scene_apple_01");
     assert.equal(payload.scene_revision, "rev-4");
   } finally {
@@ -44,4 +53,42 @@ test("placeTheApple posts to the zapdos place_apple route", async () => {
 async function loadModule<TModule>(specifier: string): Promise<TModule> {
   const loaded = await import(specifier);
   return (loaded.default ?? loaded["module.exports"] ?? loaded) as TModule;
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for test condition");
+    }
+    await Promise.resolve();
+  }
+}
+
+class FakeEventSource {
+  closed = false;
+  onerror: ((event: Event) => void) | null = null;
+  private readonly listeners = new Map<string, Array<(event: MessageEvent) => void>>();
+
+  constructor(readonly url: string) {}
+
+  addEventListener(type: string, listener: (event: MessageEvent) => void) {
+    const current = this.listeners.get(type) ?? [];
+    current.push(listener);
+    this.listeners.set(type, current);
+  }
+
+  close() {
+    this.closed = true;
+  }
+
+  dispatch(type: string, payload: unknown) {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(new MessageEvent(type, { data: JSON.stringify(payload) }));
+    }
+  }
+
+  listenerCount(type: string) {
+    return this.listeners.get(type)?.length ?? 0;
+  }
 }

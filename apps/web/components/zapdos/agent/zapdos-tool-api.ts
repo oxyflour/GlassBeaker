@@ -2,6 +2,10 @@ import type { SetSceneAssetsToolArgs } from "./zapdos-agent-tool-schemas";
 
 export type SetSceneAssetsInput = SetSceneAssetsToolArgs;
 export type SceneToolOperationStart = { ok: true; op_id: string };
+export type SetSceneAssetsStart = SceneToolOperationStart & {
+  items: Array<{ asset_id: string; body: string; instance_id: string }>;
+  status: "started";
+};
 export type SceneOperationStreamFactory = (url: string) => SceneOperationStream;
 export type Bounds3 = { min: number[]; max: number[] };
 export type ListSceneBodiesResult = {
@@ -93,17 +97,15 @@ async function startSceneToolOperation<T>(
 export async function setSceneAssets(
   sess: string,
   input: SetSceneAssetsInput,
-  createEventSource: SceneOperationStreamFactory = defaultSceneOperationStreamFactory,
 ) {
-  return await startSceneToolOperation<{
-    items: Array<{ asset_id: string; body: string; instance_id: string }>;
-    scene_revision: string;
-  }>(
-    sess,
+  const response = await fetch(
     `/python/zapdos/${sess}/call/set_scene_assets`,
     createSetSceneAssetsRequest(input),
-    createEventSource,
   );
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return await response.json() as SetSceneAssetsStart;
 }
 
 export async function removeAssetFromScene(

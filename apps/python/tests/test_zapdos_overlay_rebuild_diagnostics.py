@@ -4,13 +4,10 @@ import asyncio
 import contextlib
 import importlib.util
 import io
-import queue
 import sys
 import tempfile
-import threading
 import types
 import unittest
-from concurrent.futures import Future as ConcurrentFuture
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -21,7 +18,6 @@ SCENE_OPS_PATH = REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "editor" /
 SCRIPT_PATH = REPO_ROOT / "apps" / "python" / "scripts" / "prepare_zapdos_overlay_rebuild.py"
 
 from utils.zapdos.editor import rebuild_events
-from utils.zapdos.editor.rebuild_job import SceneRebuildJob
 from utils.zapdos.editor.state import default_overlay_state
 
 
@@ -67,6 +63,10 @@ def _stub_modules():
 
 
 class ZapdosOverlayRebuildDiagnosticsTest(unittest.TestCase):
+    @staticmethod
+    def build_rebuild_state():
+        return rebuild_events.SceneRebuildState()
+
     def load_scene_ops(self):
         with mock.patch.dict(sys.modules, _stub_modules(), clear=False):
             return _load_module(SCENE_OPS_PATH, "zapdos_scene_ops_diagnostics_test")
@@ -112,18 +112,11 @@ class ZapdosOverlayRebuildDiagnosticsTest(unittest.TestCase):
     def test_prepare_overlay_rebuild_emits_inline_progress_stages(self):
         module = self.load_scene_ops()
         session = SimpleNamespace(
-            overlay_completions=queue.Queue(),
-            scene_rebuild_jobs={
-                "op-1": SceneRebuildJob(
-                    future=ConcurrentFuture(),
-                    success_payload={"ok": True, "items": []},
-                    events=queue.Queue(),
-                ),
-            },
-            scene_rebuild_jobs_lock=threading.Lock(),
+            scene_rebuild_state=self.build_rebuild_state(),
         )
         session.scene_rebuild_future = lambda op_id: rebuild_events.scene_rebuild_future(session, op_id)
         session.discard_scene_rebuild_job = lambda op_id: rebuild_events.discard_scene_rebuild_job(session, op_id)
+        rebuild_events.create_scene_rebuild_job(session, "op-1", {"ok": True, "items": []})
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -178,32 +171,36 @@ class ZapdosOverlayRebuildDiagnosticsTest(unittest.TestCase):
     def test_background_prepare_error_completes_scene_rebuild_job_without_drain(self):
         module = self.load_scene_ops()
         session = SimpleNamespace(
-            overlay_completions=queue.Queue(),
             rebuilding_scene=True,
-            scene_rebuild_jobs={
-                "op-1": SceneRebuildJob(
-                    future=ConcurrentFuture(),
-                    success_payload={"ok": True, "items": []},
-                    events=queue.Queue(),
-                ),
-            },
-            scene_rebuild_jobs_lock=threading.Lock(),
+            scene_rebuild_state=self.build_rebuild_state(),
         )
         session.scene_rebuild_future = lambda op_id: rebuild_events.scene_rebuild_future(session, op_id)
         session.discard_scene_rebuild_job = lambda op_id: rebuild_events.discard_scene_rebuild_job(session, op_id)
         session._prepare_overlay_rebuild = mock.Mock(side_effect=RuntimeError("subprocess crashed"))
+        rebuild_events.create_scene_rebuild_job(session, "op-1", {"ok": True, "items": []})
+
+        async def run_sync(fn, world_token=None):
+            return fn(session)
+
+        @contextlib.asynccontextmanager
+        async def reserve_world():
+            token = object()
+            yield token
+
+        session.run_sync = run_sync
+        session.reserve_world = reserve_world
 
         async def consume():
             stream = rebuild_events.stream_scene_rebuild_job(session, "op-1")
             started = await asyncio.wait_for(anext(stream), timeout=0.1)
-            module.run_overlay_rebuild_background(
-                session,
-                "op-1",
-                default_overlay_state("C:/assets"),
-                {},
-                default_overlay_state("C:/assets"),
-                "rev-1",
-            )
+            with mock.patch.object(session, "_build_support_infos", return_value={}, create=True):
+                await module.run_overlay_rebuild(
+                    session,
+                    "op-1",
+                    default_overlay_state("C:/assets"),
+                    default_overlay_state("C:/assets"),
+                    "rev-1",
+                )
             progress = await asyncio.wait_for(anext(stream), timeout=0.2)
             failed = await asyncio.wait_for(anext(stream), timeout=0.2)
             self.assertEqual(started, 'event: started\ndata: {"op_id": "op-1"}\n\n')
@@ -218,24 +215,18 @@ class ZapdosOverlayRebuildDiagnosticsTest(unittest.TestCase):
     def test_stream_scene_rebuild_job_emits_progress_event_before_completion(self):
         module = self.load_scene_ops()
         session = SimpleNamespace(
-            scene_rebuild_jobs={
-                "op-1": SceneRebuildJob(
-                    future=ConcurrentFuture(),
-                    success_payload={"ok": True, "items": []},
-                    events=queue.Queue(),
-                ),
-            },
-            scene_rebuild_jobs_lock=threading.Lock(),
+            scene_rebuild_state=self.build_rebuild_state(),
         )
         session.scene_rebuild_future = lambda op_id: rebuild_events.scene_rebuild_future(session, op_id)
         session.discard_scene_rebuild_job = lambda op_id: rebuild_events.discard_scene_rebuild_job(session, op_id)
+        rebuild_events.create_scene_rebuild_job(session, "op-1", {"ok": True, "items": []})
 
         async def consume():
             stream = rebuild_events.stream_scene_rebuild_job(session, "op-1")
             started = await asyncio.wait_for(anext(stream), timeout=0.1)
             rebuild_events.emit_scene_rebuild_progress(session, "op-1", "prepare_overlay_rebuild.done")
             progress = await asyncio.wait_for(anext(stream), timeout=0.2)
-            session.scene_rebuild_jobs["op-1"].future.set_result({"ok": True, "items": [], "scene_revision": "rev-2"})
+            session.scene_rebuild_state.jobs["op-1"].future.set_result({"ok": True, "items": [], "scene_revision": "rev-2"})
             done = await asyncio.wait_for(anext(stream), timeout=0.2)
             self.assertEqual(started, 'event: started\ndata: {"op_id": "op-1"}\n\n')
             self.assertEqual(progress, 'event: progress\ndata: {"stage": "prepare_overlay_rebuild.done"}\n\n')
