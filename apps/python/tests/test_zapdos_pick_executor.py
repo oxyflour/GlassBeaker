@@ -179,7 +179,7 @@ class PickExecutorTest(unittest.TestCase):
             "target_body": "Scene_Crate",
             "stages": [
                 {
-                    "name": "descend_to_grasp",
+                    "name": "descend_to_pick",
                     "kind": "move_pose",
                     "target_point": "finger_center",
                     "pose": {"position": [0.1, 0.2, 0.3], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
@@ -197,7 +197,7 @@ class PickExecutorTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as err:
             executor.execute(_staged_plan())
 
-        self.assertIn("descend_to_grasp", err.exception.detail)
+        self.assertIn("descend_to_pick", err.exception.detail)
 
     def test_execute_uses_arm_only_full_pose_ik_for_staged_moves(self):
         ik = _RecordingIK(_pose(0.0, 0.0, 0.08))
@@ -236,12 +236,12 @@ class PickExecutorTest(unittest.TestCase):
         plan = {
             "arm": "left",
             "target_body": "Scene_Crate",
-            "grasp_tolerance": 0.16,
+            "pick_tolerance": 0.16,
             "attach_tolerance": 0.11,
             "stages": [
                 {"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 18},
                 {
-                    "name": "descend_to_grasp",
+                    "name": "descend_to_pick",
                     "kind": "move_pose",
                     "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
                     "position_only": True,
@@ -274,7 +274,7 @@ class PickExecutorTest(unittest.TestCase):
             "target_body": "Scene_Crate",
             "stages": [
                 {
-                    "name": "descend_to_grasp",
+                    "name": "descend_to_pick",
                     "kind": "move_pose",
                     "pose": target,
                     "position_only": True,
@@ -287,7 +287,7 @@ class PickExecutorTest(unittest.TestCase):
             "target_body": "Scene_Crate",
             "stages": [
                 {
-                    "name": "descend_to_grasp",
+                    "name": "descend_to_pick",
                     "kind": "move_pose",
                     "pose": target,
                     "position_only": True,
@@ -299,7 +299,7 @@ class PickExecutorTest(unittest.TestCase):
 
         self.assertGreater(slow_physics.step_count, default_physics.step_count)
 
-    def test_execute_rejects_gripper_stage_before_grasp_stage(self):
+    def test_execute_rejects_gripper_stage_before_pick_stage(self):
         physics = _FakePhysics()
         ik = _MutableIK(_pose(0.0, 0.0, 0.08))
         executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
@@ -308,7 +308,7 @@ class PickExecutorTest(unittest.TestCase):
             executor.execute(_out_of_order_gripper_plan())
 
         self.assertEqual(err.exception.status_code, 409)
-        self.assertIn("missing descend_to_grasp", err.exception.detail)
+        self.assertIn("missing descend_to_pick", err.exception.detail)
         self.assertEqual(physics.attached, [])
 
     def test_execute_release_opens_gripper_and_detaches_attached_target(self):
@@ -447,8 +447,8 @@ class PickExecutorTest(unittest.TestCase):
             "arm": "right",
             "target_body": "Scene_Crate",
             "stages": [],
-            "pre_grasp": {"position": [9.0, 9.0, 9.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
-            "grasp": {"position": [9.0, 9.0, 9.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+            "pre_pick": {"position": [9.0, 9.0, 9.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+            "pick": {"position": [9.0, 9.0, 9.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
             "lift": {"position": [9.0, 9.0, 9.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
         })
 
@@ -497,7 +497,7 @@ class PickExecutorTest(unittest.TestCase):
                             "tolerance": 0.03,
                         },
                         {
-                            "name": "descend_to_pregrasp",
+                            "name": "descend_to_pre_pick",
                             "kind": "move_pose",
                             "pose": {"position": [crate_pos[0], crate_pos[1], crate_pos[2] + 0.02], "quat_wxyz": list(start["rotation"])},
                             "include_torso": True,
@@ -505,7 +505,7 @@ class PickExecutorTest(unittest.TestCase):
                             "tolerance": 0.03,
                         },
                         {
-                            "name": "descend_to_grasp",
+                            "name": "descend_to_pick",
                             "kind": "move_pose",
                             "pose": {"position": crate_pos, "quat_wxyz": list(start["rotation"])},
                             "include_torso": True,
@@ -606,7 +606,7 @@ class PickExecutorTest(unittest.TestCase):
         finally:
             physics.close()
 
-    def test_execute_escapes_support_footprint_before_pregrasp_when_start_under_support(self):
+    def test_execute_escapes_support_footprint_before_pre_pick_when_start_under_support(self):
         physics = _FakePhysics()
         physics.pose["Scene_Crate"] = _matrix_at(0.1, 0.0, 0.2)
         ik = _MutableIK(_pose(0.25, 0.0, 0.2))
@@ -626,8 +626,8 @@ class PickExecutorTest(unittest.TestCase):
                 "xy_min": [-0.4, -0.3],
                 "xy_max": [0.4, 0.3],
             },
-            "pre_grasp": {"position": [0.1, 0.0, 0.92], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
-            "grasp": {"position": [0.1, 0.0, 0.2], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+            "pre_pick": {"position": [0.1, 0.0, 0.92], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+            "pick": {"position": [0.1, 0.0, 0.2], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
             "close": {"command": "close", "width": 0.0},
             "lift": {"position": [0.1, 0.03, 0.2], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
         }
@@ -644,8 +644,8 @@ def _staged_plan() -> dict[str, object]:
         "target_body": "Scene_Crate",
         "stages": [
             {"name": "approach_xy", "kind": "move_pose", "pose": {"position": [1.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
-            {"name": "descend_to_pregrasp", "kind": "move_pose", "pose": {"position": [1.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
-            {"name": "descend_to_grasp", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
+            {"name": "descend_to_pre_pick", "kind": "move_pose", "pose": {"position": [1.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
+            {"name": "descend_to_pick", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
             {"name": "close_gripper", "kind": "gripper", "width": 0.0},
             {"name": "retreat", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.22], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
         ],
@@ -658,8 +658,8 @@ def _attach_reject_plan() -> dict[str, object]:
         "target_body": "Scene_Crate",
         "stages": [
             {"name": "approach_xy", "kind": "move_pose", "pose": {"position": [1.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
-            {"name": "descend_to_pregrasp", "kind": "move_pose", "pose": {"position": [1.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
-            {"name": "descend_to_grasp", "kind": "move_pose", "pose": {"position": [1.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
+            {"name": "descend_to_pre_pick", "kind": "move_pose", "pose": {"position": [1.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
+            {"name": "descend_to_pick", "kind": "move_pose", "pose": {"position": [1.0, 0.0, 0.0], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
             {"name": "close_gripper", "kind": "gripper", "width": 0.0},
         ],
     }
@@ -670,7 +670,7 @@ def _aabb_attach_plan() -> dict[str, object]:
         "arm": "right",
         "target_body": "Scene_Crate",
         "stages": [
-            {"name": "descend_to_grasp", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
+            {"name": "descend_to_pick", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
             {"name": "close_gripper", "kind": "gripper", "width": 0.0},
         ],
     }
@@ -683,7 +683,7 @@ def _out_of_order_gripper_plan() -> dict[str, object]:
         "stages": [
             {"name": "approach_xy", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.08], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
             {"name": "close_gripper", "kind": "gripper", "width": 0.0},
-            {"name": "descend_to_grasp", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
+            {"name": "descend_to_pick", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
         ],
     }
 
@@ -704,7 +704,7 @@ def _post_attach_unsupported_stage_plan() -> dict[str, object]:
         "arm": "right",
         "target_body": "Scene_Crate",
         "stages": [
-            {"name": "descend_to_grasp", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
+            {"name": "descend_to_pick", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
             {"name": "close_gripper", "kind": "gripper", "width": 0.0},
             {"name": "spin_wrist", "kind": "joint_delta"},
         ],
@@ -717,7 +717,7 @@ def _tight_retreat_plan() -> dict[str, object]:
         "target_body": "Scene_Crate",
         "stages": [
             {"name": "approach_xy", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.08], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
-            {"name": "descend_to_grasp", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
+            {"name": "descend_to_pick", "kind": "move_pose", "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
             {"name": "close_gripper", "kind": "gripper", "width": 0.0},
             {"name": "retreat", "kind": "move_pose", "pose": {"position": [0.0, 0.03, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}},
         ],

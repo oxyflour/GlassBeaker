@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 
-import { grabTheApple } from "./grab-the-apple";
+import { pickTheApple } from "./pick-the-apple";
 
-export function GrabTheAppleButton({ sess }: { sess: string }) {
+export function PickTheAppleButton({ sess }: { sess: string }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -14,10 +14,10 @@ export function GrabTheAppleButton({ sess }: { sess: string }) {
     setMessage("");
     setError("");
     try {
-      const payload = await grabTheApple(sess);
-      setMessage(`Grabbed ${payload.target_body ?? "apple"}`);
+      const payload = await pickTheApple(sess);
+      setMessage(`Picked ${payload.target_body ?? "apple"}`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Grab apple failed");
+      setError(cause instanceof Error ? cause.message : "Pick apple failed");
     } finally {
       setBusy(false);
     }
@@ -28,7 +28,7 @@ export function GrabTheAppleButton({ sess }: { sess: string }) {
       className="rounded border border-white/20 bg-black/40 px-3 py-1 text-sm disabled:opacity-60"
       disabled={ busy || !sess }
       onClick={ () => void handleClick() }>
-      { busy ? "Grabbing..." : "Grab the apple" }
+      { busy ? "Picking..." : "Pick the apple" }
     </button>
     { message ? <div className="mt-2 max-w-80 text-xs text-emerald-200">{ message }</div> : null }
     { error ? <div className="mt-2 max-w-80 text-xs text-red-200">{ error }</div> : null }

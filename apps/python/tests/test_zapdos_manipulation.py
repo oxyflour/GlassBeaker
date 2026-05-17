@@ -246,8 +246,8 @@ class ZapdosManipulationTest(unittest.TestCase):
         self.assertEqual([stage["name"] for stage in plan["stages"]], [
             "raise_to_transit",
             "approach_xy",
-            "descend_to_pregrasp",
-            "descend_to_grasp",
+            "descend_to_pre_pick",
+            "descend_to_pick",
             "close_gripper",
             "retreat",
         ])
@@ -350,7 +350,7 @@ class ZapdosManipulationTest(unittest.TestCase):
         self.assertEqual(plan["support_surface"]["xy_max"], [0.9, 0.3])
         self.assertEqual(plan["stages"][0]["kind"], "move_pose")
 
-    def test_plan_pick_prefers_world_aabb_center_over_body_position_for_grasp(self):
+    def test_plan_pick_prefers_world_aabb_center_over_body_position_for_pick(self):
         target = {
             "body": "Scene_apple_1",
             "label": "apple",
@@ -394,8 +394,8 @@ class ZapdosManipulationTest(unittest.TestCase):
             start_pose={"position": [0.0, 0.0, 1.1], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
         )
 
-        self.assertEqual(plan["pre_grasp"]["position"], [0.6, -0.1, 0.92])
-        self.assertEqual(plan["grasp"]["position"], [0.6, -0.1, 0.8])
+        self.assertEqual(plan["pre_pick"]["position"], [0.6, -0.1, 0.92])
+        self.assertEqual(plan["pick"]["position"], [0.6, -0.1, 0.8])
         self.assertEqual(plan["stages"][0]["pose"]["position"], [0.6, -0.1, 1.1])
         self.assertEqual(plan["stages"][1]["pose"]["position"], [0.6, -0.1, 0.92])
         self.assertEqual(plan["stages"][2]["pose"]["position"], [0.6, -0.1, 0.8])

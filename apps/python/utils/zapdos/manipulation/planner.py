@@ -18,49 +18,49 @@ def plan_pick(
     support_surface = _support_surface(support)
     if support_surface is None:
         raise ValueError("planner_insufficient_geometry: support surface bounds are required")
-    grasp_center = _grasp_center(target)
-    if grasp_center is None:
+    pick_center = _pick_center(target)
+    if pick_center is None:
         raise ValueError(f"Target has no world position: {target['body']}")
-    grasp_z = _grasp_z(target, grasp_center[2])
-    pre_grasp = _pose(grasp_center[0], grasp_center[1], grasp_z + 0.12)
-    grasp = _pose(grasp_center[0], grasp_center[1], grasp_z)
+    pick_z = _pick_z(target, pick_center[2])
+    pre_pick = _pose(pick_center[0], pick_center[1], pick_z + 0.12)
+    pick = _pose(pick_center[0], pick_center[1], pick_z)
     stages: list[PickStage] = []
     if _needs_escape(start_pose["position"], support_surface):
         escape_xy = _escape_xy(start_pose["position"], support_surface, xy_margin)
         transit_z = _transit_z(
             _pose(escape_xy[0], escape_xy[1], start_pose["position"][2]),
-            pre_grasp,
+            pre_pick,
             scene_objects,
             ignore={target["body"]},
             z_margin=z_margin,
         )
         stages.append(_move_stage("escape_xy", escape_xy[0], escape_xy[1], start_pose["position"][2], start_pose["quat_wxyz"]))
-        stages.append(_move_stage("raise_to_transit", escape_xy[0], escape_xy[1], transit_z, pre_grasp["quat_wxyz"]))
+        stages.append(_move_stage("raise_to_transit", escape_xy[0], escape_xy[1], transit_z, pre_pick["quat_wxyz"]))
     else:
-        transit_z = _transit_z(start_pose, pre_grasp, scene_objects, ignore={target["body"]}, z_margin=z_margin)
+        transit_z = _transit_z(start_pose, pre_pick, scene_objects, ignore={target["body"]}, z_margin=z_margin)
     if not stages and start_pose["position"][2] < transit_z:
-        stages.append(_move_stage("raise_to_transit", start_pose["position"][0], start_pose["position"][1], transit_z, pre_grasp["quat_wxyz"]))
+        stages.append(_move_stage("raise_to_transit", start_pose["position"][0], start_pose["position"][1], transit_z, pre_pick["quat_wxyz"]))
     stages.extend([
-        _move_stage("approach_xy", pre_grasp["position"][0], pre_grasp["position"][1], transit_z, pre_grasp["quat_wxyz"]),
-        _move_stage("descend_to_pregrasp", *pre_grasp["position"], pre_grasp["quat_wxyz"]),
-        _move_stage("descend_to_grasp", *grasp["position"], grasp["quat_wxyz"]),
+        _move_stage("approach_xy", pre_pick["position"][0], pre_pick["position"][1], transit_z, pre_pick["quat_wxyz"]),
+        _move_stage("descend_to_pre_pick", *pre_pick["position"], pre_pick["quat_wxyz"]),
+        _move_stage("descend_to_pick", *pick["position"], pick["quat_wxyz"]),
         {"name": "close_gripper", "kind": "gripper", "width": 0.0},
-        _move_stage("retreat", pre_grasp["position"][0], pre_grasp["position"][1], transit_z, pre_grasp["quat_wxyz"]),
+        _move_stage("retreat", pre_pick["position"][0], pre_pick["position"][1], transit_z, pre_pick["quat_wxyz"]),
     ])
     return {
         "kind": "pick",
         "target_body": target["body"],
         "orientation": {"mode": "top_down", "quat_wxyz": list(TOP_DOWN_QUAT_WXYZ)},
         "stages": stages,
-        "pre_grasp": pre_grasp,
-        "grasp": grasp,
+        "pre_pick": pre_pick,
+        "pick": pick,
         "close": {"command": "close", "width": 0.0},
-        "lift": _pose(pre_grasp["position"][0], pre_grasp["position"][1], transit_z),
+        "lift": _pose(pre_pick["position"][0], pre_pick["position"][1], transit_z),
         "support_surface": support_surface,
     }
 
 
-def _grasp_center(target: SceneObject) -> tuple[float, float, float] | None:
+def _pick_center(target: SceneObject) -> tuple[float, float, float] | None:
     aabb = target.get("world_aabb") or _world_aabb_from_bounds(target)
     if aabb is not None:
         return (
@@ -73,7 +73,7 @@ def _grasp_center(target: SceneObject) -> tuple[float, float, float] | None:
     return float(target["position"][0]), float(target["position"][1]), float(target["position"][2])
 
 
-def _grasp_z(target: SceneObject, center_z: float) -> float:
+def _pick_z(target: SceneObject, center_z: float) -> float:
     if target.get("world_aabb") is not None or _world_aabb_from_bounds(target) is not None:
         return center_z
     if target["bounds_min"] is not None and target["bounds_max"] is not None:

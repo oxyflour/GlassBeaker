@@ -1,20 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-type GrabTheAppleModule = typeof import("./grab-the-apple");
+type PickTheAppleModule = typeof import("./pick-the-apple");
 
-test("createGrabTheAppleRequest posts the canned apple pick payload", async () => {
-  const { createGrabTheAppleRequest } = await loadModule<GrabTheAppleModule>("./grab-the-apple.ts");
+test("createPickTheAppleRequest posts the canned apple pick payload", async () => {
+  const { createPickTheAppleRequest } = await loadModule<PickTheAppleModule>("./pick-the-apple.ts");
 
-  assert.deepEqual(createGrabTheAppleRequest(), {
+  assert.deepEqual(createPickTheAppleRequest(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify([]),
   });
 });
 
-test("grabTheApple posts to the zapdos grab_apple route", async () => {
-  const { createGrabTheAppleRequest, grabTheApple } = await loadModule<GrabTheAppleModule>("./grab-the-apple.ts");
+test("pickTheApple posts to the zapdos pick_apple route", async () => {
+  const { createPickTheAppleRequest, pickTheApple } = await loadModule<PickTheAppleModule>("./pick-the-apple.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
@@ -30,7 +30,7 @@ test("grabTheApple posts to the zapdos grab_apple route", async () => {
   const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-1");
 
   try {
-    const pending = grabTheApple("sess-1", () => stream);
+    const pending = pickTheApple("sess-1", () => stream);
     await waitFor(() => stream.listenerCount("done") > 0);
     stream.dispatch("done", {
       ok: true,
@@ -39,8 +39,8 @@ test("grabTheApple posts to the zapdos grab_apple route", async () => {
       scene_revision: "rev-3",
     });
     const payload = await pending;
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/grab_apple");
-    assert.deepEqual(calls[0]?.init, createGrabTheAppleRequest());
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/pick_apple");
+    assert.deepEqual(calls[0]?.init, createPickTheAppleRequest());
     assert.equal(stream.url, "/python/zapdos/sess-1/op/op-1");
     assert.equal(stream.closed, true);
     assert.equal(payload.target_body, "Scene_apple_01");

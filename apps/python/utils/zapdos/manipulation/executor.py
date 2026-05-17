@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from utils.teleop.arm_config import get_arm_config
 from utils.teleop.ik_controller import IKController
 
-GRASP_POSE_TOLERANCE = 0.08
+PICK_POSE_TOLERANCE = 0.08
 TARGET_ATTACH_TOLERANCE = 0.10
 LIFT_POSE_TOLERANCE = 0.08
 DRIVE_POSE_TOLERANCE = 0.01
@@ -65,11 +65,11 @@ class PickExecutor:
         target_body = str(plan["target_body"])
         open_width = float(plan.get("open_gripper", 0.04))
         closed_width = 0.0
-        grasp_tolerance = float(plan.get("grasp_tolerance", GRASP_POSE_TOLERANCE))
+        pick_tolerance = float(plan.get("pick_tolerance", PICK_POSE_TOLERANCE))
         attach_tolerance = float(plan.get("attach_tolerance", TARGET_ATTACH_TOLERANCE))
         attached = False
         stages = plan["stages"] if "stages" in plan else self._legacy_stages(plan)
-        grasp_pose: dict[str, tuple[float, ...]] | None = None
+        pick_pose: dict[str, tuple[float, ...]] | None = None
         try:
             for raw_stage in stages:
                 stage = raw_stage if isinstance(raw_stage, dict) else {}
@@ -82,7 +82,7 @@ class PickExecutor:
                         target["target_point"] = target_point
                     elif target_point != "end_effector":
                         raise HTTPException(status_code=409, detail=f"Pick failed: unsupported target point {target_point} at {stage_name}")
-                    grasp_pose = target if stage_name == "descend_to_grasp" else grasp_pose
+                    pick_pose = target if stage_name == "descend_to_pick" else pick_pose
                     include_torso = bool(stage.get("include_torso", False))
                     position_only = bool(stage.get("position_only", False))
                     yield from self._yield_drive_pose(
@@ -115,10 +115,10 @@ class PickExecutor:
                         open_width = stage_width
                     continue
                 closed_width = stage_width
-                if grasp_pose is None:
-                    raise HTTPException(status_code=409, detail=f"Pick failed: missing descend_to_grasp stage before {stage_name}")
-                yield from self._yield_drive_pose(ik, arm, grasp_pose, closed_width, steps=stage_steps)
-                self._require_pose_reached(ik, arm, grasp_pose, grasp_tolerance, stage_name)
+                if pick_pose is None:
+                    raise HTTPException(status_code=409, detail=f"Pick failed: missing descend_to_pick stage before {stage_name}")
+                yield from self._yield_drive_pose(ik, arm, pick_pose, closed_width, steps=stage_steps)
+                self._require_pose_reached(ik, arm, pick_pose, pick_tolerance, stage_name)
                 self._require_target_near_gripper(ik, arm, target_body, attach_tolerance)
                 self.physics.attach_body(str(plan.get("gripper_body") or get_arm_config(arm).end_effector_body), target_body)
                 attached = True
@@ -355,14 +355,14 @@ class PickExecutor:
             if xy_min is not None and xy_max is not None and isinstance(top_z, (float, int)):
                 if current[2] < float(top_z) and xy_min[0] <= current[0] <= xy_max[0] and xy_min[1] <= current[1] <= xy_max[1]:
                     escape_x, escape_y = self._escape_xy((current[0], current[1]), xy_min, xy_max)
-                    pre_grasp = self._pose(plan["pre_grasp"])
+                    pre_pick = self._pose(plan["pre_pick"])
                     stages.extend([
                         {"name": "escape_xy", "kind": "move_pose", "pose": {"position": [escape_x, escape_y, current[2]], "quat_wxyz": self.current_pose(str(plan.get("arm") or "left"))["quat_wxyz"]}},
-                        {"name": "raise_to_transit", "kind": "move_pose", "pose": {"position": [escape_x, escape_y, pre_grasp["position"][2]], "quat_wxyz": list(pre_grasp["rotation"])}},
+                        {"name": "raise_to_transit", "kind": "move_pose", "pose": {"position": [escape_x, escape_y, pre_pick["position"][2]], "quat_wxyz": list(pre_pick["rotation"])}},
                     ])
         stages.extend([
-            {"name": "pre_grasp", "kind": "move_pose", "pose": plan["pre_grasp"]},
-            {"name": "descend_to_grasp", "kind": "move_pose", "pose": plan["grasp"]},
+            {"name": "pre_pick", "kind": "move_pose", "pose": plan["pre_pick"]},
+            {"name": "descend_to_pick", "kind": "move_pose", "pose": plan["pick"]},
             {"name": "close_gripper", "kind": "gripper", "width": self._close_width(plan)},
             {"name": "lift", "kind": "move_pose", "pose": plan["lift"], "tolerance": LIFT_POSE_TOLERANCE},
         ])

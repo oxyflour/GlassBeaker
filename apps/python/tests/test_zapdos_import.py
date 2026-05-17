@@ -1553,22 +1553,22 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.runtime = mock.Mock(
             list_scene_objects=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}], "scene_revision": "rev-1"}),
-            grab_apple=mock.Mock(return_value={"ok": True, "op_id": "op-1"}),
+            pick_apple=mock.Mock(return_value={"ok": True, "op_id": "op-1"}),
             place_apple=mock.Mock(return_value={"ok": True, "op_id": "op-2"}),
             pick_object=mock.Mock(return_value={"ok": True, "op_id": "op-3"}),
         )
 
         listed = MODULE.ZapdosSession.call_once(session, "list_scene_objects", ())
-        grabbed = MODULE.ZapdosSession.call_once(session, "grab_apple", ())
+        apple_pick = MODULE.ZapdosSession.call_once(session, "pick_apple", ())
         placed = MODULE.ZapdosSession.call_once(session, "place_apple", ())
         picked = MODULE.ZapdosSession.call_once(session, "pick_object", ({"target_query": "crate"},))
 
         self.assertEqual(listed["items"][0]["body"], "Scene_Crate")
-        self.assertEqual(grabbed["op_id"], "op-1")
+        self.assertEqual(apple_pick["op_id"], "op-1")
         self.assertEqual(placed["op_id"], "op-2")
         self.assertEqual(picked["op_id"], "op-3")
         session.runtime.list_scene_objects.assert_called_once_with()
-        session.runtime.grab_apple.assert_called_once_with()
+        session.runtime.pick_apple.assert_called_once_with()
         session.runtime.place_apple.assert_called_once_with()
         session.runtime.pick_object.assert_called_once_with({"target_query": "crate"})
 
@@ -1621,7 +1621,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             {"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-1"},
         )
 
-    async def test_manipulation_runtime_executes_arm_only_grab_apple_plan(self):
+    async def test_manipulation_runtime_executes_arm_only_pick_apple_plan(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
         target = {
@@ -1660,7 +1660,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             grounding_fn=grounder,
             executor=executor,
         )
-        result = runtime.grab_apple()
+        result = runtime.pick_apple()
 
         self.assertEqual(result, {"ok": True, "op_id": "op-1"})
         grounder.assert_called_once_with(catalog_loader.return_value, target_query="apple", support_query="benchmark table")
@@ -1669,11 +1669,11 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["arm"], "left")
         self.assertEqual(plan["target_body"], "Scene_apple_1")
         self.assertEqual(plan["attach_tolerance"], 0.015)
-        self.assertEqual(plan["grasp_tolerance"], 0.025)
+        self.assertEqual(plan["pick_tolerance"], 0.025)
         self.assertEqual([stage["name"] for stage in plan["stages"]], [
             "open_gripper",
             "approach_above",
-            "descend_to_grasp",
+            "descend_to_pick",
             "close_gripper",
             "retreat",
         ])

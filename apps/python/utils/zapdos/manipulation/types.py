@@ -70,10 +70,10 @@ class PickPlan(TypedDict):
     target_body: str
     orientation: PickOrientation
     attach_tolerance: NotRequired[float]
-    grasp_tolerance: NotRequired[float]
+    pick_tolerance: NotRequired[float]
     stages: NotRequired[list[PickStage]]
-    pre_grasp: NotRequired[PickPose]
-    grasp: NotRequired[PickPose]
+    pre_pick: NotRequired[PickPose]
+    pick: NotRequired[PickPose]
     close: NotRequired[PickCommand]
     lift: NotRequired[PickPose]
     support_surface: NotRequired[SupportSurface]

@@ -15,17 +15,17 @@ from utils.zapdos.editor.rebuild_events import (
     lookup_scene_rebuild_job,
     next_scene_rebuild_job_id,
 )
-from utils.zapdos.manipulation.apple_plan import build_grab_apple_plan
+from utils.zapdos.manipulation.apple_plan import build_pick_apple_plan
 from utils.zapdos.manipulation.catalog import build_scene_object_catalog
 from utils.zapdos.manipulation.executor import PickExecutor
 from utils.zapdos.manipulation.grounding import ground_pick_target
 from utils.zapdos.manipulation.planner import plan_pick
 from utils.zapdos.manipulation.types import GroundedPick, PickPlan, SceneObject
 
-GRAB_APPLE_ARM = "left"
-GRAB_APPLE_TARGET_QUERY = "apple"
-GRAB_APPLE_SUPPORT_QUERY = "benchmark table"
-GRAB_APPLE_OPEN_WIDTH = 0.05
+APPLE_ARM = "left"
+APPLE_TARGET_QUERY = "apple"
+APPLE_SUPPORT_QUERY = "benchmark table"
+APPLE_OPEN_WIDTH = 0.05
 
 
 def _advance_operation(iterator: Iterator[None]) -> dict[str, object] | None:
@@ -74,28 +74,28 @@ class ManipulationRuntime:
             "arm": arm,
         }))
 
-    def grab_apple(self) -> dict[str, object]:
+    def pick_apple(self) -> dict[str, object]:
         objects = self._scene_objects()
         grounded = self._ground_target({
-            "target_query": GRAB_APPLE_TARGET_QUERY,
-            "support_query": GRAB_APPLE_SUPPORT_QUERY,
+            "target_query": APPLE_TARGET_QUERY,
+            "support_query": APPLE_SUPPORT_QUERY,
         }, objects)
         target = grounded["target"]
         if target.get("motion") != "dynamic":
             raise HTTPException(status_code=400, detail="Pick target must be a dynamic scene object")
         self._sync_executor_state()
-        return self._start_operation(self.executor.iter_execute(build_grab_apple_plan(
+        return self._start_operation(self.executor.iter_execute(build_pick_apple_plan(
             target,
-            self.executor.current_pose(GRAB_APPLE_ARM),
-            arm=GRAB_APPLE_ARM,
-            open_width=GRAB_APPLE_OPEN_WIDTH,
+            self.executor.current_pose(APPLE_ARM),
+            arm=APPLE_ARM,
+            open_width=APPLE_OPEN_WIDTH,
         )))
 
     def place_apple(self) -> dict[str, object]:
         objects = self._scene_objects()
         grounded = self._ground_target({
-            "target_query": GRAB_APPLE_TARGET_QUERY,
-            "support_query": GRAB_APPLE_SUPPORT_QUERY,
+            "target_query": APPLE_TARGET_QUERY,
+            "support_query": APPLE_SUPPORT_QUERY,
         }, objects)
         target = grounded["target"]
         if self.session.physics.get_attachment(target["body"]) is None:
@@ -103,13 +103,13 @@ class ManipulationRuntime:
         self._sync_executor_state()
         return self._start_operation(self.executor.iter_execute({
             "kind": "release",
-            "arm": GRAB_APPLE_ARM,
+            "arm": APPLE_ARM,
             "target_body": target["body"],
             "stages": [
                 {
                     "name": "open_gripper",
                     "kind": "gripper",
-                    "width": GRAB_APPLE_OPEN_WIDTH,
+                    "width": APPLE_OPEN_WIDTH,
                     "steps": 18,
                 },
             ],

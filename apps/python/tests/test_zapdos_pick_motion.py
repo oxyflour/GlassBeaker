@@ -91,11 +91,11 @@ class ZapdosPickMotionTest(unittest.TestCase):
         result = executor.execute({
             "arm": "left",
             "target_body": "Scene_apple_1",
-            "grasp_tolerance": 0.16,
+            "pick_tolerance": 0.16,
             "attach_tolerance": 0.11,
             "stages": [
                 {
-                    "name": "descend_to_grasp",
+                    "name": "descend_to_pick",
                     "kind": "move_pose",
                     "pose": {"position": [0.49, 0.05, 0.83], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
                     "position_only": True,
@@ -124,7 +124,7 @@ class ZapdosPickMotionTest(unittest.TestCase):
 
             bundle = ensure_render_bundle(ROBOT_USD, scene_path)
             body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
-            physics = MujocoPhysics("grab-apple-arm-only", bundle, body_map)
+            physics = MujocoPhysics("pick-apple-arm-only", bundle, body_map)
             physics.model.opt.gravity[:] = 0.0
             target_body = sanitize_name("/Scene/Crate")
             executor = PickExecutor(physics, bundle)
@@ -139,11 +139,11 @@ class ZapdosPickMotionTest(unittest.TestCase):
                 result = executor.execute({
                     "arm": arm,
                     "target_body": target_body,
-                    "grasp_tolerance": 0.16,
+                    "pick_tolerance": 0.16,
                     "attach_tolerance": 0.11,
                     "stages": [
                         {
-                            "name": "descend_to_grasp",
+                            "name": "descend_to_pick",
                             "kind": "move_pose",
                             "pose": {"position": [0.48, 0.06, 0.82], "quat_wxyz": list(start["rotation"])},
                             "position_only": True,
@@ -192,7 +192,7 @@ class ZapdosPickMotionTest(unittest.TestCase):
 
             bundle = ensure_render_bundle(ROBOT_USD, scene_path)
             body_map = json.loads(bundle.body_map_json.read_text(encoding="utf-8"))
-            physics = MujocoPhysics("grab-apple-gripper-joint", bundle, body_map)
+            physics = MujocoPhysics("pick-apple-gripper-joint", bundle, body_map)
             physics.model.opt.gravity[:] = 0.0
             target_body = sanitize_name("/Scene/Crate")
             try:

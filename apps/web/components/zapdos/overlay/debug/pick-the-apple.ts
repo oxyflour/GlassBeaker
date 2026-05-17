@@ -7,17 +7,17 @@ import {
   waitForSceneToolOp,
 } from "../../agent/zapdos-tool-api";
 
-export function createGrabTheAppleRequest(): RequestInit {
+export function createPickTheAppleRequest(): RequestInit {
   return createManipulationToolRequest([]);
 }
 
-export async function grabTheApple(
+export async function pickTheApple(
   sess: string,
   createEventSource: SceneOperationStreamFactory = (url) => new EventSource(url),
 ) {
   const response = await fetch(
-    `/python/zapdos/${sess}/call/grab_apple`,
-    createGrabTheAppleRequest(),
+    `/python/zapdos/${sess}/call/pick_apple`,
+    createPickTheAppleRequest(),
   );
   if (!response.ok) {
     throw new Error(await response.text());
