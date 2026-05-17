@@ -1621,7 +1621,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             {"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-1"},
         )
 
-    async def test_manipulation_runtime_executes_arm_only_pick_apple_plan(self):
+    async def test_manipulation_runtime_executes_pick_apple_with_common_plan(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
         target = {
@@ -1636,6 +1636,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "label": "benchmark table",
             "motion": "static",
             "position": [0.5, 0.0, 0.75],
+            "top_z": 0.8,
             "world_aabb": {"min": [0.1, -0.3, 0.7], "max": [0.9, 0.3, 0.8]},
         }
         session, scheduled, reservations = self._build_manipulation_session(
@@ -1668,30 +1669,36 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         plan = executor.iter_execute.call_args.args[0]
         self.assertEqual(plan["arm"], "left")
         self.assertEqual(plan["target_body"], "Scene_apple_1")
+        self.assertEqual(plan["open_gripper"], 0.05)
         self.assertEqual(plan["attach_tolerance"], 0.015)
         self.assertEqual(plan["pick_tolerance"], 0.025)
         self.assertEqual([stage["name"] for stage in plan["stages"]], [
-            "open_gripper",
-            "approach_above",
+            "approach_xy",
+            "descend_to_pre_pick",
             "descend_to_pick",
             "close_gripper",
             "retreat",
         ])
-        self.assertEqual(plan["stages"][0]["width"], 0.05)
-        self.assertEqual(plan["stages"][0]["steps"], 18)
+        self.assertTrue(plan["stages"][0]["position_only"])
+        self.assertFalse(plan["stages"][0].get("include_torso", False))
+        self.assertEqual(plan["stages"][0]["steps"], 24)
+        self.assertEqual(plan["stages"][0]["target_point"], "finger_center")
+        self.assertEqual(plan["stages"][0]["pose"]["position"], [0.5, 0.0, 0.93])
         self.assertTrue(plan["stages"][1]["position_only"])
-        self.assertEqual(plan["stages"][1]["steps"], 20)
         self.assertFalse(plan["stages"][1].get("include_torso", False))
+        self.assertEqual(plan["stages"][1]["steps"], 20)
         self.assertEqual(plan["stages"][1]["target_point"], "finger_center")
-        self.assertEqual(plan["stages"][1]["pose"]["position"], [0.5, 0.0, 0.95])
+        self.assertEqual(plan["stages"][1]["pose"]["position"], [0.5, 0.0, 0.93])
         self.assertTrue(plan["stages"][2]["position_only"])
+        self.assertTrue(plan["stages"][2]["include_torso"])
         self.assertEqual(plan["stages"][2]["steps"], 24)
-        self.assertFalse(plan["stages"][2].get("include_torso", False))
         self.assertEqual(plan["stages"][2]["target_point"], "finger_center")
         self.assertEqual(plan["stages"][2]["pose"]["position"], [0.5, 0.0, 0.83])
+        self.assertEqual(plan["stages"][3]["width"], 0.0)
         self.assertEqual(plan["stages"][4]["steps"], 20)
         self.assertEqual(plan["stages"][4]["target_point"], "finger_center")
-        self.assertEqual(plan["stages"][4]["pose"]["position"], [0.4, 0.18, 0.92])
+        self.assertTrue(plan["stages"][4]["include_torso"])
+        self.assertEqual(plan["stages"][4]["pose"]["position"], [0.5, 0.0, 0.93])
         session.schedule_on_owner_loop.assert_called_once()
         await asyncio.gather(*scheduled)
         self.assertEqual(reservations, ["enter", "exit"])

@@ -218,8 +218,11 @@ class PickExecutor:
             dx = abs(float(target["position"][0]) - float(start["position"][0]))
             dy = abs(float(target["position"][1]) - float(start["position"][1]))
             position_error = self._distance(start["position"], target["position"])
+            required_progress = min(DRIVE_MIN_PROGRESS, position_error * 0.25)
             if dx <= POSITION_STAGE_SUBGOAL_TOLERANCE and dy <= POSITION_STAGE_SUBGOAL_TOLERANCE:
                 max_steps = max(DRIVE_SETTLE_STEPS, requested_steps, int(math.ceil(position_error / POSITION_STAGE_STEP_SCALE)))
+                best_error = position_error
+                total_steps = 0
                 for _ in range(max_steps):
                     current = self._current_pose_for_target(ik, arm, target)
                     if self._distance(current["position"], target["position"]) <= DRIVE_POSE_TOLERANCE:
@@ -234,6 +237,12 @@ class PickExecutor:
                     self.physics.step()
                     ik.sync_joint_state(self.physics.joint_state_msg())
                     yield
+                    current = self._current_pose_for_target(ik, arm, target)
+                    current_error = self._distance(current["position"], target["position"])
+                    best_error = min(best_error, current_error)
+                    total_steps += 1
+                    if total_steps >= DRIVE_STAGNATION_STEPS and best_error >= position_error - required_progress:
+                        return
                 return
             segments = max(requested_steps, int(math.ceil(position_error / POSITION_STAGE_SEGMENT_LENGTH)))
             subgoal_tolerance = min(
@@ -248,6 +257,11 @@ class PickExecutor:
                 }
                 if target.get("target_point") == "finger_center":
                     subgoal["target_point"] = "finger_center"  # type: ignore
+                segment_start = self._current_pose_for_target(ik, arm, subgoal)
+                segment_initial_error = self._distance(segment_start["position"], subgoal["position"])
+                segment_required_progress = min(DRIVE_MIN_PROGRESS, segment_initial_error * 0.25)
+                segment_best_error = segment_initial_error
+                segment_steps = 0
                 for _ in range(POSITION_STAGE_SEGMENT_STEPS):
                     current = self._current_pose_for_target(ik, arm, subgoal)
                     if self._distance(current["position"], subgoal["position"]) <= subgoal_tolerance:
@@ -262,6 +276,15 @@ class PickExecutor:
                     self.physics.step()
                     ik.sync_joint_state(self.physics.joint_state_msg())
                     yield
+                    current = self._current_pose_for_target(ik, arm, subgoal)
+                    current_error = self._distance(current["position"], subgoal["position"])
+                    segment_best_error = min(segment_best_error, current_error)
+                    segment_steps += 1
+                    if (
+                        segment_steps >= DRIVE_STAGNATION_STEPS
+                        and segment_best_error >= segment_initial_error - segment_required_progress
+                    ):
+                        return
             return
         initial_error = self._distance(start["position"], target["position"])
         required_progress = min(DRIVE_MIN_PROGRESS, initial_error * 0.25)

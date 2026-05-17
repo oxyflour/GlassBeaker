@@ -8,6 +8,7 @@ from pathlib import Path
 import mujoco  # type: ignore
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
+from utils.genie_sim import resolve_assets_root
 from utils.zapdos.usd_to_mjcf import USDToMJCFConverter, fmt_f, sanitize_name
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -353,6 +354,37 @@ def Xform "World"
             actuator = ET.parse(output_xml).getroot().find("./actuator/position")
             self.assertIsNotNone(actuator)
             self.assertEqual(actuator.attrib["kp"], fmt_f(1e4))
+            mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
+
+    def test_force_body_descendant_finite_range_joint_uses_position_actuator(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            asset_path = resolve_assets_root() / "objects" / "benchmark" / "jewelry_box" / "benchmark_jewelry_box_000" / "Aligned.usda"
+            if not asset_path.exists():
+                self.skipTest(f"Benchmark jewelry box asset not found: {asset_path}")
+            scene_path = Path(tmpdir) / "forced_articulated_box.usda"
+            output_xml = Path(tmpdir) / "forced_articulated_box.xml"
+
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            prop = UsdGeom.Xform.Define(stage, "/World/Prop")
+            UsdPhysics.MassAPI.Apply(prop.GetPrim()).CreateMassAttr(1.0)
+            asset = UsdGeom.Xform.Define(stage, "/World/Prop/Asset")
+            asset.GetPrim().GetReferences().AddReference(str(asset_path.resolve()))
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(
+                scene_path,
+                output_xml,
+                model_name="forced_articulated_box",
+                force_body_paths={"/World/Prop"},
+            ).convert()
+
+            root = ET.parse(output_xml).getroot()
+            actuator = root.find("./actuator/position[@joint='RevoluteJoint']")
+            self.assertIsNotNone(actuator)
+            self.assertEqual(actuator.attrib.get("kp"), fmt_f(50.0))
+            self.assertIsNone(root.find("./actuator/motor[@joint='RevoluteJoint']"))
             mujoco.MjModel.from_xml_path(str(output_xml))  # type: ignore
 
     def test_position_drive_uses_actuator_without_joint_spring_attrs(self):

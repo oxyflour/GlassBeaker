@@ -2,10 +2,10 @@
   "override": {
     "position": {
       "r1pro": {
-        "left_arm_joint1":  0.2,
-        "left_arm_joint4": -0.5,
-        "right_arm_joint1":  0.2,
-        "right_arm_joint4": -0.5
+        "left_arm_joint1":  0.4,
+        "left_arm_joint4": -0.8,
+        "right_arm_joint1":  0.4,
+        "right_arm_joint4": -0.8
       }
     },
     "joint_drive": {

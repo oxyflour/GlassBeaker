@@ -62,8 +62,8 @@ def discard_scene_rebuild_job(session: Any, op_id: str) -> None:
 
 async def stream_scene_rebuild_job(session: Any, op_id: str):
     delivered = False
+    future = asyncio.wrap_future(session.scene_rebuild_future(op_id))
     try:
-        future = asyncio.wrap_future(session.scene_rebuild_future(op_id))
         yield _sse_event("started", {"op_id": op_id})
         while True:
             for name, payload in drain_scene_rebuild_events(session, op_id):
@@ -76,8 +76,6 @@ async def stream_scene_rebuild_job(session: Any, op_id: str):
             delivered = True
             yield _sse_event("done", await future)
             break
-    except HTTPException:
-        raise
     except Exception as exc:
         delivered = True
         payload = {"detail": getattr(exc, "detail", None) or str(exc)}

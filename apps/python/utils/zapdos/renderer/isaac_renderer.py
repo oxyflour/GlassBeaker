@@ -244,6 +244,7 @@ class IsaacRenderer:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if not self._refresh_process_state():
+                await asyncio.sleep(1)
                 try:
                     raise RuntimeError(format_isaacsim_failure(
                         "IsaacSim failed to start",

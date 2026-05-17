@@ -1424,6 +1424,7 @@ class USDToMJCFConverter:
             stiffness = None
             springref = None
             actuatorfrcrange = None
+            position_kp = None
             if drive_axis is not None:
                 damping = self.get_attr(prim, f"drive:{drive_axis}:physics:damping", default=None)
                 if damping is not None:
@@ -1447,6 +1448,17 @@ class USDToMJCFConverter:
                     stiffness is not None or authored_target_position is not None
                 ):
                     springref = self.joint_value_to_mjcf(kind, float(target_position))
+                elif (
+                    target_position is not None
+                    and jrange is not None
+                    and any(body1 == forced or body1.startswith(f"{forced}/") for forced in self.force_body_paths)
+                ):
+                    # Referenced scene props often expose a fallback zero target without an
+                    # authored drive. Hold finite-range joints at that closed pose so the
+                    # object behaves like a stable prop instead of a loose articulation.
+                    lower, upper = jrange
+                    springref = min(max(self.joint_value_to_mjcf(kind, float(target_position)), lower), upper)
+                    position_kp = 50.0
 
                 max_force = self.get_attr(prim, f"drive:{drive_axis}:physics:maxForce", default=None)
                 if max_force is not None:
@@ -1464,6 +1476,7 @@ class USDToMJCFConverter:
                 stiffness=stiffness,
                 springref=springref,
                 actuatorfrcrange=actuatorfrcrange,
+                position_kp=position_kp,
             )
             used_names.add(child.joint.name)
 

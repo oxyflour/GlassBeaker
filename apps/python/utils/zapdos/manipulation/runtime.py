@@ -15,7 +15,6 @@ from utils.zapdos.editor.rebuild_events import (
     lookup_scene_rebuild_job,
     next_scene_rebuild_job_id,
 )
-from utils.zapdos.manipulation.apple_plan import build_pick_apple_plan
 from utils.zapdos.manipulation.catalog import build_scene_object_catalog
 from utils.zapdos.manipulation.executor import PickExecutor
 from utils.zapdos.manipulation.grounding import ground_pick_target
@@ -84,12 +83,13 @@ class ManipulationRuntime:
         if target.get("motion") != "dynamic":
             raise HTTPException(status_code=400, detail="Pick target must be a dynamic scene object")
         self._sync_executor_state()
-        return self._start_operation(self.executor.iter_execute(build_pick_apple_plan(
-            target,
-            self.executor.current_pose(APPLE_ARM),
-            arm=APPLE_ARM,
-            open_width=APPLE_OPEN_WIDTH,
-        )))
+        return self._start_operation(self.executor.iter_execute({
+            **self._plan_pick(grounded, arm=APPLE_ARM, objects=objects),
+            "arm": APPLE_ARM,
+            "open_gripper": APPLE_OPEN_WIDTH,
+            "pick_tolerance": 0.025,
+            "attach_tolerance": 0.015,
+        }))
 
     def place_apple(self) -> dict[str, object]:
         objects = self._scene_objects()

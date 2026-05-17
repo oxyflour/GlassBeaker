@@ -3,6 +3,7 @@ from __future__ import annotations
 from utils.zapdos.manipulation.types import PickPlan, PickPose, PickStage, PlanningPose, SceneObject, SupportSurface
 
 TOP_DOWN_QUAT_WXYZ = [1.0, 0.0, 0.0, 0.0]
+PRE_PICK_DELTA = 0.10
 
 
 def plan_pick(
@@ -22,7 +23,8 @@ def plan_pick(
     if pick_center is None:
         raise ValueError(f"Target has no world position: {target['body']}")
     pick_z = _pick_z(target, pick_center[2])
-    pre_pick = _pose(pick_center[0], pick_center[1], pick_z + 0.12)
+    pre_pick_z = pick_z + PRE_PICK_DELTA
+    pre_pick = _pose(pick_center[0], pick_center[1], pre_pick_z)
     pick = _pose(pick_center[0], pick_center[1], pick_z)
     stages: list[PickStage] = []
     if _needs_escape(start_pose["position"], support_surface):
@@ -34,18 +36,62 @@ def plan_pick(
             ignore={target["body"]},
             z_margin=z_margin,
         )
-        stages.append(_move_stage("escape_xy", escape_xy[0], escape_xy[1], start_pose["position"][2], start_pose["quat_wxyz"]))
-        stages.append(_move_stage("raise_to_transit", escape_xy[0], escape_xy[1], transit_z, pre_pick["quat_wxyz"]))
+        stages.append(_move_stage(
+            "escape_xy",
+            escape_xy[0],
+            escape_xy[1],
+            start_pose["position"][2],
+            start_pose["quat_wxyz"],
+            steps=20,
+            tolerance=0.08,
+        ))
+        stages.append(_move_stage(
+            "raise_to_transit",
+            escape_xy[0],
+            escape_xy[1],
+            transit_z,
+            pre_pick["quat_wxyz"],
+            steps=20,
+            tolerance=0.08,
+        ))
     else:
         transit_z = _transit_z(start_pose, pre_pick, scene_objects, ignore={target["body"]}, z_margin=z_margin)
-    if not stages and start_pose["position"][2] < transit_z:
-        stages.append(_move_stage("raise_to_transit", start_pose["position"][0], start_pose["position"][1], transit_z, pre_pick["quat_wxyz"]))
     stages.extend([
-        _move_stage("approach_xy", pre_pick["position"][0], pre_pick["position"][1], transit_z, pre_pick["quat_wxyz"]),
-        _move_stage("descend_to_pre_pick", *pre_pick["position"], pre_pick["quat_wxyz"]),
-        _move_stage("descend_to_pick", *pick["position"], pick["quat_wxyz"]),
+        _move_stage(
+            "approach_xy",
+            pre_pick["position"][0],
+            pre_pick["position"][1],
+            transit_z,
+            pre_pick["quat_wxyz"],
+            steps=24,
+            tolerance=0.08,
+        ),
+        _move_stage(
+            "descend_to_pre_pick",
+            *pre_pick["position"],
+            pre_pick["quat_wxyz"],
+            steps=20,
+            tolerance=0.03,
+        ),
+        _move_stage(
+            "descend_to_pick",
+            *pick["position"],
+            pick["quat_wxyz"],
+            include_torso=True,
+            steps=24,
+            tolerance=0.03,
+        ),
         {"name": "close_gripper", "kind": "gripper", "width": 0.0},
-        _move_stage("retreat", pre_pick["position"][0], pre_pick["position"][1], transit_z, pre_pick["quat_wxyz"]),
+        _move_stage(
+            "retreat",
+            pre_pick["position"][0],
+            pre_pick["position"][1],
+            transit_z,
+            pre_pick["quat_wxyz"],
+            include_torso=True,
+            steps=20,
+            tolerance=0.08,
+        ),
     ])
     return {
         "kind": "pick",
@@ -95,8 +141,12 @@ def _move_stage(
     y: float,
     z: float,
     quat_wxyz: list[float],
+    *,
+    include_torso: bool = False,
+    steps: int,
+    tolerance: float,
 ) -> PickStage:
-    return {
+    stage: PickStage = {
         "name": name,
         "kind": "move_pose",
         "pose": {
@@ -105,11 +155,17 @@ def _move_stage(
             "quat_wxyz": [round(float(value), 6) for value in quat_wxyz],
         },
         "target_point": "finger_center",
+        "position_only": True,
+        "steps": steps,
+        "tolerance": tolerance,
     }
+    if include_torso:
+        stage["include_torso"] = True
+    return stage
 
 
 def _support_surface(support: SceneObject | None) -> SupportSurface | None:
-    if support is None or support["top_z"] is None:
+    if support is None or support.get("top_z") is None:
         return None
     aabb = support.get("world_aabb")
     if aabb is not None:
@@ -118,9 +174,9 @@ def _support_surface(support: SceneObject | None) -> SupportSurface | None:
             "xy_min": [round(float(aabb["min"][0]), 6), round(float(aabb["min"][1]), 6)],
             "xy_max": [round(float(aabb["max"][0]), 6), round(float(aabb["max"][1]), 6)],
         }
-    if support["bounds_min"] is None or support["bounds_max"] is None:
+    if support.get("bounds_min") is None or support.get("bounds_max") is None:
         return None
-    if support["position"] is None:
+    if support.get("position") is None:
         return None
     center_x, center_y = (float(support["position"][0]), float(support["position"][1]))
     return {
@@ -207,4 +263,4 @@ def _world_aabb_from_bounds(obj: SceneObject) -> dict[str, list[float]] | None:
     }
 
 
-__all__ = ["TOP_DOWN_QUAT_WXYZ", "plan_pick"]
+__all__ = ["PRE_PICK_DELTA", "TOP_DOWN_QUAT_WXYZ", "plan_pick"]
