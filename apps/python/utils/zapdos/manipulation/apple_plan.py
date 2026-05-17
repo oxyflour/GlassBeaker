@@ -30,8 +30,8 @@ def build_pick_apple_plan(
         "attach_tolerance": 0.015,
         "stages": [
             {"name": "open_gripper", "kind": "gripper", "width": open_width, "steps": 18},
-            {"name": "approach_above", "kind": "move_pose", "pose": {"position": above_position, "quat_wxyz": quat_wxyz}, "target_point": "finger_center", "position_only": True, "steps": 20, "tolerance": 0.05},
-            {"name": "descend_to_pick", "kind": "move_pose", "pose": {"position": pick_position, "quat_wxyz": quat_wxyz}, "target_point": "finger_center", "position_only": True, "steps": 24, "tolerance": 0.05},
+            {"name": "approach_above", "kind": "move_pose", "pose": {"position": above_position, "quat_wxyz": quat_wxyz}, "target_point": "finger_center", "position_only": True, "steps": 20, "tolerance": 0.03},
+            {"name": "descend_to_pick", "kind": "move_pose", "pose": {"position": pick_position, "quat_wxyz": quat_wxyz}, "target_point": "finger_center", "position_only": True, "steps": 24, "tolerance": 0.03},
             {"name": "close_gripper", "kind": "gripper", "width": 0.0},
             {"name": "retreat", "kind": "move_pose", "pose": {"position": retreat_position, "quat_wxyz": quat_wxyz}, "target_point": "finger_center", "position_only": True, "steps": 20, "tolerance": 0.08},
         ],

@@ -31,6 +31,7 @@ from .usd_to_mjcf_adapter import USDToMJCFConverter
 REPO_ROOT = Path(__file__).resolve().parents[5]
 TMP_ROOT = REPO_ROOT / "apps" / "python" / "tmp" / "rl_bundles"
 BUNDLE_VERSION = 7
+_STAGE_CACHE: dict[Path, tuple[tuple[int, int], Usd.Stage]] = {}
 BUNDLE_DEPENDENCY_FILES = (
     Path(__file__).resolve(),
     Path(__file__).with_name("render_bundle.py").resolve(),
@@ -62,9 +63,7 @@ def ensure_render_bundle(robot_usd: Path, scene_usd: Path) -> RenderBundle:
     bundle = _initial_bundle(robot_usd, scene_usd, bundle_dir)
     scene_objects = collect_scene_objects(scene_usd)
     up_axis, meters_per_unit = compose_stage_metadata(scene_usd, descriptor.visual_usd)
-    robot_stage = Usd.Stage.Open(str(descriptor.visual_usd))
-    if robot_stage is None:
-        raise RuntimeError(f"Failed to open robot stage: {descriptor.visual_usd}")
+    robot_stage = _open_stage_cached(descriptor.visual_usd)
     source_map = _source_map(descriptor, robot_stage, bundle, scene_usd, scene_objects, up_axis, meters_per_unit)
     model = mujoco.MjModel.from_xml_path(str(bundle.mjcf))  # type: ignore
     robot_bodies = _robot_body_names(model, source_map)
@@ -116,6 +115,20 @@ def _initial_bundle(robot_usd: Path, scene_usd: Path, bundle_dir: Path) -> Rende
         body_map_jsona=bundle_dir / "render_scene_body_map.jsona",
         cameras=[],
     )
+
+
+def _open_stage_cached(stage_path: Path) -> Usd.Stage:
+    stage_path = stage_path.resolve()
+    stat = stage_path.stat()
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cached = _STAGE_CACHE.get(stage_path)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    stage = Usd.Stage.Open(str(stage_path))
+    if stage is None:
+        raise RuntimeError(f"Failed to open robot stage: {stage_path}")
+    _STAGE_CACHE[stage_path] = (signature, stage)
+    return stage
 
 
 def _source_map(
@@ -239,8 +252,11 @@ def _bundle_key(robot_usd: Path, scene_usd: Path, extra_paths: list[Path] | tupl
         overrides = {}
     digest.update(json.dumps(overrides, sort_keys=True).encode("utf-8"))
     for path in dict.fromkeys((robot_usd, scene_usd, *extra_paths, *BUNDLE_DEPENDENCY_FILES)):
-        stat = path.stat()
         digest.update(str(path).encode("utf-8"))
+        if path == scene_usd:
+            digest.update(hashlib.sha1(path.read_bytes()).digest())
+            continue
+        stat = path.stat()
         digest.update(str(stat.st_mtime_ns).encode("utf-8"))
         digest.update(str(stat.st_size).encode("utf-8"))
     return digest.hexdigest()[:16]

@@ -149,6 +149,22 @@ class RLBundleTest(unittest.TestCase):
 
         self.assertNotEqual(before, after)
 
+    def test_bundle_key_ignores_scene_mtime_when_scene_content_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene_path = Path(tmp) / "scene.usda"
+            scene_path.write_text("scene", encoding="utf-8")
+            original_stat = scene_path.stat()
+
+            before = MODULE._bundle_key(ROBOT_USD.resolve(), scene_path.resolve())
+
+            os.utime(
+                scene_path,
+                ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns + 1_000_000_000),
+            )
+            after = MODULE._bundle_key(ROBOT_USD.resolve(), scene_path.resolve())
+
+        self.assertEqual(before, after)
+
     def test_ensure_render_bundle_opens_robot_stage_once_per_build(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = Path(tmpdir) / "bundles"
@@ -165,6 +181,41 @@ class RLBundleTest(unittest.TestCase):
                 with mock.patch("pxr.Usd.Stage.Open", wraps=Usd.Stage.Open) as stage_open:
                     bundle = MODULE.ensure_render_bundle(ROBOT_USD, scene_path)
                     self.assertTrue(bundle.mjcf.exists())
+
+        robot_opens = [
+            call
+            for call in stage_open.call_args_list
+            if call.args and Path(call.args[0]).resolve() == ROBOT_USD.resolve()
+        ]
+        self.assertEqual(len(robot_opens), 1)
+
+    def test_ensure_render_bundle_reuses_cached_robot_stage_across_distinct_builds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir) / "bundles"
+            scene_a = Path(tmpdir) / "scene-a.usda"
+            scene_b = Path(tmpdir) / "scene-b.usda"
+            for scene_path in (scene_a, scene_b):
+                stage = Usd.Stage.CreateNew(str(scene_path))
+                stage.SetMetadata("metersPerUnit", 1.0)
+                UsdGeom.SetStageUpAxis(stage, "Z")
+                world = UsdGeom.Xform.Define(stage, "/World")
+                stage.SetDefaultPrim(world.GetPrim())
+                UsdGeom.Cube.Define(stage, "/World/Ground").CreateSizeAttr(10.0)
+                stage.GetRootLayer().Save()
+
+            stage_cache = getattr(MODULE, "_STAGE_CACHE", None)
+            if stage_cache is not None:
+                stage_cache.clear()
+
+            with mock.patch.object(MODULE, "TMP_ROOT", tmp_root):
+                with mock.patch("pxr.Usd.Stage.Open", wraps=Usd.Stage.Open) as stage_open:
+                    first = MODULE.ensure_render_bundle(ROBOT_USD, scene_a)
+                    second = MODULE.ensure_render_bundle(ROBOT_USD, scene_b)
+                    self.assertTrue(first.mjcf.exists())
+                    self.assertTrue(second.mjcf.exists())
+
+            if stage_cache is not None:
+                stage_cache.clear()
 
         robot_opens = [
             call
