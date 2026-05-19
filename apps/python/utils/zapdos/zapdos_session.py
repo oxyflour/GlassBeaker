@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import queue
 import traceback
 from pathlib import Path
@@ -15,6 +16,7 @@ from utils.zapdos.manipulation.runtime import ManipulationRuntime
 from utils.zapdos.physics.mujoco_physics import ZapdosPhysics
 from utils.zapdos.renderer import ZapdosRenderer
 from utils.zapdos.renderer.isaac_renderer import IsaacRenderer, tf_message
+from utils.zapdos.renderer.mitsuba_renderer import MitsubaRenderer
 from utils.zapdos.ros.topics import IMAGE_TYPE, JOINT_COMMAND_TOPIC, JOINT_STATES_TOPIC, JOINT_STATE_TYPE, TF_RENDER_TOPIC, TF_RENDER_TYPE
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -50,8 +52,15 @@ class ZapdosSession(Session):
         return ZapdosPhysics(self.sess, bundle, json.loads(bundle.body_map_json.read_text(encoding="utf-8")))
 
     def _create_renderer(self, bundle: RenderBundle) -> ZapdosRenderer:
+        backend_name = os.getenv("ZAPDOS_RENDERER", "isaac").strip().lower()
+        if backend_name == "isaac":
+            backend = IsaacRenderer(self.sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
+        elif backend_name == "mitsuba":
+            backend = MitsubaRenderer(self.sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0)
+        else:
+            raise RuntimeError(f"Unsupported ZAPDOS_RENDERER '{backend_name}'. Expected 'isaac' or 'mitsuba'.")
         return ZapdosRenderer(
-            backend=IsaacRenderer(self.sess, bundle, RENDER_SIZE[0], RENDER_SIZE[1], 30, True, 0),
+            backend=backend,
             bundle=bundle,
             render_size=RENDER_SIZE,
             is_active=self.is_active,

@@ -1279,6 +1279,44 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(new_physics.data.qpos[:2], [1.0, 2.0])
         self.assertEqual(new_physics.data.ctrl[:1], [3.0])
 
+    def test_create_renderer_uses_isaac_by_default(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.sess = "sess-1"
+        backend = SimpleNamespace()
+        bundle = SimpleNamespace(cameras=[])
+
+        with mock.patch.dict(SESSION_MODULE.os.environ, {}, clear=False):
+            with mock.patch.object(SESSION_MODULE, "IsaacRenderer", return_value=backend) as isaac_cls:
+                with mock.patch.object(SESSION_MODULE, "MitsubaRenderer") as mitsuba_cls:
+                    renderer = SESSION_MODULE.ZapdosSession._create_renderer(session, bundle)
+
+        self.assertIs(getattr(renderer, "backend", renderer), backend)
+        isaac_cls.assert_called_once_with("sess-1", bundle, SESSION_MODULE.RENDER_SIZE[0], SESSION_MODULE.RENDER_SIZE[1], 30, True, 0)
+        mitsuba_cls.assert_not_called()
+
+    def test_create_renderer_uses_mitsuba_when_env_selects_it(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.sess = "sess-1"
+        backend = SimpleNamespace()
+        bundle = SimpleNamespace(cameras=[])
+
+        with mock.patch.dict(SESSION_MODULE.os.environ, {"ZAPDOS_RENDERER": "mitsuba"}, clear=False):
+            with mock.patch.object(SESSION_MODULE, "IsaacRenderer") as isaac_cls:
+                with mock.patch.object(SESSION_MODULE, "MitsubaRenderer", return_value=backend) as mitsuba_cls:
+                    renderer = SESSION_MODULE.ZapdosSession._create_renderer(session, bundle)
+
+        self.assertIs(getattr(renderer, "backend", renderer), backend)
+        mitsuba_cls.assert_called_once_with("sess-1", bundle, SESSION_MODULE.RENDER_SIZE[0], SESSION_MODULE.RENDER_SIZE[1], 30, True, 0)
+        isaac_cls.assert_not_called()
+
+    def test_create_renderer_rejects_unknown_renderer_env(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.sess = "sess-1"
+
+        with mock.patch.dict(SESSION_MODULE.os.environ, {"ZAPDOS_RENDERER": "cycles"}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "Unsupported ZAPDOS_RENDERER"):
+                SESSION_MODULE.ZapdosSession._create_renderer(session, SimpleNamespace(cameras=[]))
+
     def test_swap_runtime_bundle_reuses_existing_renderer_when_reload_succeeds(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.sess = "sess-1"
