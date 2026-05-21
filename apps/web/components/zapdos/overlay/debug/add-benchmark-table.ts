@@ -32,7 +32,11 @@ export function createAddBenchmarkTableRequest(): RequestInit {
   });
 }
 
-export async function addBenchmarkTable(sess: string, createEventSource?: SceneOperationStreamFactory) {
+export async function addBenchmarkTable(
+  sess: string,
+  createEventSource?: SceneOperationStreamFactory,
+  onSceneRevision?: (revision: string) => void,
+) {
   const payload = await setSceneAssets(sess, {
     assets: BENCHMARK_TABLE_ASSETS,
   }, createEventSource);
@@ -40,6 +44,7 @@ export async function addBenchmarkTable(sess: string, createEventSource?: SceneO
   if (!item) {
     throw new Error("Benchmark table was not created");
   }
+  onSceneRevision?.(payload.scene_revision);
   return {
     body: item.body,
     instance_id: item.instance_id,

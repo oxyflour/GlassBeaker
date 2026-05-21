@@ -6,6 +6,7 @@ const SESSION_ERROR_DETAILS = new Set(["Session expired", "Session not initializ
 export type ZapdosSceneRevisionEventDetail = {
   sess: string;
   scene_revision: string;
+  force?: boolean;
 };
 
 function getErrorMessage(error: unknown) {
@@ -49,11 +50,16 @@ export function getZapdosSceneRevision(payload: unknown) {
   return typeof revision === "string" && revision.trim() ? revision : null;
 }
 
-export function createZapdosSceneRevisionEvent(sess: string, sceneRevision: string) {
+export function createZapdosSceneRevisionEvent(
+  sess: string,
+  sceneRevision: string,
+  options: { force?: boolean } = {},
+) {
   return new CustomEvent<ZapdosSceneRevisionEventDetail>(ZAPDOS_SCENE_REVISION_EVENT, {
     detail: {
       sess,
       scene_revision: sceneRevision,
+      ...(options.force === true ? { force: true } : {}),
     },
   });
 }
@@ -69,13 +75,14 @@ export function getZapdosSceneRevisionEventDetail(event: Event, sess: string) {
   return {
     sess: detail.sess,
     scene_revision: detail.scene_revision,
+    ...(detail.force === true ? { force: true } : {}),
   };
 }
 
-export function publishZapdosSceneRevision(sess: string, payload: unknown) {
+export function publishZapdosSceneRevision(sess: string, payload: unknown, options: { force?: boolean } = {}) {
   const revision = getZapdosSceneRevision(payload);
   if (!revision || typeof window === "undefined") {
     return;
   }
-  window.dispatchEvent(createZapdosSceneRevisionEvent(sess, revision));
+  window.dispatchEvent(createZapdosSceneRevisionEvent(sess, revision, options));
 }

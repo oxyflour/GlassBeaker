@@ -89,6 +89,45 @@ test("addBenchmarkTable posts to the zapdos set_scene_assets route", async () =>
   }
 });
 
+test("addBenchmarkTable reports the completed scene revision to the caller", async () => {
+  const { addBenchmarkTable } = await loadModule<AddBenchmarkTableModule>("./add-benchmark-table.ts");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    ok: true,
+    op_id: "op-1",
+    status: "started",
+    items: [{
+      body: "Scene_benchmark_table_000_01",
+      instance_id: "benchmark_table_000_01",
+      asset_id: "benchmark_table_000",
+    }],
+  }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  })) as typeof fetch;
+  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-1");
+  const revisions: string[] = [];
+
+  try {
+    const pending = addBenchmarkTable("sess-1", () => stream, revision => revisions.push(revision));
+    await waitFor(() => stream.listenerCount("done") > 0);
+    stream.dispatch("done", {
+      ok: true,
+      scene_revision: "rev-2",
+      items: [{
+        body: "Scene_benchmark_table_000_01",
+        instance_id: "benchmark_table_000_01",
+        asset_id: "benchmark_table_000",
+      }],
+    });
+    await pending;
+
+    assert.deepEqual(revisions, ["rev-2"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 async function loadModule<TModule>(specifier: string): Promise<TModule> {
   const loaded = await import(specifier);
   return (loaded.default ?? loaded["module.exports"] ?? loaded) as TModule;

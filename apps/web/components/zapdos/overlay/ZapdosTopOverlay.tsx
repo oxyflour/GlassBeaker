@@ -16,6 +16,7 @@ export function ZapdosTopOverlay({
   defaultSettingsOpen = false,
   mode = "translate",
   onRobotModelChange,
+  onSceneRevision,
   selectedBody = null,
   sess,
   sse,
@@ -25,6 +26,7 @@ export function ZapdosTopOverlay({
   defaultSettingsOpen?: boolean
   mode?: "translate" | "rotate"
   onRobotModelChange: (key: RobotModelKey) => void
+  onSceneRevision?: (revision: string) => void
   selectedBody?: string | null
   sess: string
   sse: number
@@ -81,7 +83,7 @@ export function ZapdosTopOverlay({
           Debug
         </button>
         { debugOpen ? <div className="absolute right-0 mt-3 flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-3">
-          <AddBenchmarkTableButton sess={ sess } />
+          <AddBenchmarkTableButton onSceneRevision={ onSceneRevision } sess={ sess } />
           <PickTheAppleButton sess={ sess } />
           <PlaceTheAppleButton sess={ sess } />
         </div> : null }

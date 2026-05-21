@@ -207,6 +207,46 @@ def Xform "World"
             root = ET.parse(output_xml).getroot()
             self.assertEqual(root.findall(".//geom"), [])
 
+    def test_invisible_cube_with_explicit_collision_is_exported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "invisible_collision_cube.usda"
+            output_xml = Path(tmpdir) / "invisible_collision_cube.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            cube = UsdGeom.Cube.Define(stage, "/World/HiddenCollisionCube")
+            cube.CreateSizeAttr(1.0)
+            UsdGeom.Imageable(cube.GetPrim()).MakeInvisible()
+            UsdPhysics.CollisionAPI.Apply(cube.GetPrim()).CreateCollisionEnabledAttr(True)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="invisible_collision_cube").convert()
+
+            root = ET.parse(output_xml).getroot()
+            geom = root.find(".//geom[@name='World_HiddenCollisionCube_geom']")
+            self.assertIsNotNone(geom)
+
+    def test_collision_disabled_on_parent_is_inherited_by_child_geom(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene_path = Path(tmpdir) / "inherited_collision.usda"
+            output_xml = Path(tmpdir) / "inherited_collision.xml"
+            stage = Usd.Stage.CreateNew(str(scene_path))
+            world = UsdGeom.Xform.Define(stage, "/World")
+            stage.SetDefaultPrim(world.GetPrim())
+            parent = UsdGeom.Xform.Define(stage, "/World/Parent")
+            UsdPhysics.CollisionAPI.Apply(parent.GetPrim()).CreateCollisionEnabledAttr(False)
+            cube = UsdGeom.Cube.Define(stage, "/World/Parent/ChildCube")
+            cube.CreateSizeAttr(1.0)
+            stage.GetRootLayer().Save()
+
+            USDToMJCFConverter(scene_path, output_xml, model_name="inherited_collision").convert()
+
+            root = ET.parse(output_xml).getroot()
+            geom = root.find(".//geom[@name='World_Parent_ChildCube_geom']")
+            self.assertIsNotNone(geom)
+            self.assertEqual(geom.attrib.get("contype"), "0")
+            self.assertEqual(geom.attrib.get("conaffinity"), "0")
+
     def test_instance_proxy_mesh_is_exported(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

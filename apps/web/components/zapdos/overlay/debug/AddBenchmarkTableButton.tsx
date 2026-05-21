@@ -4,7 +4,13 @@ import { useState } from "react";
 
 import { addBenchmarkTable } from "./add-benchmark-table";
 
-export function AddBenchmarkTableButton({ sess }: { sess: string }) {
+export function AddBenchmarkTableButton({
+  onSceneRevision,
+  sess,
+}: {
+  onSceneRevision?: (revision: string) => void;
+  sess: string;
+}) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -14,7 +20,7 @@ export function AddBenchmarkTableButton({ sess }: { sess: string }) {
     setMessage("");
     setError("");
     try {
-      const payload = await addBenchmarkTable(sess);
+      const payload = await addBenchmarkTable(sess, undefined, onSceneRevision);
       setMessage(`Added ${payload.instance_id}`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Add benchmark table failed");

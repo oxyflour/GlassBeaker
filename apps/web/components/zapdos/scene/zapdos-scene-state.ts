@@ -48,8 +48,12 @@ export function shouldApplyBodyPose(
   return bodies[body]?.selectionBody !== draggingSelectionBody;
 }
 
-export function shouldReloadSceneRevision(current: string | null, next: string | null): boolean {
-  return !!next && next !== current;
+export function shouldReloadSceneRevision(
+  current: string | null,
+  next: string | null,
+  options: { force?: boolean } = {},
+): boolean {
+  return !!next && (options.force === true || next !== current);
 }
 
 export function clearMissingSelection(selectedBody: string | null, nextBodies: Set<string>): string | null {

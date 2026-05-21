@@ -107,6 +107,10 @@ test("shouldReloadSceneRevision ignores duplicate revisions", () => {
   assert.equal(shouldReloadSceneRevision("rev-1", "rev-2"), true);
 });
 
+test("shouldReloadSceneRevision reloads duplicate revisions when forced", () => {
+  assert.equal(shouldReloadSceneRevision("rev-1", "rev-1", { force: true }), true);
+});
+
 test("clearMissingSelection drops a body that is no longer present", () => {
   assert.equal(clearMissingSelection("Scene_table_000_01", new Set(["Scene_crate_000_01"])), null);
   assert.equal(clearMissingSelection("Scene_table_000_01", new Set(["Scene_table_000_01"])), "Scene_table_000_01");

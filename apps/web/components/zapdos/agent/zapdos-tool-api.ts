@@ -74,7 +74,7 @@ export async function waitForSceneToolOp<T>(
     source.addEventListener("done", (event) => {
       close();
       const payload = JSON.parse(event.data) as T;
-      publishZapdosSceneRevision(sess, payload);
+      publishZapdosSceneRevision(sess, payload, { force: true });
       resolve(payload);
     });
     source.addEventListener("failed", (event) => {

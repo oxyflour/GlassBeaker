@@ -16,13 +16,33 @@ sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
 from utils.zapdos.bundle import ensure_render_bundle  # noqa: E402
 from utils.zapdos.bundle.usd_to_mjcf_adapter import sanitize_name  # noqa: E402
+from utils.genie_sim import resolve_assets_root  # noqa: E402
+from utils.zapdos.editor.scene_writer import write_overlay_scene  # noqa: E402
+from utils.zapdos.editor.state import default_overlay_state  # noqa: E402
 from utils.zapdos.editor.zapdos_editor import ZapdosEditor  # noqa: E402
 from utils.zapdos.physics.mujoco_physics import MujocoPhysics  # noqa: E402
+from utils.zapdos.zapdos_asset_library import asset_local_bounds, resolve_asset_record  # noqa: E402
 
 ROBOT_USD = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
 
 
 class ZapdosRuntimeSwapTest(unittest.TestCase):
+    def test_benchmark_cube_settles_on_visual_tabletop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = ensure_render_bundle(ROBOT_USD, _write_benchmark_table_scene(Path(tmp)))
+            physics = _physics("benchmark-cube-support", bundle)
+            cube = "Scene_benchmark_building_blocks_006_01"
+            table = "Scene_benchmark_table_000_01"
+            try:
+                for _ in range(500):
+                    physics.step()
+
+                cube_bottom = float(physics.body_world_aabb(cube)["min"][2])
+                table_top = float(physics.body_world_aabb(table)["max"][2])
+                self.assertGreaterEqual(cube_bottom, table_top - 0.005)
+            finally:
+                physics.close()
+
     def test_swap_runtime_bundle_copies_robot_joint_state_by_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -83,6 +103,39 @@ def _write_dynamic_cube(path: Path, name: str, xyz: list[float]) -> Path:
     UsdGeom.Cube.Define(stage, f"/World/{name}/Visual").CreateSizeAttr(0.05)
     stage.GetRootLayer().Save()
     return path
+
+
+def _write_benchmark_table_scene(root: Path) -> Path:
+    assets_root = resolve_assets_root(None)
+    overlay = default_overlay_state(str(assets_root))
+    instances = []
+    for asset_id, motion, placement in (
+        ("benchmark_table_000", "static", {"kind": "floor_at_xy", "xy": [0.5, 0.0], "z_offset": 0.0, "yaw": 0.0}),
+        ("benchmark_building_blocks_006", "dynamic", {
+            "kind": "on_top_of_body",
+            "body": "Scene_benchmark_table_000_01",
+            "xy": [0.34, 0.24],
+            "gap": 0.0,
+            "yaw": 0.0,
+        }),
+    ):
+        record = resolve_asset_record(asset_id, assets_root)
+        instances.append({
+            "id": f"{asset_id}_01",
+            "asset_id": asset_id,
+            "url": record["url"],
+            "motion": motion,
+            "placement": placement,
+        })
+    overlay["instances"] = instances
+    return write_overlay_scene(
+        root / "benchmark-table.usda",
+        REPO_ROOT / "apps" / "python" / "assets" / "default_scene.usda",
+        assets_root,
+        overlay,
+        support_infos={},
+        asset_bounds_by_instance={item["id"]: asset_local_bounds(assets_root / item["url"]) for item in instances},
+    )
 
 
 def _physics(sess: str, bundle) -> MujocoPhysics:

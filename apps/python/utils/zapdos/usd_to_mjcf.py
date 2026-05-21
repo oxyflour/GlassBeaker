@@ -800,7 +800,7 @@ class USDToMJCFConverter:
         return np.array([0.7, 0.7, 0.7, 1.0], dtype=float)
 
     def get_collision_enabled(self, prim) -> Tuple[Optional[int], Optional[int]]:
-        enabled = self.get_attr(prim, "physics:collisionEnabled", default=None)
+        enabled = self.get_inherited_collision_enabled(prim)
         if enabled is not None:
             if bool(enabled):
                 return None, None
@@ -810,6 +810,15 @@ class USDToMJCFConverter:
         if "visuals" in path_tokens or "visual" in path_tokens:
             return 0, 0
         return None, None
+
+    def get_inherited_collision_enabled(self, prim) -> Optional[bool]:
+        current = prim
+        while current and current.IsValid():
+            value = self.get_authored_attr(current, "physics:collisionEnabled", default=None)
+            if value is not None:
+                return bool(value)
+            current = current.GetParent()
+        return None
 
     def prim_visibility(self, prim) -> Optional[str]:
         if not prim.IsA(UsdGeom.Imageable): # type: ignore
@@ -882,7 +891,8 @@ class USDToMJCFConverter:
         t = prim.GetTypeName()
         name = sanitize_name(str(prim.GetPath())) + "_geom"
         contype, conaffinity = self.get_collision_enabled(prim)
-        if self.prim_visibility(prim) == "invisible":
+        explicit_collision = self.get_authored_attr(prim, "physics:collisionEnabled", default=None)
+        if self.prim_visibility(prim) == "invisible" and explicit_collision is not True:
             return None
 
         if prim.IsA(UsdGeom.Mesh): # type: ignore

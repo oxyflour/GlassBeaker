@@ -41,12 +41,13 @@ test("getZapdosSceneRevision returns the revision string when present", () => {
 });
 
 test("createZapdosSceneRevisionEvent carries the session scoped scene revision", () => {
-  const event = createZapdosSceneRevisionEvent("sess-1", "rev-2");
+  const event = createZapdosSceneRevisionEvent("sess-1", "rev-2", { force: true });
 
   assert.equal(event.type, ZAPDOS_SCENE_REVISION_EVENT);
   assert.deepEqual(getZapdosSceneRevisionEventDetail(event, "sess-1"), {
     sess: "sess-1",
     scene_revision: "rev-2",
+    force: true,
   });
 });
 

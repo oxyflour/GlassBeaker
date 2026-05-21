@@ -61,6 +61,7 @@ function SceneEnvironment({ spark, splatReady, splatRoot }: {
 function SceneRuntime({
   mode,
   onRuntimeError,
+  sceneReloadKey,
   sess,
   selectedBody,
   setMode,
@@ -70,6 +71,7 @@ function SceneRuntime({
 }: {
   mode: ZapdosTransformMode;
   onRuntimeError: (message: string) => void;
+  sceneReloadKey: number;
   sess: string;
   selectedBody: string | null;
   setMode: (mode: ZapdosTransformMode) => void;
@@ -164,6 +166,7 @@ function SceneRuntime({
     const counter = new Counter();
     let disposed = false;
     let failed = false;
+    let loadGeneration = 0;
     const fail = (error: unknown) => {
       if (disposed || failed) return;
       failed = true;
@@ -179,8 +182,10 @@ function SceneRuntime({
       topLevel.length = 0;
     };
     const loadVisuals = async () => {
+      const generation = ++loadGeneration;
       clearLoadedVisuals();
       const payload = await getSceneVisual(sess);
+      if (disposed || generation !== loadGeneration) return;
       for (const body of payload.bodies) {
         const group = new Object3D();
         group.name = body.name;
@@ -199,6 +204,7 @@ function SceneRuntime({
         root.add(group);
       }
       const loadedMeshes = await loadSceneMeshResources(payload.meshes);
+      if (disposed || generation !== loadGeneration) return;
       for (const { geometry, image, item } of loadedMeshes) {
         const mesh = new Mesh(geometry, getSceneMaterial(item, image));
         mesh.castShadow = !item.name.endsWith(".plane");
@@ -223,8 +229,8 @@ function SceneRuntime({
       const nextBodies = new Set(Object.keys(bodyObjectsRef.current));
       setSelectedBody(current => clearMissingSelection(current, nextBodies));
     };
-    const reloadSceneRevision = (nextRevision: string | null) => {
-      if (!shouldReloadSceneRevision(sceneRevisionRef.current, nextRevision)) return false;
+    const reloadSceneRevision = (nextRevision: string | null, options: { force?: boolean } = {}) => {
+      if (!shouldReloadSceneRevision(sceneRevisionRef.current, nextRevision, options)) return false;
       sceneRevisionRef.current = nextRevision;
       void loadVisuals().catch(fail);
       return true;
@@ -232,7 +238,7 @@ function SceneRuntime({
     const onSceneRevision = (event: Event) => {
       const detail = getZapdosSceneRevisionEventDetail(event, sess);
       if (detail) {
-        reloadSceneRevision(detail.scene_revision);
+        reloadSceneRevision(detail.scene_revision, { force: detail.force === true });
       }
     };
     sse.onmessage = event => {
@@ -271,7 +277,7 @@ function SceneRuntime({
       clearInterval(ping);
       clearLoadedVisuals();
     };
-  }, [onRuntimeError, scene, sess, setSse]);
+  }, [onRuntimeError, scene, sceneReloadKey, sess, setSse]);
 
   const commitSelection = () => {
     const body = selectedBodyRef.current;
@@ -332,6 +338,7 @@ export function ZapdosScene({
   const [spark, setSpark] = useState<SparkRenderer | null>(null);
   const [splatRoot, setSplatRoot] = useState<Object3D | null>(null);
   const [splatReady, setSplatReady] = useState(false);
+  const [sceneReloadKey, setSceneReloadKey] = useState(0);
   const [transformDragging, setTransformDragging] = useState(false);
   useZapdosAgentTools(sess);
   return <Group>
@@ -363,6 +370,7 @@ export function ZapdosScene({
       <SceneRuntime
         mode={ mode }
         onRuntimeError={ onRuntimeError }
+        sceneReloadKey={ sceneReloadKey }
         selectedBody={ selectedBody }
         sess={ sess }
         setMode={ setMode }
@@ -375,6 +383,7 @@ export function ZapdosScene({
       activeRobotModelKey={ activeRobotModelKey }
       mode={ mode }
       onRobotModelChange={ onRobotModelChange }
+      onSceneRevision={ () => setSceneReloadKey(current => current + 1) }
       selectedBody={ selectedBody }
       sess={ sess }
       sse={ sse } />

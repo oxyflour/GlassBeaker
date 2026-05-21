@@ -178,7 +178,7 @@ test("waitForSceneToolOp broadcasts completed scene revisions", async () => {
     stream.dispatch("done", { ok: true, scene_revision: "rev-4" });
 
     await pending;
-    assert.deepEqual(revisions, [{ sess: "sess-1", scene_revision: "rev-4" }]);
+    assert.deepEqual(revisions, [{ sess: "sess-1", scene_revision: "rev-4", force: true }]);
   } finally {
     if (hadWindow) {
       Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });

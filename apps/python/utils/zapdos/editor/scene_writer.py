@@ -93,6 +93,21 @@ def write_overlay_scene(
         payload_quat = pose["payload_quat"]
         payload_xform = UsdGeom.Xformable(payload_prim)
         payload_xform.AddOrientOp().Set(Gf.Quatf(payload_quat[0], payload_quat[1], payload_quat[2], payload_quat[3]))
+        if instance["asset_id"] in {"benchmark_table_000", "benchmark_building_blocks_006"}:
+            _disable_asset_body_visual_collision(stage, asset_path)
+            bounds = asset_bounds_by_instance[instance["id"]]
+            mins = [float(value) for value in bounds["min"]]
+            maxs = [float(value) for value in bounds["max"]]
+            center = [0.5 * (mins[index] + maxs[index]) for index in range(3)]
+            scale = [maxs[index] - mins[index] for index in range(3)]
+            collision_name = "CollisionProxy"
+            if instance["asset_id"] == "benchmark_table_000":
+                payload_prim.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+                thickness = 0.012
+                center[2] = maxs[2] - 0.5 * thickness
+                scale[2] = thickness
+                collision_name = "CollisionSupport"
+            _add_hidden_box_collision(stage, object_path.AppendChild(collision_name), center, scale)
         object_prim.CreateAttribute("physics:kinematicEnabled", Sdf.ValueTypeNames.Bool).Set(instance["motion"] == "static")
         if instance["motion"] == "dynamic":
             object_prim.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Double).Set(1.0)
@@ -104,6 +119,22 @@ def write_overlay_scene(
     stage.SetDefaultPrim(world.GetPrim())
     stage.GetRootLayer().Save()
     return output_path
+
+
+def _disable_asset_body_visual_collision(stage, asset_path: Sdf.Path) -> None:
+    visual_prim = stage.OverridePrim(asset_path.AppendChild("entity").AppendChild("body").AppendChild("visual"))
+    visual_prim.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+
+
+def _add_hidden_box_collision(stage, path: Sdf.Path, center: list[float], scale: list[float]) -> None:
+    collision = UsdGeom.Cube.Define(stage, path)
+    collision.CreateSizeAttr(1.0)
+    collision_prim = collision.GetPrim()
+    collision_prim.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+    UsdGeom.Imageable(collision_prim).CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible)
+    collision_xform = UsdGeom.Xformable(collision_prim)
+    collision_xform.AddTranslateOp().Set(Gf.Vec3d(*center))
+    collision_xform.AddScaleOp().Set(Gf.Vec3f(*scale))
 
 
 def _placement_quat(placement: dict[str, object]) -> list[float]:
