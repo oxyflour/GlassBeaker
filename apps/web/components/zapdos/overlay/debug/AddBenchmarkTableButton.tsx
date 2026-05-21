@@ -15,7 +15,7 @@ export function AddBenchmarkTableButton({ sess }: { sess: string }) {
     setError("");
     try {
       const payload = await addBenchmarkTable(sess);
-      setMessage(`Queued ${payload.instance_id}`);
+      setMessage(`Added ${payload.instance_id}`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Add benchmark table failed");
     } finally {

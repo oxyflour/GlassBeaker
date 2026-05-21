@@ -19,7 +19,7 @@ test("ZapdosTopOverlay keeps SSE on the left and settings collapsed by default",
   assert.match(html, />Config</);
   assert.match(html, />Debug</);
   assert.doesNotMatch(html, /Add benchmark table/);
-  assert.doesNotMatch(html, /Grab the apple/);
+  assert.doesNotMatch(html, /Pick the cube/);
   assert.doesNotMatch(html, /Save camera override/);
   assert.doesNotMatch(html, /SpaceMouse/);
 });
@@ -53,8 +53,8 @@ test("ZapdosTopOverlay renders Add benchmark table in the debug menu", () => {
   );
 
   assert.match(html, /Add benchmark table/);
-  assert.match(html, /Grab the apple/);
-  assert.match(html, /Place the apple/);
+  assert.match(html, /Pick the cube/);
+  assert.match(html, /Place the cube/);
   assert.doesNotMatch(html, /Save camera override/);
   assert.doesNotMatch(html, /Robot model/);
   assert.doesNotMatch(html, /SpaceMouse/);

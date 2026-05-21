@@ -21,10 +21,10 @@ from utils.zapdos.manipulation.grounding import ground_pick_target
 from utils.zapdos.manipulation.planner import plan_pick
 from utils.zapdos.manipulation.types import GroundedPick, PickPlan, SceneObject
 
-APPLE_ARM = "left"
-APPLE_TARGET_QUERY = "apple"
-APPLE_SUPPORT_QUERY = "benchmark table"
-APPLE_OPEN_WIDTH = 0.05
+BENCHMARK_OBJECT_ARM = "left"
+BENCHMARK_OBJECT_TARGET_QUERY = "cube"
+BENCHMARK_OBJECT_SUPPORT_QUERY = "benchmark table"
+BENCHMARK_OBJECT_OPEN_WIDTH = 0.05
 
 
 def _advance_operation(iterator: Iterator[None]) -> dict[str, object] | None:
@@ -76,17 +76,17 @@ class ManipulationRuntime:
     def pick_apple(self) -> dict[str, object]:
         objects = self._scene_objects()
         grounded = self._ground_target({
-            "target_query": APPLE_TARGET_QUERY,
-            "support_query": APPLE_SUPPORT_QUERY,
+            "target_query": BENCHMARK_OBJECT_TARGET_QUERY,
+            "support_query": BENCHMARK_OBJECT_SUPPORT_QUERY,
         }, objects)
         target = grounded["target"]
         if target.get("motion") != "dynamic":
             raise HTTPException(status_code=400, detail="Pick target must be a dynamic scene object")
         self._sync_executor_state()
         return self._start_operation(self.executor.iter_execute({
-            **self._plan_pick(grounded, arm=APPLE_ARM, objects=objects),
-            "arm": APPLE_ARM,
-            "open_gripper": APPLE_OPEN_WIDTH,
+            **self._plan_pick(grounded, arm=BENCHMARK_OBJECT_ARM, objects=objects),
+            "arm": BENCHMARK_OBJECT_ARM,
+            "open_gripper": BENCHMARK_OBJECT_OPEN_WIDTH,
             "pick_tolerance": 0.025,
             "attach_tolerance": 0.015,
         }))
@@ -94,22 +94,22 @@ class ManipulationRuntime:
     def place_apple(self) -> dict[str, object]:
         objects = self._scene_objects()
         grounded = self._ground_target({
-            "target_query": APPLE_TARGET_QUERY,
-            "support_query": APPLE_SUPPORT_QUERY,
+            "target_query": BENCHMARK_OBJECT_TARGET_QUERY,
+            "support_query": BENCHMARK_OBJECT_SUPPORT_QUERY,
         }, objects)
         target = grounded["target"]
         if self.session.physics.get_attachment(target["body"]) is None:
-            raise HTTPException(status_code=409, detail=f"Place apple requires {target['body']} to be attached")
+            raise HTTPException(status_code=409, detail=f"Place cube requires {target['body']} to be attached")
         self._sync_executor_state()
         return self._start_operation(self.executor.iter_execute({
             "kind": "release",
-            "arm": APPLE_ARM,
+            "arm": BENCHMARK_OBJECT_ARM,
             "target_body": target["body"],
             "stages": [
                 {
                     "name": "open_gripper",
                     "kind": "gripper",
-                    "width": APPLE_OPEN_WIDTH,
+                    "width": BENCHMARK_OBJECT_OPEN_WIDTH,
                     "steps": 18,
                 },
             ],

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,10 +30,11 @@ def build_mitsuba_scene_dict(
         "default_light": {"type": "constant", "radiance": {"type": "rgb", "value": [0.8, 0.8, 0.8]}},
     }
     xforms = UsdGeom.XformCache()
+    body_paths = _body_render_paths(bundle)
     snapshots = [_camera_snapshot(camera) for camera in bundle.cameras]
     for index, camera in enumerate(bundle.cameras):
-        scene[f"sensor_{camera.name}"] = _camera_sensor(camera, width, height, spp, stage, xforms)
-    mesh_count = _add_meshes(scene, stage, mesh_dir)
+        scene[f"sensor_{camera.name}"] = _camera_sensor(camera, width, height, spp, stage, xforms, body_paths)
+    mesh_count = _add_meshes(scene, stage, mesh_dir, bundle)
     if mesh_count == 0:
         scene["fallback_sphere"] = {
             "type": "sphere",
@@ -46,23 +48,29 @@ def build_mitsuba_scene_dict(
 def apply_mitsuba_transforms(scene: dict[str, Any], mi) -> dict[str, Any]:
     converted = dict(scene)
     for key, value in list(converted.items()):
-        if not isinstance(value, dict) or value.get("type") != "perspective":
+        if not isinstance(value, dict):
             continue
         value = dict(value)
+        for meta_key in list(value):
+            if meta_key.startswith("_zapdos_"):
+                value.pop(meta_key, None)
+        matrix = value.pop("to_world_matrix", None)
+        if matrix is not None:
+            value["to_world"] = mi.ScalarTransform4f(matrix)
         look_at = value.pop("to_world_look_at", None)
-        if look_at is None:
-            continue
-        value["to_world"] = mi.ScalarTransform4f.look_at(
-            origin=look_at["origin"],
-            target=look_at["target"],
-            up=look_at["up"],
-        )
+        if look_at is not None:
+            value["to_world"] = mi.ScalarTransform4f.look_at(
+                origin=look_at["origin"],
+                target=look_at["target"],
+                up=look_at["up"],
+            )
         converted[key] = value
     return converted
 
 
-def _add_meshes(scene: dict[str, Any], stage: Usd.Stage, mesh_dir: Path) -> int:
+def _add_meshes(scene: dict[str, Any], stage: Usd.Stage, mesh_dir: Path, bundle: "RenderBundle") -> int:
     xforms = UsdGeom.XformCache()
+    body_paths = _body_render_paths(bundle)
     mesh_count = 0
     for prim in stage.Traverse():
         if not prim.IsA(UsdGeom.Mesh) or not prim.IsActive():
@@ -75,17 +83,30 @@ def _add_meshes(scene: dict[str, Any], stage: Usd.Stage, mesh_dir: Path) -> int:
         if not points or not triangles:
             continue
         world = xforms.GetLocalToWorldTransform(prim)
-        vertices = [
-            list(world.Transform(point))
-            for point in points
-        ]
+        vertices = [list(point) for point in points]
+        anchor = _mesh_anchor(prim.GetPath().pathString, body_paths)
+        matrix = _matrix_rows(world)
+        body_name = None
+        body_local_matrix = None
+        if anchor is not None:
+            body_name, body_path = anchor
+            body_prim = stage.GetPrimAtPath(body_path)
+            if body_prim.IsValid():
+                body_world = np.asarray(_matrix_rows(xforms.GetLocalToWorldTransform(body_prim)), dtype=float)
+                body_local_matrix = (np.linalg.inv(body_world) @ np.asarray(matrix, dtype=float)).tolist()
+                matrix = (body_world @ np.asarray(body_local_matrix, dtype=float)).tolist()
         mesh_path = mesh_dir / f"mesh_{mesh_count}.ply"
         _write_ply(mesh_path, vertices, triangles)
-        scene[f"mesh_{mesh_count}"] = {
+        entry = {
             "type": "ply",
             "filename": str(mesh_path),
+            "to_world_matrix": matrix,
             "bsdf": _diffuse([0.72, 0.72, 0.72]),
         }
+        if body_name is not None and body_local_matrix is not None:
+            entry["_zapdos_body"] = body_name
+            entry["_zapdos_body_local_matrix"] = body_local_matrix
+        scene[f"mesh_{mesh_count}"] = entry
         mesh_count += 1
     return mesh_count
 
@@ -97,9 +118,10 @@ def _camera_sensor(
     spp: int,
     stage: Usd.Stage,
     xforms: UsdGeom.XformCache,
+    body_paths: list[tuple[str, str]],
 ) -> dict[str, Any]:
     origin, target, up = _camera_vectors(camera, stage, xforms)
-    return {
+    sensor = {
         "type": "perspective",
         "fov": float(camera.fovy),
         "to_world_look_at": {"origin": origin, "target": target, "up": up},
@@ -111,6 +133,17 @@ def _camera_sensor(
             "rfilter": {"type": "box"},
         },
     }
+    if camera.body is not None:
+        body_path = next((path for path, body in body_paths if body == camera.body), None)
+        body_prim = stage.GetPrimAtPath(body_path) if body_path is not None else None
+        if body_prim is not None and body_prim.IsValid():
+            body_world = np.asarray(_matrix_rows(xforms.GetLocalToWorldTransform(body_prim)), dtype=float)
+            body_inv = np.linalg.inv(body_world)
+            sensor["_zapdos_body"] = camera.body
+            sensor["_zapdos_camera_local_origin"] = (body_inv @ np.asarray([*origin, 1.0], dtype=float)).tolist()
+            sensor["_zapdos_camera_local_target"] = (body_inv @ np.asarray([*target, 1.0], dtype=float)).tolist()
+            sensor["_zapdos_camera_local_up"] = (body_inv[:3, :3] @ np.asarray(up, dtype=float)).tolist()
+    return sensor
 
 
 def _camera_vectors(
@@ -141,6 +174,34 @@ def _camera_prim(stage: Usd.Stage, prim_path: str):
         if prim.IsValid() and prim.IsA(UsdGeom.Camera):
             return prim
     return None
+
+
+def _body_render_paths(bundle: "RenderBundle") -> list[tuple[str, str]]:
+    body_map_path = getattr(bundle, "body_map_json", None)
+    if body_map_path is None:
+        return []
+    try:
+        body_map = json.loads(Path(body_map_path).read_text(encoding="utf-8"))
+    except (OSError, RuntimeError, json.JSONDecodeError):
+        return []
+    paths: list[tuple[str, str]] = []
+    for body, render_path in body_map.items():
+        if not isinstance(body, str) or not isinstance(render_path, str):
+            continue
+        normalized = render_path if render_path.startswith("/") else f"/RenderScene/{render_path.lstrip('/')}"
+        paths.append((normalized.rstrip("/"), body))
+    return sorted(paths, key=lambda item: len(item[0]), reverse=True)
+
+
+def _mesh_anchor(mesh_path: str, body_paths: list[tuple[str, str]]) -> tuple[str, str] | None:
+    for render_path, body in body_paths:
+        if mesh_path == render_path or mesh_path.startswith(f"{render_path}/"):
+            return body, render_path
+    return None
+
+
+def _matrix_rows(matrix) -> list[list[float]]:
+    return [[float(matrix[row][col]) for col in range(4)] for row in range(4)]
 
 
 def _quat_to_matrix(quat: list[float]) -> np.ndarray:

@@ -55,8 +55,12 @@ class MitsubaRenderer:
         self._error: BaseException | None = None
         self._ready = False
         self._scene = None
+        self._scene_dict: dict[str, Any] | None = None
         self._snapshots: list[dict[str, Any]] = []
         self._mi = None
+        self._pose: dict[str, list[float]] = {}
+        self._pose_version = 0
+        self._loaded_pose_version = -1
 
     @property
     def running(self) -> bool:
@@ -67,12 +71,7 @@ class MitsubaRenderer:
         return self._ready and self._error is None
 
     async def wait_ready(self, timeout: float = 300.0) -> dict[str, Any]:
-        if self._thread is None:
-            try:
-                self._start()
-            except BaseException as exc:
-                self._error = exc
-                self._raise_error()
+        self.start()
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self._error is not None:
@@ -81,6 +80,17 @@ class MitsubaRenderer:
                 return self.status()
             await asyncio.sleep(0.01)
         raise TimeoutError(f"MitsubaRenderer did not produce a frame in {timeout:.0f}s")
+
+    def start(self) -> None:
+        if self._error is not None:
+            self._raise_error()
+        if self._thread is not None:
+            return
+        try:
+            self._start()
+        except BaseException as exc:
+            self._error = exc
+            self._raise_error()
 
     def read(self, camera_name: str) -> tuple[int, np.ndarray] | None:
         if camera_name not in self.camera_index or not self.running:
@@ -100,7 +110,16 @@ class MitsubaRenderer:
             self._frames.clear()
             self._ready = False
             self._frame_index = 0
+            self._scene_dict = None
+            self._loaded_pose_version = -1
         self._load_scene()
+
+    def update_pose(self, pose: dict[str, list[float]]) -> None:
+        with self._lock:
+            if pose == self._pose:
+                return
+            self._pose = {name: list(matrix) for name, matrix in pose.items()}
+            self._pose_version += 1
 
     def snapshot_cameras(self, timeout: float = 5.0) -> list[dict[str, Any]]:
         del timeout
@@ -129,10 +148,17 @@ class MitsubaRenderer:
             self._ready = False
 
     def _start(self) -> None:
-        self._load_scene()
         self._stop.clear()
-        self._thread = threading.Thread(target=self._render_loop, name="mitsuba-renderer", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="mitsuba-renderer", daemon=True)
         self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self._load_scene()
+        except BaseException as exc:
+            self._error = exc
+            return
+        self._render_loop()
 
     def _load_scene(self) -> None:
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -147,12 +173,15 @@ class MitsubaRenderer:
             spp=max(1, int(self.render_hz // 10) or 1),
         )
         self._mi = self._mi or load_mitsuba()
-        self._scene = self._mi.load_dict(apply_mitsuba_transforms(scene_dict, self._mi))
+        with self._lock:
+            self._scene_dict = scene_dict
+        self._load_pose_scene()
 
     def _render_loop(self) -> None:
         delay = 1.0 / max(float(self.render_hz), 1.0)
         while not self._stop.is_set():
             try:
+                self._load_pose_scene()
                 for sensor, camera in enumerate(self.bundle.cameras):
                     image = self._render_camera(sensor)
                     with self._lock:
@@ -163,6 +192,54 @@ class MitsubaRenderer:
                 self._error = exc
                 return
             self._stop.wait(delay)
+
+    def _load_pose_scene(self) -> None:
+        with self._lock:
+            scene_dict = self._scene_dict
+            pose = dict(self._pose)
+            pose_version = self._pose_version
+            if scene_dict is None or pose_version == self._loaded_pose_version:
+                return
+        posed_scene = self._scene_for_pose(scene_dict, pose)
+        self._scene = self._mi.load_dict(apply_mitsuba_transforms(posed_scene, self._mi))
+        with self._lock:
+            self._loaded_pose_version = pose_version
+
+    def _scene_for_pose(self, scene_dict: dict[str, Any], pose: dict[str, list[float]]) -> dict[str, Any]:
+        scene = dict(scene_dict)
+        for key, value in scene_dict.items():
+            if not isinstance(value, dict):
+                continue
+            body = value.get("_zapdos_body")
+            local_matrix = value.get("_zapdos_body_local_matrix")
+            body_matrix = pose.get(body) if isinstance(body, str) else None
+            if body_matrix is None:
+                continue
+            entry = dict(value)
+            body_transform = np.asarray(body_matrix, dtype=float).reshape(4, 4)
+            if local_matrix is not None:
+                entry["to_world_matrix"] = (
+                    body_transform
+                    @ np.asarray(local_matrix, dtype=float).reshape(4, 4)
+                ).tolist()
+            self._update_camera_pose(entry, body_transform)
+            scene[key] = entry
+        return scene
+
+    def _update_camera_pose(self, entry: dict[str, Any], body_transform: np.ndarray) -> None:
+        origin = entry.get("_zapdos_camera_local_origin")
+        target = entry.get("_zapdos_camera_local_target")
+        up = entry.get("_zapdos_camera_local_up")
+        if origin is None or target is None or up is None:
+            return
+        world_origin = body_transform @ np.asarray(origin, dtype=float).reshape(4)
+        world_target = body_transform @ np.asarray(target, dtype=float).reshape(4)
+        world_up = body_transform[:3, :3] @ np.asarray(up, dtype=float).reshape(3)
+        entry["to_world_look_at"] = {
+            "origin": world_origin[:3].tolist(),
+            "target": world_target[:3].tolist(),
+            "up": world_up.tolist(),
+        }
 
     def _render_camera(self, sensor: int) -> np.ndarray:
         rendered = self._mi.render(self._scene, sensor=sensor, spp=max(1, int(self.render_hz // 10) or 1))

@@ -1,7 +1,6 @@
 type SetSceneAssetsResult = {
-  op_id: string;
   items: Array<{ asset_id: string; body: string; instance_id: string }>;
-  status: "started";
+  scene_revision: string;
 };
 
 type RemoveAssetFromSceneResult = {
@@ -18,7 +17,7 @@ export function summarizeSetSceneAssetsResult(result: SetSceneAssetsResult) {
     ok: true as const,
     ...result,
     asset_count: assetCount,
-    message: `Started replacing the Zapdos overlay with ${assetCount} asset${assetCount === 1 ? "" : "s"}. Planned instance${assetCount === 1 ? "" : "s"}: ${summary}. Operation: ${result.op_id}.`,
+    message: `Replaced the Zapdos overlay with ${assetCount} asset${assetCount === 1 ? "" : "s"}. Instance${assetCount === 1 ? "" : "s"}: ${summary}. Scene revision: ${result.scene_revision}.`,
   };
 }
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -91,6 +92,29 @@ class MitsubaSceneBuilderTest(unittest.TestCase):
 
             self.assertEqual(look_at["origin"], [1.0, 2.0, 3.0])
             self.assertEqual(look_at["target"], [1.0, 2.0, 2.0])
+
+    def test_mesh_entries_keep_body_local_transform_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            usd_path = root / "body.usda"
+            body_map_path = root / "body_map.json"
+            body_map_path.write_text(json.dumps({"box": "World/Box"}), encoding="utf-8")
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            body = UsdGeom.Xform.Define(stage, "/RenderScene/World/Box")
+            UsdGeom.Xformable(body.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(2.0, 0.0, 0.0))
+            mesh = UsdGeom.Mesh.Define(stage, "/RenderScene/World/Box/Triangle")
+            mesh.CreatePointsAttr([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+            mesh.CreateFaceVertexCountsAttr([3])
+            mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+            stage.GetRootLayer().Save()
+            bundle = SimpleNamespace(render_scene_usda=usd_path, body_map_json=body_map_path, cameras=[_camera()])
+
+            scene, _ = build_mitsuba_scene_dict(bundle, root / "meshes", 32, 24, spp=1)
+            mesh_entry = next(value for value in scene.values() if isinstance(value, dict) and value.get("type") == "ply")
+
+            self.assertEqual(mesh_entry["_zapdos_body"], "box")
+            self.assertIn("_zapdos_body_local_matrix", mesh_entry)
+            self.assertIn("to_world_matrix", mesh_entry)
 
 
 if __name__ == "__main__":

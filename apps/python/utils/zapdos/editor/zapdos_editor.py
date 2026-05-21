@@ -152,13 +152,30 @@ class ZapdosEditor:
         old_physics = self.session.physics
         old_renderer = self.session.renderer
         new_physics = None
-        snapshot_qpos = np.copy(old_physics.data.qpos)
-        snapshot_ctrl = np.copy(old_physics.data.ctrl)
+        joint_state = old_physics.joint_state_msg() if callable(getattr(old_physics, "joint_state_msg", None)) else {}
+        old_actuators = getattr(old_physics, "actuator_name_to_id", {})
+        ctrl_by_actuator = {
+            name: float(old_physics.data.ctrl[actuator_id])
+            for name, actuator_id in old_actuators.items()
+            if 0 <= int(actuator_id) < len(old_physics.data.ctrl)
+        } if isinstance(old_actuators, dict) else {}
         try:
             new_physics = self.session._create_physics(bundle)
             emit_scene_rebuild_progress(self, op_id, "swap_runtime_bundle.physics_loaded")
-            new_physics.data.qpos[: min(len(snapshot_qpos), len(new_physics.data.qpos))] = snapshot_qpos[: len(new_physics.data.qpos)]
-            new_physics.data.ctrl[: min(len(snapshot_ctrl), len(new_physics.data.ctrl))] = snapshot_ctrl[: len(new_physics.data.ctrl)]
+            for joint_name, position in zip(joint_state.get("name") or [], joint_state.get("position") or []):
+                joint_id = mujoco.mj_name2id(new_physics.model, mujoco.mjtObj.mjOBJ_JOINT, str(joint_name))  # type: ignore
+                if joint_id < 0:
+                    continue
+                qpos_adr = int(new_physics.model.jnt_qposadr[joint_id])
+                next_qpos_adr = int(new_physics.model.nq if joint_id + 1 >= new_physics.model.njnt else new_physics.model.jnt_qposadr[joint_id + 1])
+                if next_qpos_adr - qpos_adr == 1:
+                    new_physics.data.qpos[qpos_adr] = float(position)
+            new_actuators = getattr(new_physics, "actuator_name_to_id", {})
+            if isinstance(new_actuators, dict):
+                for actuator_name, ctrl in ctrl_by_actuator.items():
+                    actuator_id = new_actuators.get(actuator_name)
+                    if actuator_id is not None and 0 <= int(actuator_id) < len(new_physics.data.ctrl):
+                        new_physics.data.ctrl[int(actuator_id)] = ctrl
             mujoco.mj_forward(new_physics.model, new_physics.data)  # type: ignore
             for body, pose in overlay_state["pose_overrides"].items():
                 if body in new_physics.movable_body_names:

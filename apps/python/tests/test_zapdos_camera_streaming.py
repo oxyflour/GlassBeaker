@@ -69,6 +69,27 @@ class ZapdosRendererTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload, b"jpeg-waiting")
         placeholder.assert_called_once_with(4, 3, "Waiting")
 
+    async def test_render_starts_backend_before_yielding_waiting_placeholder(self):
+        active = {"value": True}
+        backend = SimpleNamespace(
+            ready=False,
+            read=mock.Mock(return_value=None),
+            start=mock.Mock(side_effect=lambda: active.update(value=False)),
+            snapshot_cameras=mock.Mock(return_value=[]),
+        )
+        renderer = self.make_renderer(backend=backend, is_active=lambda: active["value"])
+        module = _renderer_module()
+
+        with mock.patch.object(module, "placeholder_jpeg", return_value=b"jpeg-waiting"):
+            stream = renderer.render("head_camera")
+            try:
+                first = await anext(stream)
+            finally:
+                await stream.aclose()
+
+        self.assertEqual(first, mjpeg_chunk(b"jpeg-waiting"))
+        backend.start.assert_called_once_with()
+
     async def test_render_skips_jpeg_reencode_when_frame_index_does_not_advance(self):
         active = {"value": True}
         frame = np.zeros((2, 2, 3), dtype=np.uint8)

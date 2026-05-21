@@ -76,6 +76,11 @@ class ZapdosRenderer:
             text,
         )
 
+    def _start_backend_if_supported(self) -> None:
+        start = getattr(self.backend, "start", None)
+        if callable(start):
+            start()
+
     def should_publish_camera_images(self) -> bool:
         mode = os.getenv("ZAPDOS_PUBLISH_CAMERA_IMAGES", "").strip().lower()
         if mode in {"1", "true", "yes", "always"}:
@@ -115,6 +120,7 @@ class ZapdosRenderer:
 
     def snapshot(self, camera_name: str) -> bytes:
         if not self.backend.ready:
+            self._start_backend_if_supported()
             return self._placeholder_frame("Waiting")
         frame_state = self.backend.read(camera_name)
         if frame_state is None:
@@ -148,6 +154,7 @@ class ZapdosRenderer:
         last_frame_index = -1
         while self.is_active():
             while not self.backend.ready:
+                self._start_backend_if_supported()
                 yield mjpeg_chunk(self._placeholder_frame("Waiting"))
                 await asyncio.sleep(1)
             try:
@@ -175,6 +182,7 @@ class ZapdosRenderer:
             return
         while self.is_active():
             while not self.backend.ready:
+                self._start_backend_if_supported()
                 yield mjpeg_chunk(self._placeholder_frame("Waiting", len(camera_names)))
                 await asyncio.sleep(1)
             try:

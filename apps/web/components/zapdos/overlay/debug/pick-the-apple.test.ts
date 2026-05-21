@@ -3,7 +3,7 @@ import test from "node:test";
 
 type PickTheAppleModule = typeof import("./pick-the-apple");
 
-test("createPickTheAppleRequest posts the canned apple pick payload", async () => {
+test("createPickTheAppleRequest posts the canned cube pick payload", async () => {
   const { createPickTheAppleRequest } = await loadModule<PickTheAppleModule>("./pick-the-apple.ts");
 
   assert.deepEqual(createPickTheAppleRequest(), {
@@ -35,7 +35,7 @@ test("pickTheApple posts to the zapdos pick_apple route", async () => {
     stream.dispatch("done", {
       ok: true,
       arm: "left",
-      target_body: "Scene_apple_01",
+      target_body: "Scene_benchmark_building_blocks_006_01",
       scene_revision: "rev-3",
     });
     const payload = await pending;
@@ -43,7 +43,7 @@ test("pickTheApple posts to the zapdos pick_apple route", async () => {
     assert.deepEqual(calls[0]?.init, createPickTheAppleRequest());
     assert.equal(stream.url, "/python/zapdos/sess-1/op/op-1");
     assert.equal(stream.closed, true);
-    assert.equal(payload.target_body, "Scene_apple_01");
+    assert.equal(payload.target_body, "Scene_benchmark_building_blocks_006_01");
     assert.equal(payload.scene_revision, "rev-3");
   } finally {
     globalThis.fetch = originalFetch;

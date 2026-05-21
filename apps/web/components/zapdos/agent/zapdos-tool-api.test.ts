@@ -53,7 +53,7 @@ test("listSceneBodies posts to the zapdos route", async () => {
   }
 });
 
-test("setSceneAssets posts to the batch route and returns the started operation payload", async () => {
+test("setSceneAssets posts to the batch route and waits for the operation stream", async () => {
   const { createSetSceneAssetsRequest, setSceneAssets } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
@@ -73,15 +73,28 @@ test("setSceneAssets posts to the batch route and returns the started operation 
       headers: { "Content-Type": "application/json" },
     });
   }) as typeof fetch;
+  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-1");
 
   try {
-    const payload = await setSceneAssets("sess-1", {
+    const pending = setSceneAssets("sess-1", {
       assets: [{
         asset_id: "table_000",
         motion: "static",
         placement: { kind: "floor_at_xy", xy: [0, 0], z_offset: 0, yaw: 0 },
       }],
+    }, () => stream);
+    await waitFor(() => stream.listenerCount("done") > 0);
+    stream.dispatch("done", {
+      ok: true,
+      scene_revision: "rev-2",
+      items: [{
+        asset_id: "table_000",
+        body: "Scene_table_000_01",
+        instance_id: "table_000_01",
+      }],
     });
+    const payload = await pending;
+
     assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/set_scene_assets");
     assert.deepEqual(calls[0]?.init, createSetSceneAssetsRequest({
       assets: [{
@@ -90,8 +103,9 @@ test("setSceneAssets posts to the batch route and returns the started operation 
         placement: { kind: "floor_at_xy", xy: [0, 0], z_offset: 0, yaw: 0 },
       }],
     }));
-    assert.equal(payload.op_id, "op-1");
-    assert.equal(payload.status, "started");
+    assert.equal(stream.url, "/python/zapdos/sess-1/op/op-1");
+    assert.equal(stream.closed, true);
+    assert.equal(payload.scene_revision, "rev-2");
     assert.equal(payload.items[0]?.instance_id, "table_000_01");
   } finally {
     globalThis.fetch = originalFetch;
@@ -143,6 +157,35 @@ test("waitForSceneToolOp rejects failed operation events", async () => {
 
   await assert.rejects(pending, /Scene rebuild already in progress/);
   assert.equal(stream.closed, true);
+});
+
+test("waitForSceneToolOp broadcasts completed scene revisions", async () => {
+  const { waitForSceneToolOp } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
+  const { ZAPDOS_SCENE_REVISION_EVENT } = await import("../scene/zapdos-runtime");
+  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-4");
+  const eventTarget = new EventTarget();
+  const revisions: unknown[] = [];
+  const hadWindow = "window" in globalThis;
+  const previousWindow = hadWindow ? globalThis.window : undefined;
+  Object.defineProperty(globalThis, "window", { configurable: true, value: eventTarget });
+  eventTarget.addEventListener(ZAPDOS_SCENE_REVISION_EVENT, (event) => {
+    revisions.push((event as CustomEvent).detail);
+  });
+
+  try {
+    const pending = waitForSceneToolOp("sess-1", "op-4", () => stream);
+    await Promise.resolve();
+    stream.dispatch("done", { ok: true, scene_revision: "rev-4" });
+
+    await pending;
+    assert.deepEqual(revisions, [{ sess: "sess-1", scene_revision: "rev-4" }]);
+  } finally {
+    if (hadWindow) {
+      Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
+    } else {
+      delete (globalThis as { window?: unknown }).window;
+    }
+  }
 });
 
 async function loadModule<TModule>(specifier: string): Promise<TModule> {

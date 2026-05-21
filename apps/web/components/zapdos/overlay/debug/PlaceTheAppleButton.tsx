@@ -15,9 +15,9 @@ export function PlaceTheAppleButton({ sess }: { sess: string }) {
     setError("");
     try {
       const payload = await placeTheApple(sess);
-      setMessage(`Placed ${payload.target_body ?? "apple"}`);
+      setMessage(`Placed ${payload.target_body ?? "cube"}`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Place apple failed");
+      setError(cause instanceof Error ? cause.message : "Place cube failed");
     } finally {
       setBusy(false);
     }
@@ -28,7 +28,7 @@ export function PlaceTheAppleButton({ sess }: { sess: string }) {
       className="rounded border border-white/20 bg-black/40 px-3 py-1 text-sm disabled:opacity-60"
       disabled={ busy || !sess }
       onClick={ () => void handleClick() }>
-      { busy ? "Placing..." : "Place the apple" }
+      { busy ? "Placing..." : "Place the cube" }
     </button>
     { message ? <div className="mt-2 max-w-80 text-xs text-emerald-200">{ message }</div> : null }
     { error ? <div className="mt-2 max-w-80 text-xs text-red-200">{ error }</div> : null }

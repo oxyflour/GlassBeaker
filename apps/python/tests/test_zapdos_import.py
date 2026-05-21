@@ -1276,8 +1276,8 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         old_physics.close.assert_called_once_with()
         self.assertIs(session.physics, new_physics)
         self.assertIs(getattr(session.renderer, "backend", session.renderer), new_renderer)
-        self.assertEqual(new_physics.data.qpos[:2], [1.0, 2.0])
-        self.assertEqual(new_physics.data.ctrl[:1], [3.0])
+        self.assertEqual(new_physics.data.qpos, [0.0, 0.0, 0.0])
+        self.assertEqual(new_physics.data.ctrl, [0.0, 0.0])
 
     def test_create_renderer_uses_isaac_by_default(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
@@ -1659,12 +1659,12 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             {"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-1"},
         )
 
-    async def test_manipulation_runtime_executes_pick_apple_with_common_plan(self):
+    async def test_manipulation_runtime_executes_pick_cube_with_common_plan(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
         target = {
-            "body": "Scene_apple_1",
-            "label": "apple",
+            "body": "Scene_benchmark_building_blocks_006_1",
+            "label": "cube",
             "motion": "dynamic",
             "position": [0.5, 0.0, 0.83],
             "world_aabb": {"min": [0.454, -0.046, 0.784], "max": [0.546, 0.046, 0.876]},
@@ -1684,7 +1684,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         def run_grab():
             yield None
-            return {"ok": True, "target_body": "Scene_apple_1"}
+            return {"ok": True, "target_body": "Scene_benchmark_building_blocks_006_1"}
 
         executor = mock.Mock(
             current_pose=mock.Mock(return_value={"position": [-0.068666, 0.251999, 0.72023], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}),
@@ -1702,11 +1702,11 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         result = runtime.pick_apple()
 
         self.assertEqual(result, {"ok": True, "op_id": "op-1"})
-        grounder.assert_called_once_with(catalog_loader.return_value, target_query="apple", support_query="benchmark table")
+        grounder.assert_called_once_with(catalog_loader.return_value, target_query="cube", support_query="benchmark table")
         executor.iter_execute.assert_called_once()
         plan = executor.iter_execute.call_args.args[0]
         self.assertEqual(plan["arm"], "left")
-        self.assertEqual(plan["target_body"], "Scene_apple_1")
+        self.assertEqual(plan["target_body"], "Scene_benchmark_building_blocks_006_1")
         self.assertEqual(plan["open_gripper"], 0.05)
         self.assertEqual(plan["attach_tolerance"], 0.015)
         self.assertEqual(plan["pick_tolerance"], 0.025)
@@ -1742,15 +1742,15 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reservations, ["enter", "exit"])
         self.assertEqual(
             session.editor.scene_rebuild_state.jobs["op-1"].future.result(timeout=1),
-            {"ok": True, "target_body": "Scene_apple_1", "scene_revision": "rev-1"},
+            {"ok": True, "target_body": "Scene_benchmark_building_blocks_006_1", "scene_revision": "rev-1"},
         )
 
-    async def test_manipulation_runtime_executes_arm_only_place_apple_plan(self):
+    async def test_manipulation_runtime_executes_arm_only_place_cube_plan(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
         target = {
-            "body": "Scene_apple_1",
-            "label": "apple",
+            "body": "Scene_benchmark_building_blocks_006_1",
+            "label": "cube",
             "motion": "dynamic",
             "position": [0.5, 0.0, 0.83],
             "world_aabb": {"min": [0.454, -0.046, 0.784], "max": [0.546, 0.046, 0.876]},
@@ -1765,7 +1765,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         physics = mock.Mock()
         physics.get_attachment.return_value = {
             "parent_body": "Root_r1_pro_with_gripper_left_gripper_link",
-            "child_body": "Scene_apple_1",
+            "child_body": "Scene_benchmark_building_blocks_006_1",
             "relative_position": [0.0, 0.0, 0.0],
             "relative_quat": [1.0, 0.0, 0.0, 0.0],
         }
@@ -1776,7 +1776,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         def run_release():
             yield None
-            return {"ok": True, "target_body": "Scene_apple_1", "attachment": None}
+            return {"ok": True, "target_body": "Scene_benchmark_building_blocks_006_1", "attachment": None}
 
         executor = mock.Mock(
             iter_execute=mock.Mock(return_value=run_release()),
@@ -1793,11 +1793,12 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         result = runtime.place_apple()
 
         self.assertEqual(result, {"ok": True, "op_id": "op-1"})
-        physics.get_attachment.assert_called_once_with("Scene_apple_1")
+        grounder.assert_called_once_with(catalog_loader.return_value, target_query="cube", support_query="benchmark table")
+        physics.get_attachment.assert_called_once_with("Scene_benchmark_building_blocks_006_1")
         executor.iter_execute.assert_called_once_with({
             "kind": "release",
             "arm": "left",
-            "target_body": "Scene_apple_1",
+            "target_body": "Scene_benchmark_building_blocks_006_1",
             "stages": [{"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 18}],
         })
         session.schedule_on_owner_loop.assert_called_once()
@@ -1805,7 +1806,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reservations, ["enter", "exit"])
         self.assertEqual(
             session.editor.scene_rebuild_state.jobs["op-1"].future.result(timeout=1),
-            {"ok": True, "target_body": "Scene_apple_1", "attachment": None, "scene_revision": "rev-2"},
+            {"ok": True, "target_body": "Scene_benchmark_building_blocks_006_1", "attachment": None, "scene_revision": "rev-2"},
         )
 
     async def test_manipulation_runtime_passes_start_pose_and_scene_objects_to_planner(self):
@@ -2402,6 +2403,22 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.physics.apply_joint_command.assert_called_once_with({"topic": "joint", "positions": [0.2]})
         session.physics.step.assert_called_once_with()
         base_step.assert_called_once_with()
+
+    def test_step_once_updates_renderer_pose_when_supported(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        pose = {"body": [1.0] * 16}
+        session.physics = mock.Mock(
+            apply_joint_command=mock.Mock(),
+            step=mock.Mock(),
+            get_pose=mock.Mock(return_value=pose),
+        )
+        session.renderer = SimpleNamespace(update_pose=mock.Mock())
+        session.command_msgs = queue.Queue()
+
+        with mock.patch.object(Session, "step_once", return_value={"ok": True}):
+            MODULE.ZapdosSession.step_once(session)
+
+        session.renderer.update_pose.assert_called_once_with(pose)
 
     def test_zapdos_session_does_not_override_idle_step_once(self):
         self.assertNotIn("idle_step_once", MODULE.ZapdosSession.__dict__)

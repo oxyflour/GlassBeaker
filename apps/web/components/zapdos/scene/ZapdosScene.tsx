@@ -15,7 +15,7 @@ import { ZapdosTopOverlay } from "../overlay/ZapdosTopOverlay";
 import { buildBodyPosePayload, getSceneVisual, setSceneBodyPose } from "./zapdos-scene-api";
 import { applyObjectMatrix, getSceneMaterial, loadSceneMeshResources } from "./zapdos-scene-assets";
 import { applySceneHotkey, clearMissingSelection, getDraggedBodyMatrices, getTransformBodyName, isSelectionClick, pickSelectableBodyFromHits, shouldApplyBodyPose, shouldReloadSceneRevision, type ZapdosBodyState, type ZapdosTransformMode } from "./zapdos-scene-state";
-import { getZapdosRuntimeErrorMessage, getZapdosSceneRevision, isZapdosInactivePayload, ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE } from "./zapdos-runtime";
+import { getZapdosRuntimeErrorMessage, getZapdosSceneRevision, getZapdosSceneRevisionEventDetail, isZapdosInactivePayload, ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE, ZAPDOS_SCENE_REVISION_EVENT } from "./zapdos-runtime";
 import { useZapdosAgentTools } from "../agent/useZapdosAgentTools";
 import type { RobotModelKey } from "../session/robot-model";
 import { Perf } from "r3f-perf";
@@ -223,6 +223,18 @@ function SceneRuntime({
       const nextBodies = new Set(Object.keys(bodyObjectsRef.current));
       setSelectedBody(current => clearMissingSelection(current, nextBodies));
     };
+    const reloadSceneRevision = (nextRevision: string | null) => {
+      if (!shouldReloadSceneRevision(sceneRevisionRef.current, nextRevision)) return false;
+      sceneRevisionRef.current = nextRevision;
+      void loadVisuals().catch(fail);
+      return true;
+    };
+    const onSceneRevision = (event: Event) => {
+      const detail = getZapdosSceneRevisionEventDetail(event, sess);
+      if (detail) {
+        reloadSceneRevision(detail.scene_revision);
+      }
+    };
     sse.onmessage = event => {
       const payload = JSON.parse(event.data) as {
         inactive?: boolean;
@@ -231,9 +243,7 @@ function SceneRuntime({
       };
       if (isZapdosInactivePayload(payload)) return fail(ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE);
       const nextRevision = getZapdosSceneRevision(payload);
-      if (shouldReloadSceneRevision(sceneRevisionRef.current, nextRevision)) {
-        sceneRevisionRef.current = nextRevision;
-        void loadVisuals().catch(fail);
+      if (reloadSceneRevision(nextRevision)) {
         return;
       }
       if (!payload.pose) return;
@@ -252,10 +262,12 @@ function SceneRuntime({
       if (counter.frame > 100 || Date.now() - counter.start > 1000) setSse(counter.flush());
     };
     sse.onerror = () => fail(ZAPDOS_RUNTIME_DISCONNECTED_MESSAGE);
+    window.addEventListener(ZAPDOS_SCENE_REVISION_EVENT, onSceneRevision);
     void loadVisuals().catch(fail);
     return () => {
       disposed = true;
       sse.close();
+      window.removeEventListener(ZAPDOS_SCENE_REVISION_EVENT, onSceneRevision);
       clearInterval(ping);
       clearLoadedVisuals();
     };

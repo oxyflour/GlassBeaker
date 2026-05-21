@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import asyncio
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -81,6 +82,28 @@ class MitsubaRendererTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frame.shape, (3, 4, 3))
         self.assertEqual(frame.dtype, np.uint8)
 
+    def test_start_returns_before_scene_load_finishes(self):
+        gate = threading.Event()
+        fake = _FakeMitsuba()
+
+        def build_scene(*args, **kwargs):
+            del args, kwargs
+            gate.wait(timeout=1.0)
+            return {"type": "scene"}, []
+
+        with mock.patch("utils.zapdos.renderer.mitsuba_renderer.load_mitsuba", return_value=fake):
+            with mock.patch("utils.zapdos.renderer.mitsuba_renderer.build_mitsuba_scene_dict", side_effect=build_scene):
+                renderer = MitsubaRenderer("sess-1", _bundle(), 4, 3, 30, True, 0)
+                worker = threading.Thread(target=renderer.start)
+                worker.start()
+                worker.join(timeout=0.1)
+                try:
+                    self.assertFalse(worker.is_alive())
+                finally:
+                    gate.set()
+                    worker.join(timeout=1.0)
+                    renderer.close()
+
     async def test_reload_scene_rebuilds_camera_mapping_and_frame_indices(self):
         first = _bundle()
         second = _bundle()
@@ -127,6 +150,45 @@ class MitsubaRendererTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frame.dtype, np.uint8)
         self.assertLess(frame[0, 0, 0], 255)
         self.assertGreater(frame[0, 0, 0], frame[0, 0, 1])
+
+    def test_scene_for_pose_updates_body_local_mesh_transform(self):
+        renderer = MitsubaRenderer("sess-1", _bundle(), 1, 1, 30, True, 0)
+        scene = {
+            "type": "scene",
+            "mesh_0": {
+                "type": "ply",
+                "filename": "mesh.ply",
+                "_zapdos_body": "box",
+                "_zapdos_body_local_matrix": np.eye(4).tolist(),
+                "to_world_matrix": np.eye(4).tolist(),
+            },
+        }
+        pose = {"box": [1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 3.0, 0.0, 0.0, 1.0, 4.0, 0.0, 0.0, 0.0, 1.0]}
+
+        posed = renderer._scene_for_pose(scene, pose)
+
+        self.assertEqual(posed["mesh_0"]["to_world_matrix"][0][3], 2.0)
+        self.assertEqual(posed["mesh_0"]["to_world_matrix"][1][3], 3.0)
+        self.assertEqual(posed["mesh_0"]["to_world_matrix"][2][3], 4.0)
+
+    def test_scene_for_pose_updates_body_attached_camera(self):
+        renderer = MitsubaRenderer("sess-1", _bundle(), 1, 1, 30, True, 0)
+        scene = {
+            "type": "scene",
+            "sensor_main": {
+                "type": "perspective",
+                "_zapdos_body": "head",
+                "_zapdos_camera_local_origin": [0.0, 0.0, 1.0, 1.0],
+                "_zapdos_camera_local_target": [0.0, 0.0, 0.0, 1.0],
+                "_zapdos_camera_local_up": [0.0, 1.0, 0.0],
+            },
+        }
+        pose = {"head": [1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 3.0, 0.0, 0.0, 1.0, 4.0, 0.0, 0.0, 0.0, 1.0]}
+
+        posed = renderer._scene_for_pose(scene, pose)
+
+        self.assertEqual(posed["sensor_main"]["to_world_look_at"]["origin"], [2.0, 3.0, 5.0])
+        self.assertEqual(posed["sensor_main"]["to_world_look_at"]["target"], [2.0, 3.0, 4.0])
 
     async def test_wait_ready_reports_mitsuba_startup_failure_with_cuda_hint(self):
         with mock.patch("utils.zapdos.renderer.mitsuba_renderer.load_mitsuba", side_effect=RuntimeError("CUDA unavailable")):

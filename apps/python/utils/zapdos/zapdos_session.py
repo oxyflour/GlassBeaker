@@ -138,6 +138,9 @@ class ZapdosSession(Session):
     def step_once(self):
         self.physics.apply_joint_command(self._latest_joint_command())
         self.physics.step()
+        update_pose = getattr(getattr(self, "renderer", None), "update_pose", None)
+        if callable(update_pose):
+            update_pose(self.physics.get_pose())
         return super().step_once()
 
     def on_message(self, topic: str, msg):
