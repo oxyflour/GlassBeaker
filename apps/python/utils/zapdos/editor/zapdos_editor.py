@@ -4,9 +4,7 @@ from pathlib import Path
 
 import mujoco  # type: ignore
 import numpy as np
-from fastapi import HTTPException
 
-from utils.genie_sim import resolve_assets_root
 from utils.zapdos.bundle.camera_specs import camera_name_to_index
 from utils.zapdos.editor.commands import build_remove_asset_overlay, build_set_scene_assets_overlay
 from utils.zapdos.editor.rebuild_events import (
@@ -18,9 +16,12 @@ from utils.zapdos.editor.rebuild_events import (
 )
 from utils.zapdos.editor import rebuild_manager
 from utils.zapdos.editor.repository import load_overlay_state, save_overlay_state
-from utils.zapdos.editor.state import default_overlay_state, overlay_body_name, scene_revision
+from utils.zapdos.editor.state import default_overlay_state, scene_revision
+from utils.zapdos.editor.support_infos import (
+    capture_support_info_inputs,
+    resolve_support_infos,
+)
 from utils.zapdos.physics.mujoco_tools import body_world_pose, flatten_matrix
-from utils.zapdos.zapdos_asset_library import asset_local_bounds
 
 
 class ZapdosEditor:
@@ -57,6 +58,11 @@ class ZapdosEditor:
             jobs = list(self.scene_rebuild_state.jobs.values())
             self.scene_rebuild_state.jobs.clear()
             self.scene_rebuild_state.tasks.clear()
+            self.scene_rebuild_state.candidate_generations.clear()
+            self.scene_rebuild_state.latest_candidate_op_id = None
+            self.scene_rebuild_state.latest_candidate_overlay = None
+            self.scene_rebuild_state.applying_op_id = None
+            self.rebuilding_scene = False
         for task in tasks:
             task.cancel()
         for job in jobs:
@@ -93,8 +99,6 @@ class ZapdosEditor:
         return self._start_overlay_operation(next_overlay, {"ok": True, "instance_id": instance_id})
 
     def set_body_pose(self, body: str, pos: list[float], quat: list[float]) -> dict[str, object]:
-        if self.rebuilding_scene:
-            raise HTTPException(status_code=409, detail="Scene rebuild already in progress")
         result = self.session.physics.set_body_pose(body, pos, quat)
         quat_vec = np.array(quat, dtype=float)
         quat_norm = np.linalg.norm(quat_vec)
@@ -105,39 +109,29 @@ class ZapdosEditor:
         save_overlay_state(self.overlay_path, self.overlay_state)
         return result
 
+    def reset_pose(self) -> dict[str, object]:
+        pose_overrides = self.overlay_state["pose_overrides"]
+        result = self.session.physics.reset_pose()
+        reset_bodies = result.get("reset_bodies") if isinstance(result, dict) else []
+        if pose_overrides:
+            self.overlay_state["pose_overrides"] = {}
+            save_overlay_state(self.overlay_path, self.overlay_state)
+        return {
+            "ok": True,
+            "reset_bodies": reset_bodies if isinstance(reset_bodies, list) else [],
+            "scene_revision": self.scene_revision,
+        }
+
     def scene_rebuild_future(self, op_id: str):
         return scene_rebuild_future(self, op_id)
 
     def discard_scene_rebuild_job(self, op_id: str) -> None:
         discard_scene_rebuild_job(self, op_id)
     def _build_support_infos(self) -> dict[str, dict[str, float]]:
-        infos: dict[str, dict[str, float]] = {}
-        assets_root = resolve_assets_root(self.overlay_state.get("assets_root"))
-        instance_by_body = {
-            overlay_body_name(item["id"]): item
-            for item in self.overlay_state["instances"]
-        }
-        for body in self.session.physics.editable_body_names:
-            body_id = mujoco.mj_name2id(self.session.physics.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
-            instance = instance_by_body.get(body)
-            if instance is not None:
-                try:
-                    asset_local_bounds(assets_root / instance["url"])
-                except (FileNotFoundError, OSError, RuntimeError) as exc:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Existing overlay asset unavailable: {instance['id']}: {exc}",
-                    ) from exc
-            world_aabb = self.session.physics.body_world_aabb(body)
-            if world_aabb is not None:
-                top_z = float(world_aabb["max"][2])
-            else:
-                top_z = float(body_world_pose(self.session.physics.data, body_id)[2, 3])
-                if instance is not None:
-                    bounds = asset_local_bounds(assets_root / instance["url"])
-                    top_z += float(bounds["max"][2])
-            infos[body] = {"top_z": top_z}
-        return infos
+        return resolve_support_infos(self._capture_support_info_inputs())
+
+    def _capture_support_info_inputs(self):
+        return capture_support_info_inputs(self)
 
     def _start_overlay_operation(self, next_overlay, success_payload: dict[str, object]) -> dict[str, object]:
         return rebuild_manager.start_overlay_operation(self, next_overlay, success_payload)

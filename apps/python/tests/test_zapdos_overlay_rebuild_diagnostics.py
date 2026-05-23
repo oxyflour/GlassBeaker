@@ -150,6 +150,38 @@ class ZapdosOverlayRebuildDiagnosticsTest(unittest.TestCase):
         self.assertIn("prepare_overlay_rebuild.ensure_render_bundle", stages)
         self.assertIn("prepare_overlay_rebuild.inline.done", stages)
 
+    def test_prepare_overlay_rebuild_uses_per_operation_scene_path(self):
+        module = self.load_scene_ops()
+        session = SimpleNamespace(
+            scene_rebuild_state=self.build_rebuild_state(),
+        )
+        session.scene_rebuild_future = lambda op_id: rebuild_events.scene_rebuild_future(session, op_id)
+        session.discard_scene_rebuild_job = lambda op_id: rebuild_events.discard_scene_rebuild_job(session, op_id)
+        rebuild_events.create_scene_rebuild_job(session, "op-1", {"ok": True, "items": []})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session.robot_usd = root / "robot.usd"
+            session.base_scene_usd = root / "base_scene.usda"
+            session.composed_scene_usd = root / "scene-overlay.usda"
+            session.session_dir = root
+            with mock.patch.object(
+                module,
+                "_run_overlay_rebuild_inline",
+                return_value={"bundle": {"bundle_dir": "bundle", "cameras": []}, "next_revision": "rev-2"},
+            ) as run_inline:
+                module.prepare_overlay_rebuild(
+                    session,
+                    default_overlay_state("C:/assets"),
+                    {},
+                    default_overlay_state("C:/assets"),
+                    "rev-1",
+                    op_id="op-1",
+                )
+
+        request_payload = run_inline.call_args.args[0]
+        self.assertEqual(Path(request_payload["composed_scene_usd"]).name, "scene-overlay-op-1.usda")
+
     def test_prepare_overlay_rebuild_script_logs_progress_stages(self):
         script = self.load_script()
         request = {
@@ -193,14 +225,15 @@ class ZapdosOverlayRebuildDiagnosticsTest(unittest.TestCase):
         async def consume():
             stream = rebuild_events.stream_scene_rebuild_job(session, "op-1")
             started = await asyncio.wait_for(anext(stream), timeout=0.1)
-            with mock.patch.object(session, "_build_support_infos", return_value={}, create=True):
-                await module.run_overlay_rebuild(
-                    session,
-                    "op-1",
-                    default_overlay_state("C:/assets"),
-                    default_overlay_state("C:/assets"),
-                    "rev-1",
-                )
+            with mock.patch.object(session, "_capture_support_info_inputs", return_value=object(), create=True):
+                with mock.patch.object(module, "resolve_support_infos", return_value={}):
+                    await module.run_overlay_rebuild(
+                        session,
+                        "op-1",
+                        default_overlay_state("C:/assets"),
+                        default_overlay_state("C:/assets"),
+                        "rev-1",
+                    )
             progress = await asyncio.wait_for(anext(stream), timeout=0.2)
             failed = await asyncio.wait_for(anext(stream), timeout=0.2)
             self.assertEqual(started, 'event: started\ndata: {"op_id": "op-1"}\n\n')

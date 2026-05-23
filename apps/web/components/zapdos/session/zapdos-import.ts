@@ -1,6 +1,8 @@
+import { streamJsonSse } from "../../../utils/sse";
+
 export type ZapdosInitPhase = "loading" | "started" | "error";
 
-export function buildZapdosInitStreamUrl(
+export function buildZapdosInitTaskUrl(
   sess: string,
   sceneUsd: string | null,
   robotUsd: string | null
@@ -13,22 +15,32 @@ export function buildZapdosInitStreamUrl(
     query.set("robot_usd", robotUsd.trim());
   }
   const suffix = query.toString();
-  return suffix ? `/python/zapdos/${sess}/init/start?${suffix}` : `/python/zapdos/${sess}/init/start`;
+  return suffix ? `/python/zapdos/${sess}/tasks/init?${suffix}` : `/python/zapdos/${sess}/tasks/init`;
 }
 
 export function buildZapdosSessionStorageKey(sceneUsd: string | null, robotUsd: string | null) {
   return ["zapdos-session", sceneUsd?.trim() || "", robotUsd?.trim() || ""].join("|");
 }
 
-export function parseZapdosInitEvent(data: string): { phase: ZapdosInitPhase; message: string } {
-  if (data === "started") {
-    return { phase: "started", message: "started" };
+export async function runZapdosInitTask(
+  sess: string,
+  sceneUsd: string | null,
+  robotUsd: string | null,
+  onProgress: (message: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  for await (const event of streamJsonSse<Record<string, unknown>>(buildZapdosInitTaskUrl(sess, sceneUsd, robotUsd), {
+    signal,
+  })) {
+    if (event.event === "started") {
+      onProgress("starting");
+    } else if (event.event === "progress") {
+      onProgress(String(event.data.message || "loading"));
+    } else if (event.event === "failed") {
+      throw new Error(String(event.data.detail || "Session bootstrap failed"));
+    } else if (event.event === "done") {
+      return;
+    }
   }
-  if (data.startsWith("error:")) {
-    return {
-      phase: "error",
-      message: data.slice(6).trim() || "Session bootstrap failed",
-    };
-  }
-  return { phase: "loading", message: data || "loading" };
+  throw new Error("Session bootstrap stream ended unexpectedly");
 }

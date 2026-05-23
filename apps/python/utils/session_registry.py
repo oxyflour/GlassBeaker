@@ -42,12 +42,20 @@ class AsyncSessionRegistry[TSession]:
         session_id: str,
         create_session: Callable[[], Awaitable[TSession]],
     ) -> asyncio.Future[TSession]:
+        future, _ = self.get_or_create_with_status(session_id, create_session)
+        return future
+
+    def get_or_create_with_status(
+        self,
+        session_id: str,
+        create_session: Callable[[], Awaitable[TSession]],
+    ) -> tuple[asyncio.Future[TSession], bool]:
         future, _ = self.resolve(session_id)
         if future is not None:
-            return future
+            return future, False
         future = asyncio.create_task(create_session())
         self.sessions[session_id] = future
-        return future
+        return future, True
 
     async def await_ready(
         self,

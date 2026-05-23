@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from utils.genie_sim import resolve_assets_root
+from utils.zapdos.editor.rebuild_events import latest_scene_rebuild_candidate_overlay
 from utils.zapdos.editor.placement import normalize_placement
 from utils.zapdos.editor.state import default_overlay_state, overlay_body_name
 from utils.zapdos.zapdos_asset_library import resolve_asset_record
@@ -15,8 +16,6 @@ def build_set_scene_assets_overlay(
     session: Any,
     assets: list[dict[str, object]],
 ) -> tuple[dict[str, object], list[dict[str, str]]]:
-    if session.rebuilding_scene:
-        raise HTTPException(status_code=409, detail="Scene rebuild already in progress")
     if not isinstance(assets, list) or not assets:
         raise HTTPException(status_code=400, detail="assets must be a non-empty list")
     assets_root = resolve_assets_root(session.overlay_state.get("assets_root"))
@@ -56,12 +55,11 @@ def build_set_scene_assets_overlay(
 
 
 def build_remove_asset_overlay(session: Any, instance_id: str) -> tuple[dict[str, object], str]:
-    if session.rebuilding_scene:
-        raise HTTPException(status_code=409, detail="Scene rebuild already in progress")
-    if not any(item["id"] == instance_id for item in session.overlay_state["instances"]):
+    base_overlay = latest_scene_rebuild_candidate_overlay(session) or session.overlay_state
+    if not any(item["id"] == instance_id for item in base_overlay["instances"]):
         raise HTTPException(status_code=404, detail=f"Overlay instance not found: {instance_id}")
     body = overlay_body_name(instance_id)
-    next_overlay = deepcopy(session.overlay_state)
+    next_overlay = deepcopy(base_overlay)
     next_overlay["instances"] = [item for item in next_overlay["instances"] if item["id"] != instance_id]
     next_overlay["pose_overrides"].pop(body, None)
     return next_overlay, body

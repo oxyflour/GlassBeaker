@@ -5,6 +5,7 @@ import { useState } from "react";
 import { AddBenchmarkTableButton } from "./debug/AddBenchmarkTableButton";
 import { PickTheAppleButton } from "./debug/PickTheAppleButton";
 import { PlaceTheAppleButton } from "./debug/PlaceTheAppleButton";
+import { ResetPoseButton } from "./debug/ResetPoseButton";
 import { CameraOverrideSaveButton } from "./settings/CameraOverrideSaveButton";
 import { RobotModelSelect } from "./settings/RobotModelSelect";
 import { SpaceMouseModeSelect } from "./settings/SpaceMouseModeSelect";
@@ -84,6 +85,7 @@ export function ZapdosTopOverlay({
         </button>
         { debugOpen ? <div className="absolute right-0 mt-3 flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-3">
           <AddBenchmarkTableButton onSceneRevision={ onSceneRevision } sess={ sess } />
+          <ResetPoseButton onSceneRevision={ onSceneRevision } sess={ sess } />
           <PickTheAppleButton sess={ sess } />
           <PlaceTheAppleButton sess={ sess } />
         </div> : null }

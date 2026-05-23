@@ -53,49 +53,31 @@ test("listSceneBodies posts to the zapdos route", async () => {
   }
 });
 
-test("setSceneAssets posts to the batch route and waits for the operation stream", async () => {
+test("setSceneAssets posts to the task route and waits for the task stream", async () => {
   const { createSetSceneAssetsRequest, setSceneAssets } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
     calls.push({ input, init });
-    return new Response(JSON.stringify({
-      ok: true,
-      op_id: "op-1",
-      status: "started",
-      items: [{
-        asset_id: "table_000",
-        body: "Scene_table_000_01",
-        instance_id: "table_000_01",
-      }],
-    }), {
+    return new Response(streamFrom([
+      'event: started\ndata: {"task":"set_scene_assets"}\n\n',
+      'event: done\ndata: {"ok":true,"scene_revision":"rev-2","items":[{"asset_id":"table_000","body":"Scene_table_000_01","instance_id":"table_000_01"}]}\n\n',
+    ]), {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "text/event-stream" },
     });
   }) as typeof fetch;
-  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-1");
 
   try {
-    const pending = setSceneAssets("sess-1", {
+    const payload = await setSceneAssets("sess-1", {
       assets: [{
         asset_id: "table_000",
         motion: "static",
         placement: { kind: "floor_at_xy", xy: [0, 0], z_offset: 0, yaw: 0 },
       }],
-    }, () => stream);
-    await waitFor(() => stream.listenerCount("done") > 0);
-    stream.dispatch("done", {
-      ok: true,
-      scene_revision: "rev-2",
-      items: [{
-        asset_id: "table_000",
-        body: "Scene_table_000_01",
-        instance_id: "table_000_01",
-      }],
     });
-    const payload = await pending;
 
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/set_scene_assets");
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/set_scene_assets");
     assert.deepEqual(calls[0]?.init, createSetSceneAssetsRequest({
       assets: [{
         asset_id: "table_000",
@@ -103,8 +85,6 @@ test("setSceneAssets posts to the batch route and waits for the operation stream
         placement: { kind: "floor_at_xy", xy: [0, 0], z_offset: 0, yaw: 0 },
       }],
     }));
-    assert.equal(stream.url, "/python/zapdos/sess-1/op/op-1");
-    assert.equal(stream.closed, true);
     assert.equal(payload.scene_revision, "rev-2");
     assert.equal(payload.items[0]?.instance_id, "table_000_01");
   } finally {
@@ -112,74 +92,52 @@ test("setSceneAssets posts to the batch route and waits for the operation stream
   }
 });
 
-test("removeAssetFromScene posts then waits for the operation stream", async () => {
-  const { createSceneOpStreamUrl, createSceneToolRequest, removeAssetFromScene } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
+test("removeAssetFromScene posts then waits for the task stream", async () => {
+  const { createSceneToolRequest, removeAssetFromScene } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
     calls.push({ input, init });
-    return new Response(JSON.stringify({
-      ok: true,
-      op_id: "op-2",
-    }), {
+    return new Response(streamFrom([
+      'event: done\ndata: {"instance_id":"table_000_01","scene_revision":"rev-3"}\n\n',
+    ]), {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "text/event-stream" },
     });
   }) as typeof fetch;
-  const stream = new FakeEventSource(createSceneOpStreamUrl("sess-1", "op-2"));
 
   try {
-    const pending = removeAssetFromScene("sess-1", "table_000_01", () => stream);
-    await waitFor(() => stream.listenerCount("done") > 0);
-    stream.dispatch("done", {
-      instance_id: "table_000_01",
-      scene_revision: "rev-3",
-    });
-    const payload = await pending;
+    const payload = await removeAssetFromScene("sess-1", "table_000_01");
 
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/remove_asset_from_scene");
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/remove_asset_from_scene");
     assert.deepEqual(calls[0]?.init, createSceneToolRequest(["table_000_01"]));
-    assert.equal(stream.url, "/python/zapdos/sess-1/op/op-2");
-    assert.equal(stream.closed, true);
     assert.equal(payload.instance_id, "table_000_01");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("waitForSceneToolOp rejects failed operation events", async () => {
-  const { waitForSceneToolOp } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
-  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-3");
-
-  const pending = waitForSceneToolOp("sess-1", "op-3", () => stream);
-  await Promise.resolve();
-  stream.dispatch("failed", { detail: "Scene rebuild already in progress" });
-
-  await assert.rejects(pending, /Scene rebuild already in progress/);
-  assert.equal(stream.closed, true);
-});
-
-test("waitForSceneToolOp broadcasts completed scene revisions", async () => {
-  const { waitForSceneToolOp } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
+test("scene task broadcasts completed scene revisions", async () => {
+  const { setSceneAssets } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
   const { ZAPDOS_SCENE_REVISION_EVENT } = await import("../scene/zapdos-runtime");
-  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-4");
   const eventTarget = new EventTarget();
   const revisions: unknown[] = [];
   const hadWindow = "window" in globalThis;
   const previousWindow = hadWindow ? globalThis.window : undefined;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(streamFrom([
+    'event: done\ndata: {"ok":true,"scene_revision":"rev-4","items":[]}\n\n',
+  ]), { status: 200 })) as typeof fetch;
   Object.defineProperty(globalThis, "window", { configurable: true, value: eventTarget });
   eventTarget.addEventListener(ZAPDOS_SCENE_REVISION_EVENT, (event) => {
     revisions.push((event as CustomEvent).detail);
   });
 
   try {
-    const pending = waitForSceneToolOp("sess-1", "op-4", () => stream);
-    await Promise.resolve();
-    stream.dispatch("done", { ok: true, scene_revision: "rev-4" });
-
-    await pending;
+    await setSceneAssets("sess-1", { assets: [] as never });
     assert.deepEqual(revisions, [{ sess: "sess-1", scene_revision: "rev-4", force: true }]);
   } finally {
+    globalThis.fetch = originalFetch;
     if (hadWindow) {
       Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
     } else {
@@ -193,40 +151,14 @@ async function loadModule<TModule>(specifier: string): Promise<TModule> {
   return (loaded.default ?? loaded["module.exports"] ?? loaded) as TModule;
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) {
-      throw new Error("Timed out waiting for test condition");
-    }
-    await Promise.resolve();
-  }
-}
-
-class FakeEventSource {
-  closed = false;
-  onerror: ((event: Event) => void) | null = null;
-  private readonly listeners = new Map<string, Array<(event: MessageEvent) => void>>();
-
-  constructor(readonly url: string) {}
-
-  addEventListener(type: string, listener: (event: MessageEvent) => void) {
-    const current = this.listeners.get(type) ?? [];
-    current.push(listener);
-    this.listeners.set(type, current);
-  }
-
-  close() {
-    this.closed = true;
-  }
-
-  dispatch(type: string, payload: unknown) {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(new MessageEvent(type, { data: JSON.stringify(payload) }));
-    }
-  }
-
-  listenerCount(type: string) {
-    return this.listeners.get(type)?.length ?? 0;
-  }
+function streamFrom(chunks: string[]) {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    },
+  });
 }

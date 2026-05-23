@@ -6,17 +6,24 @@ from typing import Any, Callable
 
 from utils.zapdos.bundle import RenderBundle
 from utils.zapdos.editor.rebuild_events import (
+    begin_scene_rebuild_apply,
+    clear_scene_rebuild_candidate,
     create_scene_rebuild_job,
     discard_scene_rebuild_task,
     emit_scene_rebuild_progress,
     ensure_scene_rebuild_state,
     fail_scene_rebuild_job,
+    finish_scene_rebuild_apply,
+    is_latest_scene_rebuild_candidate,
     lookup_scene_rebuild_job,
     next_scene_rebuild_job_id,
+    register_scene_rebuild_candidate,
     register_scene_rebuild_task,
+    scene_rebuild_superseded_error,
 )
 from utils.zapdos.editor.rebuild_types import PreparedOverlayRebuild
 from utils.zapdos.editor.repository import save_overlay_state
+from utils.zapdos.editor.support_infos import resolve_support_infos
 
 
 def start_overlay_operation(
@@ -30,7 +37,7 @@ def start_overlay_operation(
     previous_revision = session.scene_revision
     op_id = next_scene_rebuild_job_id(session)
     create_scene_rebuild_job(session, op_id, deepcopy(success_payload))
-    session.rebuilding_scene = True
+    register_scene_rebuild_candidate(session, op_id, next_overlay)
     try:
         task = owner_session.schedule_on_owner_loop(session._run_overlay_rebuild(
             op_id,
@@ -41,7 +48,6 @@ def start_overlay_operation(
         register_scene_rebuild_task(session, op_id, task)
         task.add_done_callback(lambda _task, current_op_id=op_id: discard_scene_rebuild_task(session, current_op_id))
     except Exception:
-        session.rebuilding_scene = False
         session.discard_scene_rebuild_job(op_id)
         raise
     return {
@@ -63,7 +69,7 @@ def prepare_overlay_rebuild(
     request_payload = {
         "robot_usd": str(session.robot_usd),
         "base_scene_usd": str(session.base_scene_usd),
-        "composed_scene_usd": str(session.composed_scene_usd),
+        "composed_scene_usd": str(_candidate_scene_usd(session, op_id)),
         "next_overlay": next_overlay,
         "support_infos": support_infos,
     }
@@ -94,9 +100,10 @@ async def run_overlay_rebuild(
     ensure_scene_rebuild_state(session)
     owner_session = getattr(session, "session", session)
     try:
-        support_infos = await owner_session.run_sync(
-            lambda current: getattr(current, "editor", current)._build_support_infos(),
+        support_snapshot = await owner_session.run_sync(
+            lambda current: getattr(current, "editor", current)._capture_support_info_inputs(),
         )
+        support_infos = await asyncio.to_thread(resolve_support_infos, support_snapshot)
         emit_scene_rebuild_progress(session, op_id, "prepare_overlay_rebuild.started")
         prepared = await asyncio.to_thread(
             session._prepare_overlay_rebuild,
@@ -107,7 +114,13 @@ async def run_overlay_rebuild(
             op_id=op_id,
         )
         emit_scene_rebuild_progress(session, op_id, "prepare_overlay_rebuild.done")
+        if not is_latest_scene_rebuild_candidate(session, op_id):
+            fail_scene_rebuild_job(session, op_id, scene_rebuild_superseded_error(session, op_id))
+            return
         async with owner_session.reserve_world() as world_token:
+            if not begin_scene_rebuild_apply(session, op_id):
+                fail_scene_rebuild_job(session, op_id, scene_rebuild_superseded_error(session, op_id))
+                return
             emit_scene_rebuild_progress(session, op_id, "apply_overlay_rebuild.started")
             revision = await owner_session.run_sync(
                 lambda current: getattr(current, "editor", current)._apply_prepared_overlay_rebuild(prepared, op_id),
@@ -149,7 +162,9 @@ def apply_prepared_overlay_rebuild(
         save_overlay_state(session.overlay_path, prepared.previous_overlay)
         raise
     finally:
-        session.rebuilding_scene = False
+        if op_id is not None:
+            clear_scene_rebuild_candidate(session, op_id)
+        finish_scene_rebuild_apply(session, op_id)
 
 
 def _run_overlay_rebuild_inline(
@@ -159,3 +174,10 @@ def _run_overlay_rebuild_inline(
     from utils.zapdos.editor.rebuild_runner import prepare_overlay_rebuild_request
 
     return prepare_overlay_rebuild_request(request_payload, stage_logger)
+
+
+def _candidate_scene_usd(session: Any, op_id: str | None):
+    path = session.composed_scene_usd
+    if op_id is None:
+        return path
+    return path.with_name(f"{path.stem}-{op_id}{path.suffix}")

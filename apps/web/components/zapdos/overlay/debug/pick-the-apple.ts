@@ -2,9 +2,8 @@ import {
   createManipulationToolRequest,
 } from "../../agent/zapdos-manipulation-tool-api";
 import {
-  type SceneOperationStreamFactory,
-  type SceneToolOperationStart,
-  waitForSceneToolOp,
+  runSceneTask,
+  type SceneTaskOptions,
 } from "../../agent/zapdos-tool-api";
 
 export function createPickTheAppleRequest(): RequestInit {
@@ -13,21 +12,13 @@ export function createPickTheAppleRequest(): RequestInit {
 
 export async function pickTheApple(
   sess: string,
-  createEventSource: SceneOperationStreamFactory = (url) => new EventSource(url),
+  options: SceneTaskOptions = {},
 ) {
-  const response = await fetch(
-    `/python/zapdos/${sess}/call/pick_apple`,
-    createPickTheAppleRequest(),
-  );
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-  const started = await response.json() as SceneToolOperationStart;
-  return await waitForSceneToolOp<{
+  return await runSceneTask<{
     arm?: string;
     ok?: boolean;
     scene_revision: string;
     status?: string;
     target_body?: string;
-  }>(sess, started.op_id, createEventSource);
+  }>(sess, "pick_apple", createPickTheAppleRequest(), options);
 }

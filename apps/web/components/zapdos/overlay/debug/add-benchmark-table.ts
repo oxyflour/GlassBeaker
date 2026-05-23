@@ -1,7 +1,7 @@
 import {
   createSetSceneAssetsRequest,
   setSceneAssets,
-  type SceneOperationStreamFactory,
+  type SceneTaskOptions,
   type SetSceneAssetsInput,
 } from "../../agent/zapdos-tool-api";
 
@@ -34,12 +34,12 @@ export function createAddBenchmarkTableRequest(): RequestInit {
 
 export async function addBenchmarkTable(
   sess: string,
-  createEventSource?: SceneOperationStreamFactory,
+  options?: SceneTaskOptions,
   onSceneRevision?: (revision: string) => void,
 ) {
   const payload = await setSceneAssets(sess, {
     assets: BENCHMARK_TABLE_ASSETS,
-  }, createEventSource);
+  }, options);
   const item = payload.items.find((candidate) => candidate.asset_id === "benchmark_table_000");
   if (!item) {
     throw new Error("Benchmark table was not created");

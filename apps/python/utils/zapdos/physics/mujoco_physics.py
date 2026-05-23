@@ -79,6 +79,11 @@ class MujocoPhysics:
                 qpos_adr = int(self.model.jnt_qposadr[joint_id])
                 self.data.ctrl[actuator_id] = float(self.data.qpos[qpos_adr])
         mujoco.mj_forward(self.model, self.data)  # type: ignore
+        self._initial_body_pos = np.array(self.model.body_pos, copy=True)
+        self._initial_body_quat = np.array(self.model.body_quat, copy=True)
+        self._initial_qpos = np.array(self.data.qpos, copy=True)
+        self._initial_qvel = np.array(self.data.qvel, copy=True)
+        self._initial_ctrl = np.array(self.data.ctrl, copy=True)
 
     def _apply_idle_pose(self, robot_usd: Path) -> None:
         robot_key = get_robot_model_key_from_usd(robot_usd)
@@ -330,6 +335,16 @@ class MujocoPhysics:
         self.model.body_quat[body_id] = normalized_quat
         mujoco.mj_forward(self.model, self.data)  # type: ignore
         return {"ok": True}
+
+    def reset_pose(self) -> dict[str, object]:
+        self.attachments.clear()
+        self.model.body_pos[:] = self._initial_body_pos
+        self.model.body_quat[:] = self._initial_body_quat
+        self.data.qpos[:] = self._initial_qpos
+        self.data.qvel[:] = self._initial_qvel
+        self.data.ctrl[:] = self._initial_ctrl
+        mujoco.mj_forward(self.model, self.data)  # type: ignore
+        return {"ok": True, "reset_bodies": sorted(self.movable_body_names)}
 
     def joint_state_msg(self) -> dict[str, list[float] | list[str]]:
         names: list[str] = []

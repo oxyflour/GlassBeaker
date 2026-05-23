@@ -10,10 +10,12 @@ from fastapi import HTTPException
 from utils.zapdos.editor.rebuild_events import (
     create_scene_rebuild_job,
     discard_scene_rebuild_job,
+    discard_scene_rebuild_task,
     ensure_scene_rebuild_state,
     fail_scene_rebuild_job,
     lookup_scene_rebuild_job,
     next_scene_rebuild_job_id,
+    register_scene_rebuild_task,
 )
 from utils.zapdos.manipulation.catalog import build_scene_object_catalog
 from utils.zapdos.manipulation.executor import PickExecutor
@@ -157,8 +159,6 @@ class ManipulationRuntime:
         self.executor.bundle = self.session.bundle
 
     def _start_operation(self, iterator: Iterator[None]) -> dict[str, object]:
-        if getattr(self.session.editor, "rebuilding_scene", False):
-            raise HTTPException(status_code=409, detail="Scene rebuild already in progress")
         for current_op_id, task in list(self.operation_tasks.items()):
             if task.done():
                 self.operation_tasks.pop(current_op_id, None)
@@ -172,8 +172,12 @@ class ManipulationRuntime:
         except Exception:
             discard_scene_rebuild_job(self.session.editor, op_id)
             raise
+        register_scene_rebuild_task(self.session.editor, op_id, task)
         self.operation_tasks[op_id] = task
-        task.add_done_callback(lambda _task, current_op_id=op_id: self.operation_tasks.pop(current_op_id, None))
+        task.add_done_callback(lambda _task, current_op_id=op_id: (
+            self.operation_tasks.pop(current_op_id, None),
+            discard_scene_rebuild_task(self.session.editor, current_op_id),
+        ))
         return {"ok": True, "op_id": op_id}
 
     async def _run_operation(self, op_id: str, iterator: Iterator[None]) -> None:

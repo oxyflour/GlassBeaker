@@ -1,0 +1,20 @@
+[project]
+name = "kokoro"
+version = "0.1.0"
+description = "Height-field neural BRDF experiments for GlassBeaker."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "torch==2.9.1",
+  "numpy>=1.24.0",
+  "mitsuba>=3.8.0,<4.0",
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu126" }
+]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cu126"

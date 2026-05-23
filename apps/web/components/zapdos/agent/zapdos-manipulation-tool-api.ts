@@ -1,8 +1,7 @@
 import type { PickObjectToolArgs } from "./zapdos-manipulation-tool-schemas";
 import {
-  type SceneOperationStreamFactory,
-  type SceneToolOperationStart,
-  waitForSceneToolOp,
+  runSceneTask,
+  type SceneTaskOptions,
 } from "./zapdos-tool-api";
 
 export type ListSceneObjectsResult = {
@@ -44,15 +43,7 @@ export async function listSceneObjects(sess: string) {
 export async function pickObject(
   sess: string,
   input: PickObjectToolArgs,
-  createEventSource: SceneOperationStreamFactory = (url) => new EventSource(url),
+  options: SceneTaskOptions = {},
 ) {
-  const response = await fetch(
-    `/python/zapdos/${sess}/call/pick_object`,
-    createPickObjectRequest(input)
-  );
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-  const started = await response.json() as SceneToolOperationStart;
-  return await waitForSceneToolOp<PickObjectResult>(sess, started.op_id, createEventSource);
+  return await runSceneTask<PickObjectResult>(sess, "pick_object", createPickObjectRequest(input), options);
 }

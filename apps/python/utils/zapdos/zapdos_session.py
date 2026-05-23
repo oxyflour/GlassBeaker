@@ -92,6 +92,8 @@ class ZapdosSession(Session):
             return self.editor.remove_asset_from_scene(*args)
         if method == "set_body_pose":
             return self.editor.set_body_pose(*args)
+        if method == "reset_pose":
+            return self.editor.reset_pose()
         if method == "pick_object":
             return self.runtime.pick_object(*args)
         if method == "save_camera_override":

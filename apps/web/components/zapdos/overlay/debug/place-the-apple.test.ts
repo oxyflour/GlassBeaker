@@ -19,30 +19,18 @@ test("placeTheApple posts to the zapdos place_apple route", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
     calls.push({ input, init });
-    return new Response(JSON.stringify({
-      ok: true,
-      op_id: "op-2",
-    }), {
+    return new Response(streamFrom([
+      'event: done\ndata: {"ok":true,"arm":"left","target_body":"Scene_benchmark_building_blocks_006_01","scene_revision":"rev-4"}\n\n',
+    ]), {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "text/event-stream" },
     });
   }) as typeof fetch;
-  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-2");
 
   try {
-    const pending = placeTheApple("sess-1", () => stream);
-    await waitFor(() => stream.listenerCount("done") > 0);
-    stream.dispatch("done", {
-      ok: true,
-      arm: "left",
-      target_body: "Scene_benchmark_building_blocks_006_01",
-      scene_revision: "rev-4",
-    });
-    const payload = await pending;
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/place_apple");
+    const payload = await placeTheApple("sess-1");
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/place_apple");
     assert.deepEqual(calls[0]?.init, createPlaceTheAppleRequest());
-    assert.equal(stream.url, "/python/zapdos/sess-1/op/op-2");
-    assert.equal(stream.closed, true);
     assert.equal(payload.target_body, "Scene_benchmark_building_blocks_006_01");
     assert.equal(payload.scene_revision, "rev-4");
   } finally {
@@ -55,40 +43,12 @@ async function loadModule<TModule>(specifier: string): Promise<TModule> {
   return (loaded.default ?? loaded["module.exports"] ?? loaded) as TModule;
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) {
-      throw new Error("Timed out waiting for test condition");
-    }
-    await Promise.resolve();
-  }
-}
-
-class FakeEventSource {
-  closed = false;
-  onerror: ((event: Event) => void) | null = null;
-  private readonly listeners = new Map<string, Array<(event: MessageEvent) => void>>();
-
-  constructor(readonly url: string) {}
-
-  addEventListener(type: string, listener: (event: MessageEvent) => void) {
-    const current = this.listeners.get(type) ?? [];
-    current.push(listener);
-    this.listeners.set(type, current);
-  }
-
-  close() {
-    this.closed = true;
-  }
-
-  dispatch(type: string, payload: unknown) {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(new MessageEvent(type, { data: JSON.stringify(payload) }));
-    }
-  }
-
-  listenerCount(type: string) {
-    return this.listeners.get(type)?.length ?? 0;
-  }
+function streamFrom(chunks: string[]) {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
 }

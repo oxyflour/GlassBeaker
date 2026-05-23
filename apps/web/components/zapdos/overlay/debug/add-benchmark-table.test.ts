@@ -40,48 +40,19 @@ test("addBenchmarkTable posts to the zapdos set_scene_assets route", async () =>
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
     calls.push({ input, init });
-    return new Response(JSON.stringify({
-      ok: true,
-      op_id: "op-1",
-      status: "started",
-      items: [{
-        body: "Scene_benchmark_table_000_01",
-        instance_id: "benchmark_table_000_01",
-        asset_id: "benchmark_table_000",
-      }, {
-        body: "Scene_benchmark_building_blocks_006_01",
-        instance_id: "benchmark_building_blocks_006_01",
-        asset_id: "benchmark_building_blocks_006",
-      }],
-    }), {
+    return new Response(streamFrom([
+      'event: done\ndata: {"ok":true,"scene_revision":"rev-2","items":[{"body":"Scene_benchmark_table_000_01","instance_id":"benchmark_table_000_01","asset_id":"benchmark_table_000"},{"body":"Scene_benchmark_building_blocks_006_01","instance_id":"benchmark_building_blocks_006_01","asset_id":"benchmark_building_blocks_006"}]}\n\n',
+    ]), {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "text/event-stream" },
     });
   }) as typeof fetch;
-  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-1");
 
   try {
-    const pending = addBenchmarkTable("sess-1", () => stream);
-    await waitFor(() => stream.listenerCount("done") > 0);
-    stream.dispatch("done", {
-      ok: true,
-      scene_revision: "rev-2",
-      items: [{
-        body: "Scene_benchmark_table_000_01",
-        instance_id: "benchmark_table_000_01",
-        asset_id: "benchmark_table_000",
-      }, {
-        body: "Scene_benchmark_building_blocks_006_01",
-        instance_id: "benchmark_building_blocks_006_01",
-        asset_id: "benchmark_building_blocks_006",
-      }],
-    });
-    const payload = await pending;
+    const payload = await addBenchmarkTable("sess-1");
 
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/set_scene_assets");
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/set_scene_assets");
     assert.deepEqual(calls[0]?.init, createAddBenchmarkTableRequest());
-    assert.equal(stream.url, "/python/zapdos/sess-1/op/op-1");
-    assert.equal(stream.closed, true);
     assert.equal(payload.instance_id, "benchmark_table_000_01");
     assert.equal(payload.scene_revision, "rev-2");
   } finally {
@@ -92,35 +63,16 @@ test("addBenchmarkTable posts to the zapdos set_scene_assets route", async () =>
 test("addBenchmarkTable reports the completed scene revision to the caller", async () => {
   const { addBenchmarkTable } = await loadModule<AddBenchmarkTableModule>("./add-benchmark-table.ts");
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(JSON.stringify({
-    ok: true,
-    op_id: "op-1",
-    status: "started",
-    items: [{
-      body: "Scene_benchmark_table_000_01",
-      instance_id: "benchmark_table_000_01",
-      asset_id: "benchmark_table_000",
-    }],
-  }), {
+  globalThis.fetch = (async () => new Response(streamFrom([
+    'event: done\ndata: {"ok":true,"scene_revision":"rev-2","items":[{"body":"Scene_benchmark_table_000_01","instance_id":"benchmark_table_000_01","asset_id":"benchmark_table_000"}]}\n\n',
+  ]), {
     status: 200,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "text/event-stream" },
   })) as typeof fetch;
-  const stream = new FakeEventSource("/python/zapdos/sess-1/op/op-1");
   const revisions: string[] = [];
 
   try {
-    const pending = addBenchmarkTable("sess-1", () => stream, revision => revisions.push(revision));
-    await waitFor(() => stream.listenerCount("done") > 0);
-    stream.dispatch("done", {
-      ok: true,
-      scene_revision: "rev-2",
-      items: [{
-        body: "Scene_benchmark_table_000_01",
-        instance_id: "benchmark_table_000_01",
-        asset_id: "benchmark_table_000",
-      }],
-    });
-    await pending;
+    await addBenchmarkTable("sess-1", undefined, revision => revisions.push(revision));
 
     assert.deepEqual(revisions, ["rev-2"]);
   } finally {
@@ -133,40 +85,12 @@ async function loadModule<TModule>(specifier: string): Promise<TModule> {
   return (loaded.default ?? loaded["module.exports"] ?? loaded) as TModule;
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) {
-      throw new Error("Timed out waiting for test condition");
-    }
-    await Promise.resolve();
-  }
-}
-
-class FakeEventSource {
-  closed = false;
-  onerror: ((event: Event) => void) | null = null;
-  private readonly listeners = new Map<string, Array<(event: MessageEvent) => void>>();
-
-  constructor(readonly url: string) {}
-
-  addEventListener(type: string, listener: (event: MessageEvent) => void) {
-    const current = this.listeners.get(type) ?? [];
-    current.push(listener);
-    this.listeners.set(type, current);
-  }
-
-  close() {
-    this.closed = true;
-  }
-
-  dispatch(type: string, payload: unknown) {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(new MessageEvent(type, { data: JSON.stringify(payload) }));
-    }
-  }
-
-  listenerCount(type: string) {
-    return this.listeners.get(type)?.length ?? 0;
-  }
+function streamFrom(chunks: string[]) {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
 }

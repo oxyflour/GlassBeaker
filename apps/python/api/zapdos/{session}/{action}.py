@@ -5,6 +5,7 @@ from fastapi import HTTPException, Request
 
 from utils.ros_bridge import bridge
 from utils.session_registry import AsyncSessionRegistry
+from utils.sse import sse_json_event
 from utils.zapdos.bundle import DEFAULT_SCENE_USD
 from utils.zapdos import request_router
 from utils.zapdos.zapdos_session import DEFAULT_ROBOT_USD, ZapdosSession
@@ -30,6 +31,18 @@ def _get_or_create_session_future(req: Request, sess: str) -> asyncio.Future[Zap
     )
 
 
+def _get_or_create_session_future_with_status(
+    req: Request,
+    sess: str,
+) -> tuple[asyncio.Future[ZapdosSession], bool]:
+    robot_usd = _input_path(req, "robot_usd", DEFAULT_ROBOT_USD)
+    scene_usd = _input_path(req, "scene_usd", DEFAULT_SCENE_USD)
+    return session_registry.get_or_create_with_status(
+        sess,
+        lambda: ZapdosSession.create(sess, robot_usd, scene_usd),
+    )
+
+
 def _require_session_future(sess: str) -> asyncio.Future[ZapdosSession]:
     future, reason = session_registry.resolve(sess)
     if future is not None:
@@ -47,13 +60,13 @@ def _bootstrap_error_message(exc: Exception) -> str:
 
 
 async def _init_stream(sess: str, future: asyncio.Future[ZapdosSession]):
-    async for chunk in request_router.init_stream(
+    async for event, payload in request_router.init_stream(
         sess,
         future,
         _await_session_future,
         INIT_STREAM_HEARTBEAT_SEC,
     ):
-        yield chunk
+        yield sse_json_event(event, payload)
 
 
 def _require_camera_name(camera_index: dict[str, int], camera_name: str) -> str:
@@ -76,10 +89,10 @@ def _stream_scene_rebuild_job(session: ZapdosSession, op_id: str):
 _name_ = request_router.build_name_handler(
     bridge=bridge,
     heartbeat_sec_getter=lambda: INIT_STREAM_HEARTBEAT_SEC,
-    get_or_create_session_future=_get_or_create_session_future,
+    get_or_create_session_future_with_status=_get_or_create_session_future_with_status,
     require_session_future=_require_session_future,
     await_session_future=_await_session_future,
+    discard_session_future=session_registry.discard,
     require_active_session=_require_active_session,
     require_camera_name=_require_camera_name,
-    stream_scene_rebuild_job=_stream_scene_rebuild_job,
 )

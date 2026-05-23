@@ -1,26 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-type PickTheAppleModule = typeof import("./pick-the-apple");
+type ResetPoseModule = typeof import("./reset-pose");
 
-test("createPickTheAppleRequest posts the canned cube pick payload", async () => {
-  const { createPickTheAppleRequest } = await loadModule<PickTheAppleModule>("./pick-the-apple.ts");
+test("createResetPoseRequest posts no arguments", async () => {
+  const { createResetPoseRequest } = await loadModule<ResetPoseModule>("./reset-pose.ts");
 
-  assert.deepEqual(createPickTheAppleRequest(), {
+  assert.deepEqual(createResetPoseRequest(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify([]),
   });
 });
 
-test("pickTheApple posts to the zapdos pick_apple route", async () => {
-  const { createPickTheAppleRequest, pickTheApple } = await loadModule<PickTheAppleModule>("./pick-the-apple.ts");
+test("resetPose posts to the zapdos reset_pose task", async () => {
+  const { createResetPoseRequest, resetPose } = await loadModule<ResetPoseModule>("./reset-pose.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
     calls.push({ input, init });
     return new Response(streamFrom([
-      'event: done\ndata: {"ok":true,"arm":"left","target_body":"Scene_benchmark_building_blocks_006_01","scene_revision":"rev-3"}\n\n',
+      'event: done\ndata: {"ok":true,"reset_bodies":["Scene_Crate"],"scene_revision":"rev-3"}\n\n',
     ]), {
       status: 200,
       headers: { "Content-Type": "text/event-stream" },
@@ -28,10 +28,10 @@ test("pickTheApple posts to the zapdos pick_apple route", async () => {
   }) as typeof fetch;
 
   try {
-    const payload = await pickTheApple("sess-1");
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/pick_apple");
-    assert.deepEqual(calls[0]?.init, createPickTheAppleRequest());
-    assert.equal(payload.target_body, "Scene_benchmark_building_blocks_006_01");
+    const payload = await resetPose("sess-1");
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/reset_pose");
+    assert.deepEqual(calls[0]?.init, createResetPoseRequest());
+    assert.deepEqual(payload.reset_bodies, ["Scene_Crate"]);
     assert.equal(payload.scene_revision, "rev-3");
   } finally {
     globalThis.fetch = originalFetch;

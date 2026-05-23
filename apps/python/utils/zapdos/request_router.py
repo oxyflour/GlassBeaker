@@ -7,12 +7,21 @@ from typing import Awaitable, Callable
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
+from utils.sse import sse_response
+from utils.zapdos.task_streams import (
+    FINITE_TASK_NAMES,
+    bootstrap_error_message,
+    init_stream,
+    init_stream_response_events,
+    scene_task_events,
+)
+
 
 type SessionFutureResolver = Callable[[str], asyncio.Future]
 type SessionFutureAwaiter = Callable[[str, asyncio.Future], Awaitable[object]]
-type SessionFutureFactory = Callable[[Request, str], asyncio.Future]
+type SessionFutureStatusFactory = Callable[[Request, str], tuple[asyncio.Future, bool]]
 type SessionValidator = Callable[[str, asyncio.Future, object], object]
-type StreamFactory = Callable[[object, str], object]
+
 
 
 def resolve_input_path(req: Request, key: str, default: Path, repo_root: Path) -> Path:
@@ -22,31 +31,6 @@ def resolve_input_path(req: Request, key: str, default: Path, repo_root: Path) -
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"{key} not found: {path}")
     return path
-
-
-def bootstrap_error_message(exc: Exception) -> str:
-    message = str(exc).strip()
-    return message or "Session bootstrap failed"
-
-
-async def init_stream(
-    sess: str,
-    future: asyncio.Future,
-    await_session_future: SessionFutureAwaiter,
-    heartbeat_sec: float,
-):
-    yield "data: loading\n\n"
-    while not future.done():
-        done, _ = await asyncio.wait({future}, timeout=heartbeat_sec)
-        if done:
-            break
-        yield "data: loading: preparing render bundle\n\n"
-    try:
-        await await_session_future(sess, future)
-    except Exception as exc:
-        yield f"data: error: {bootstrap_error_message(exc)}\n\n"
-        return
-    yield "data: started\n\n"
 
 
 def require_camera_name(camera_index: dict[str, int], camera_name: str) -> str:
@@ -62,6 +46,9 @@ def require_active_session(
     discard_future: Callable[[str, asyncio.Future], None],
 ):
     if session.is_active():
+        touch = getattr(session, "touch", None)
+        if callable(touch):
+            touch()
         return session
     discard_future(sess, future)
     raise HTTPException(status_code=409, detail="Session expired")
@@ -71,12 +58,12 @@ def build_name_handler(
     *,
     bridge,
     heartbeat_sec_getter: Callable[[], float],
-    get_or_create_session_future: SessionFutureFactory,
+    get_or_create_session_future_with_status: SessionFutureStatusFactory,
     require_session_future: SessionFutureResolver,
     await_session_future: SessionFutureAwaiter,
+    discard_session_future: Callable[[str, asyncio.Future], None],
     require_active_session: SessionValidator,
     require_camera_name: Callable[[dict[str, int], str], str],
-    stream_scene_rebuild_job: StreamFactory,
 ):
     def _camera_index_for(session) -> dict[str, int]:
         camera_index = getattr(session.renderer, "camera_index", None)
@@ -91,22 +78,20 @@ def build_name_handler(
         sess = req.path_params["session"]
         action = req.path_params["action"]
         name = req.path_params["name"]
-        if action == "init":
-            future = get_or_create_session_future(req, sess)
-            return StreamingResponse(
-                init_stream(
-                    sess,
-                    future,
-                    await_session_future,
-                    heartbeat_sec_getter(),
-                ),
-                media_type="text/event-stream; charset=utf-8",
-                headers={
-                    "Cache-Control": "no-cache, no-transform",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
+        if action in {"init", "op"}:
+            raise HTTPException(status_code=410, detail="Use /tasks for finite Zapdos streams")
+        if action == "call" and name in FINITE_TASK_NAMES:
+            raise HTTPException(status_code=410, detail="Use /tasks for finite Zapdos streams")
+        if action == "tasks" and name == "init":
+            future, created = get_or_create_session_future_with_status(req, sess)
+            return sse_response(init_stream_response_events(
+                sess,
+                future,
+                await_session_future,
+                heartbeat_sec_getter(),
+                created=created,
+                discard_session_future=discard_session_future,
+            ))
         future = require_session_future(sess)
         session = require_active_session(
             sess,
@@ -123,16 +108,13 @@ def build_name_handler(
                     "X-Accel-Buffering": "no",
                 },
             )
-        if action == "op":
-            return StreamingResponse(
-                stream_scene_rebuild_job(session, name),
-                media_type="text/event-stream; charset=utf-8",
-                headers={
-                    "Cache-Control": "no-cache, no-transform",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
+        if action == "tasks":
+            if name not in FINITE_TASK_NAMES:
+                raise HTTPException(status_code=404, detail="Task not found")
+            args = await req.json()
+            if not isinstance(args, list):
+                raise HTTPException(status_code=400, detail="Task arguments must be a JSON array")
+            return sse_response(scene_task_events(session, name, args))
         if action == "ros" and name == "subscribe":
             topic, type_name = await req.json()
             await bridge.subscribe(topic, type_name, session.on_message)

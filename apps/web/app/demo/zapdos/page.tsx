@@ -6,12 +6,11 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ZapdosScene,
   buildRobotModelHref,
-  buildZapdosInitStreamUrl,
   buildZapdosSessionStorageKey,
   getRobotModelKeyFromUsd,
-  parseZapdosInitEvent,
   readPersistedRobotModelKey,
   resolveEffectiveRobotUsd,
+  runZapdosInitTask,
   type RobotModelKey,
   type ZapdosInitPhase,
   writePersistedRobotModelKey,
@@ -47,18 +46,24 @@ function ZapdosInitContent() {
   }
 
   useEffect(() => {
+    const controller = new AbortController();
     setState({ phase: "loading", message: "loading" });
-    const sse = new EventSource(buildZapdosInitStreamUrl(sess, sceneUsd, effectiveRobotUsd));
-    sse.onmessage = event => {
-      const next = parseZapdosInitEvent(event.data);
-      setState(next);
-      if (next.phase !== "loading") sse.close();
-    };
-    sse.onerror = () => {
-      setState({ phase: "error", message: "Session bootstrap failed" });
-      sse.close();
-    };
-    return () => sse.close();
+    void runZapdosInitTask(
+      sess,
+      sceneUsd,
+      effectiveRobotUsd,
+      message => setState({ phase: "loading", message }),
+      controller.signal,
+    )
+      .then(() => setState({ phase: "started", message: "started" }))
+      .catch(error => {
+        if (controller.signal.aborted) return;
+        setState({
+          phase: "error",
+          message: error instanceof Error ? error.message : "Session bootstrap failed",
+        });
+      });
+    return () => controller.abort();
   }, [effectiveRobotUsd, sceneUsd, sess]);
   return state.phase === "started"
     ? <ZapdosScene

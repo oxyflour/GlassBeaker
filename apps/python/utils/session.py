@@ -49,6 +49,7 @@ class Session:
 
         self.timers: list[Timer] = []
         self._world_owner: object | None = None
+        self._running_calls = 0
 
         self.proc = threading.Thread(target=self.run, daemon=True)
         self.proc.start()
@@ -79,12 +80,16 @@ class Session:
     def proc_once(self):
         call = self._next_call()
         loop = call.future.get_loop()
+        self._running_calls += 1
         self.active = time.time()
         try:
             ret = call.fn(self)
             loop.call_soon_threadsafe(self._set_future_result, call.future, ret)
         except Exception as err:
             loop.call_soon_threadsafe(self._set_future_exception, call.future, err)
+        finally:
+            self.active = time.time()
+            self._running_calls -= 1
 
     def proc_calls(self):
         while True:
@@ -142,7 +147,12 @@ class Session:
             return asyncio.get_event_loop()
 
     def is_active(self):
+        if self._running_calls > 0 or self.world_owned():
+            return True
         return self.timeout <= 0 or time.time() - self.active < self.timeout
+
+    def touch(self):
+        self.active = time.time()
 
     def run(self):
         while self.is_active():

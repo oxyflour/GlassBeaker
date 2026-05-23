@@ -57,6 +57,34 @@ class SessionThreadingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session_thread, proc_thread)
         self.assertNotEqual(session_thread, caller_thread)
 
+    async def test_long_running_call_keeps_session_active(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class DummySession(Session):
+            def call_once(self, method: str, args: tuple):
+                del method, args
+                started.set()
+                release.wait(timeout=1)
+                return "done"
+
+            def step_once(self):
+                time.sleep(0.001)
+
+        session = DummySession(0.02)
+        self.addCleanup(self._shutdown_session, session)
+
+        pending = asyncio.create_task(session.call("block"))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 0.5))
+            await asyncio.sleep(0.05)
+
+            self.assertTrue(session.is_active())
+        finally:
+            release.set()
+
+        self.assertEqual(await asyncio.wait_for(pending, timeout=0.5), "done")
+
     async def test_reserve_world_sets_world_ownership_state(self):
         class DummySession(Session):
             def step_once(self):

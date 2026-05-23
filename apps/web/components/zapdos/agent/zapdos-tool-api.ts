@@ -1,30 +1,20 @@
 import type { SetSceneAssetsToolArgs } from "./zapdos-agent-tool-schemas";
 import { publishZapdosSceneRevision } from "../scene/zapdos-runtime";
+import { streamJsonSse } from "../../../utils/sse";
 
 export type SetSceneAssetsInput = SetSceneAssetsToolArgs;
-export type SceneToolOperationStart = { ok: true; op_id: string };
-export type SetSceneAssetsStart = SceneToolOperationStart & {
-  items: Array<{ asset_id: string; body: string; instance_id: string }>;
-  status: "started";
-};
 export type SetSceneAssetsResult = {
   ok: true;
   items: Array<{ asset_id: string; body: string; instance_id: string }>;
   scene_revision: string;
 };
-export type SceneOperationStreamFactory = (url: string) => SceneOperationStream;
 export type Bounds3 = { min: number[]; max: number[] };
 export type ListSceneBodiesResult = {
   items: unknown[];
   robot_bounds: Bounds3 | null;
   scene_revision: string;
 };
-
-export interface SceneOperationStream {
-  addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void;
-  close(): void;
-  onerror: ((event: Event) => void) | null;
-}
+export type SceneTaskOptions = { signal?: AbortSignal };
 
 export function createSceneToolRequest(args: unknown[]): RequestInit {
   return {
@@ -38,8 +28,8 @@ export function createSetSceneAssetsRequest(input: SetSceneAssetsInput): Request
   return createSceneToolRequest([input.assets]);
 }
 
-export function createSceneOpStreamUrl(sess: string, opId: string): string {
-  return `/python/zapdos/${sess}/op/${opId}`;
+export function createSceneTaskUrl(sess: string, task: string): string {
+  return `/python/zapdos/${sess}/tasks/${task}`;
 }
 
 export async function listSceneBodies(sess: string) {
@@ -50,80 +40,48 @@ export async function listSceneBodies(sess: string) {
   return await response.json() as ListSceneBodiesResult;
 }
 
-function defaultSceneOperationStreamFactory(url: string): SceneOperationStream {
-  return new EventSource(url);
-}
-
-function readSceneOperationError(event: MessageEvent<string>): Error {
-  try {
-    const payload = JSON.parse(event.data) as { detail?: string };
-    return new Error(payload.detail || "Zapdos scene operation failed");
-  } catch {
-    return new Error("Zapdos scene operation failed");
-  }
-}
-
-export async function waitForSceneToolOp<T>(
+export async function runSceneTask<T>(
   sess: string,
-  opId: string,
-  createEventSource: SceneOperationStreamFactory = defaultSceneOperationStreamFactory,
-): Promise<T> {
-  return await new Promise<T>((resolve, reject) => {
-    const source = createEventSource(createSceneOpStreamUrl(sess, opId));
-    const close = () => source.close();
-    source.addEventListener("done", (event) => {
-      close();
-      const payload = JSON.parse(event.data) as T;
-      publishZapdosSceneRevision(sess, payload, { force: true });
-      resolve(payload);
-    });
-    source.addEventListener("failed", (event) => {
-      close();
-      reject(readSceneOperationError(event));
-    });
-    source.onerror = () => {
-      close();
-      reject(new Error("Zapdos scene operation stream disconnected"));
-    };
-  });
-}
-
-async function startSceneToolOperation<T>(
-  sess: string,
-  url: string,
+  task: string,
   request: RequestInit,
-  createEventSource: SceneOperationStreamFactory,
+  options: SceneTaskOptions = {},
 ): Promise<T> {
-  const response = await fetch(url, request);
-  if (!response.ok) {
-    throw new Error(await response.text());
+  const requestInit = options.signal ? { ...request, signal: options.signal } : request;
+  for await (const event of streamJsonSse<Record<string, unknown>>(createSceneTaskUrl(sess, task), requestInit)) {
+    if (event.event === "failed") {
+      throw new Error(String(event.data.detail || "Zapdos scene operation failed"));
+    }
+    if (event.event === "done") {
+      const payload = event.data as T;
+      publishZapdosSceneRevision(sess, payload, { force: true });
+      return payload;
+    }
   }
-  const started = await response.json() as SceneToolOperationStart;
-  return await waitForSceneToolOp<T>(sess, started.op_id, createEventSource);
+  throw new Error("Zapdos scene operation stream ended unexpectedly");
 }
 
 export async function setSceneAssets(
   sess: string,
   input: SetSceneAssetsInput,
-  createEventSource: SceneOperationStreamFactory = defaultSceneOperationStreamFactory,
+  options: SceneTaskOptions = {},
 ) {
-  return await startSceneToolOperation<SetSceneAssetsResult>(
+  return await runSceneTask<SetSceneAssetsResult>(
     sess,
-    `/python/zapdos/${sess}/call/set_scene_assets`,
+    "set_scene_assets",
     createSetSceneAssetsRequest(input),
-    createEventSource,
+    options,
   );
 }
 
 export async function removeAssetFromScene(
   sess: string,
   instanceId: string,
-  createEventSource: SceneOperationStreamFactory = defaultSceneOperationStreamFactory,
+  options: SceneTaskOptions = {},
 ) {
-  return await startSceneToolOperation<{ instance_id: string; scene_revision: string }>(
+  return await runSceneTask<{ instance_id: string; scene_revision: string }>(
     sess,
-    `/python/zapdos/${sess}/call/remove_asset_from_scene`,
+    "remove_asset_from_scene",
     createSceneToolRequest([instanceId]),
-    createEventSource,
+    options,
   );
 }
