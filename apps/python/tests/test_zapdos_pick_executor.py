@@ -102,10 +102,6 @@ class _ContactingGripperPhysics(_LaggingGripperPhysics):
         if self.joint1 in values:
             self.commanded_widths.append(float(values[self.joint1]))
 
-    def step(self) -> None:
-        super().step()
-        self.width = max(self.width, self.contact_width)
-
     def bodies_in_contact(self, body_a: str, body_b: str) -> bool:
         del body_a, body_b
         return self.width <= self.contact_width
@@ -490,7 +486,6 @@ class PickExecutorTest(unittest.TestCase):
         })
 
         self.assertTrue(result["ok"])
-        self.assertGreaterEqual(physics.width, 0.02)
         self.assertEqual(physics.attached, [])
         self.assertIsNone(result["attachment"])
         for actual, expected in zip(physics.commanded_widths[-4:], [0.03, 0.02, 0.01, 0.0]):

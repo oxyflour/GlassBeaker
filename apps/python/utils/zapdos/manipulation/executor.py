@@ -179,9 +179,6 @@ class PickExecutor:
         gripper_body: str,
         target_body: str,
     ) -> Generator[None, None, float]:
-        if self._bodies_in_contact(gripper_body, target_body):
-            self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, target_width))
-            return target_width
         for index in range(max(steps, 1)):
             alpha = float(index + 1) / float(max(steps, 1))
             command_width = self._interpolate_gripper(start_width, target_width, alpha)
@@ -189,15 +186,12 @@ class PickExecutor:
             self.physics.step()
             ik.sync_joint_state(self.physics.joint_state_msg())
             yield
-            if self._bodies_in_contact(gripper_body, target_body):
-                if command_width != target_width:
-                    self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, target_width))
-                return target_width
         if self._gripper_width_error(arm, target_width) is None:
+            return target_width
+        if self._bodies_in_contact(gripper_body, target_body):
             return target_width
         for _ in range(GRIPPER_SETTLE_STEPS):
             if self._bodies_in_contact(gripper_body, target_body):
-                self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, target_width))
                 return target_width
             error = self._gripper_width_error(arm, target_width)
             if error is None or error <= GRIPPER_WIDTH_TOLERANCE:
