@@ -13,7 +13,14 @@ sys.path.insert(0, str(PACKAGE_ROOT))
 
 from kokoro.height_field import compile_height_program
 from kokoro import validation
-from kokoro.validation import ValidationArtifacts, angular_error_degrees, image_metrics, write_height_ply
+from kokoro.validation import (
+    DirectionHoldoutConfig,
+    ValidationArtifacts,
+    angular_error_degrees,
+    build_direction_holdout_dataset,
+    image_metrics,
+    write_height_ply,
+)
 import validate_material
 
 
@@ -101,6 +108,38 @@ class ValidationTest(unittest.TestCase):
         metrics = angular_error_degrees(FixedDirectionModel(predicted), torch.zeros((1, 5)), target)
 
         self.assertLess(metrics["mean_deg"], 0.2)
+
+    def test_angular_error_reports_p99_for_sweep_comparisons(self) -> None:
+        target = torch.tensor([[0.0, 0.0, 1.0]] * 100, dtype=torch.float32)
+        predicted = target.clone()
+        predicted[-1] = torch.tensor([1.0, 0.0, 0.0])
+
+        metrics = angular_error_degrees(FixedDirectionModel(predicted), torch.zeros((100, 5)), target)
+
+        self.assertIn("p99_deg", metrics)
+        self.assertGreater(metrics["max_deg"], metrics["p99_deg"])
+        self.assertGreater(metrics["p99_deg"], metrics["p95_deg"])
+
+    def test_direction_holdout_dataset_builds_deterministic_grid(self) -> None:
+        program = compile_height_program("def height(x, y):\n    return x * 0.0\n")
+
+        first = build_direction_holdout_dataset(
+            program,
+            DirectionHoldoutConfig(x_count=2, y_count=3, theta_count=2, phi_count=4),
+            width_m=0.10,
+            depth_m=0.10,
+        )
+        second = build_direction_holdout_dataset(
+            program,
+            DirectionHoldoutConfig(x_count=2, y_count=3, theta_count=2, phi_count=4),
+            width_m=0.10,
+            depth_m=0.10,
+        )
+
+        self.assertEqual(first.features.shape, (48, 5))
+        self.assertEqual(first.targets.shape, (48, 3))
+        self.assertTrue(torch.allclose(first.features, second.features))
+        self.assertTrue(torch.all(first.targets[:, 2] >= 0.15))
 
 
 if __name__ == "__main__":

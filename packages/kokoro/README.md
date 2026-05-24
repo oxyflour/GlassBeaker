@@ -2,9 +2,9 @@
 
 Kokoro is a small height-field neural BRDF prototype.
 
-It takes Python source that defines `height(x, y)`, randomly samples the microstructure to train a tiny neural BRDF, exports the network as `npz`, and renders an equivalent 10 cm x 10 cm Mitsuba plane lit by a point light above the surface.
+It takes Python source that defines `height(x, y)`, randomly samples the microstructure to train a tiny neural BRDF, exports the network as `npz`, and renders an equivalent 10 cm x 10 cm Mitsuba plane. The default scene is lit by a point light above the surface; pass `--light-source hdr` to use the bundled studio HDR environment instead.
 
-The default height field is a square-pyramid lattice with 500 um cells whose pyramid orientation rotates around each cell center. The rotation angle increases with the cell center's distance from the 10 cm x 10 cm region center, so this baseline is not globally periodic. The BRDF surrogate keeps macro `x/y` as material inputs. By default each target is a point reflection direction; when patch averaging is enabled, the target becomes `axis + cone cosine + fourfold phase` so the neural material can keep an oriented ring lobe instead of collapsing it into one mean reflection direction.
+The default height field is a square-pyramid lattice with 500 um cells whose pyramid orientation rotates around each cell center. The rotation angle increases with the cell center's distance from the 10 cm x 10 cm region center, so this baseline is not globally periodic. The default surrogate now learns the local normal field from macro `x/y` plus default-specific cell/facet features, and the Mitsuba BSDF computes the reflected direction analytically from the runtime incident direction. Reflection-direction and patch-averaged ring targets remain available as diagnostics.
 
 ## Run
 
@@ -12,7 +12,7 @@ Run commands from the repo root with the shared Python environment in `apps/pyth
 
 ```powershell
 uv run --project apps/python python packages/kokoro/run_demo.py `
-  --samples 8192 `
+  --samples 16384 `
   --epochs 240
 ```
 
@@ -21,22 +21,24 @@ Outputs:
 - `packages/kokoro/tmp/kokoro_height.png`: normalized grayscale preview of the sampled height field.
 - `packages/kokoro/tmp/kokoro_brdf.npz`: exported MLP weights and surface bounds.
 - `packages/kokoro/tmp/kokoro_scene.json`: serialized Mitsuba scene with an equivalent plane using `kokoro_neural_reflector`.
-- `packages/kokoro/tmp/metrics.json`: initial and final training loss.
+- `packages/kokoro/tmp/metrics.json`: initial/final training loss plus dense holdout angular error.
 
-The default neural material is a `sine` MLP with five 128-wide hidden layers and `--omega-0 4.0`.
-Position input uses generic multiscale sine/cosine bands by default through `--position-frequency-count 9`; it does not feed the known 500 um cell phase unless you explicitly pass `--local-feature-period-m`.
+The default neural material is a `tanh` MLP with three 128-wide hidden layers trained in `--target-mode normal`.
+For the built-in default height source, `run_demo.py` appends default-specific radial rotated cell features and two facet-slope features for the known 500 um lattice. These features are not enabled automatically for custom height sources.
 Patch averaging is disabled by default; pass `--average-patch-radius-m 0.001 --average-patch-samples 32` when one rendered surface point should represent a larger local microstructure region.
 Height previews default to 4096x4096; pass `--height-map-size` to change the PNG resolution.
-The main scene uses a point light above the surface. The optional inspection area light is disabled by default; pass `--inspection-light-scale 0.2` or similar when you need extra fill light.
+The main scene uses a point light above the surface by default. Pass `--light-source hdr` to replace that point light with `apps/web/public/studio_small_03_1k.hdr`; use `--hdr-path` for a different HDR file and `--env-scale` to tune its brightness. The neural render defaults to `--film-width 384 --film-height 288 --spp 1024 --lobe-kappa 2048 --sampler-type ldsampler --reconstruction-filter box`, matching the best current 1024 SPP band/noise trade-off. The optional inspection area light is disabled by default; pass `--inspection-light-scale 0.2` or similar when you need extra fill light.
+
+`--reconstruction-filter` is Mitsuba's film reconstruction filter, not a post-process applied after image output. During rendering, subpixel samples are splatted into film pixels through this filter. `box` keeps each sample inside its pixel footprint, preserving sharp bands; wider filters such as `tent` or `gaussian` can reduce jagged per-pixel variation but also spread bright samples into neighboring pixels and visibly blur or thicken the band.
 
 ## MLP Definition
 
 `run_demo.py` defaults to this network:
 
-- Input dimension: `41` with the default position encoding.
-- Hidden body: `--hidden-layers 5`, `--hidden-dim 128`, `sine(omega_0 * x)` activation.
+- Input dimension: `8` with the built-in default height source, default radial cell features, facet-slope features, and `--target-mode normal`.
+- Hidden body: `--hidden-layers 3`, `--hidden-dim 128`, `tanh` activation.
 - Hidden-layer limit: `--hidden-layers` accepts `1..5`.
-- Output dimension: `3` for point reflection targets, or `6` when patch averaging is enabled.
+- Output dimension: `3` normal components in normal mode, `3` point reflection components in reflection mode, or `6` when patch averaging is enabled.
 
 The default input vector is:
 
@@ -44,23 +46,28 @@ The default input vector is:
 [
   x_norm,
   y_norm,
-  sin(2^0 * pi * x_norm), cos(2^0 * pi * x_norm),
-  sin(2^0 * pi * y_norm), cos(2^0 * pi * y_norm),
-  ...
-  sin(2^8 * pi * x_norm), cos(2^8 * pi * x_norm),
-  sin(2^8 * pi * y_norm), cos(2^8 * pi * y_norm),
-  wi_z,
-  wi_x,
-  wi_y,
+  radial_cell_x,
+  radial_cell_y,
+  sin(radial_cell_rotation),
+  cos(radial_cell_rotation),
+  radial_cell_facet_slope_x,
+  radial_cell_facet_slope_y,
 ]
 ```
 
 Definitions:
 
 - `x_norm = x / (width_m * 0.5)` and `y_norm = y / (depth_m * 0.5)`, so the default 10 cm plane maps to roughly `[-1, 1]`.
-- `--position-frequency-count 9` adds four features per frequency band, for `2 + 4 * 9 + 3 = 41` inputs.
-- `wi` is the local incoming direction above the equivalent plane. Training builds it from sampled `theta/phi`; the Mitsuba BSDF reads it from `si.wi` and uses the same `[wi_z, wi_x, wi_y]` order.
-- `--local-feature-period-m p` appends two explicit local phase inputs, `remainder(x, p) / (p * 0.5) - 1` and `remainder(y, p) / (p * 0.5) - 1`. This is off by default because it hardcodes known cell pitch instead of making the model infer periodic structure from generic position features.
+- `radial_cell_x/y` are the default height field's local cell coordinates after applying the same radial cell rotation used by `radial_rotated_pyramid_height`.
+- `radial_cell_facet_slope_x/y` are default-specific signed facet-slope hints derived from the dominant local pyramid facet. They make the hard facet boundary explicit instead of asking the MLP to infer a discontinuous normal from smooth coordinates.
+- `--position-frequency-count 0` is the default for normal mode. Fourier bands can still be enabled for reflection-mode diagnostics.
+- In `--target-mode normal`, incident direction is not an MLP input. The Mitsuba BSDF reads `si.wi` at render time and reflects it about the predicted normal. In `--target-mode reflection`, training and rendering use the previous `[wi_z, wi_x, wi_y]` incident features.
+- `--local-feature-period-m p` appends two explicit global-axis local phase inputs, `remainder(x, p) / (p * 0.5) - 1` and `remainder(y, p) / (p * 0.5) - 1`.
+- `--radial-cell-feature-period-m p` appends the four default-specific radial rotated cell features. `--disable-radial-cell-facet-features` removes the two facet-slope features. Pass `0` to disable radial cell features, or leave it unset for custom height sources.
+
+The current default is still an approximation, not a solved BRDF. On the 1024 SPP diagnostic run in `packages/kokoro/tmp/spp1024-normal-facetonly-tanh128x3`, the exported normal-mode MLP reached holdout angular error around mean `2.10 deg`, p95 `8.75 deg`, and produced visible light bands. The follow-up noise pass uses `packages/kokoro/tmp/noise-reduced-default/noise_reduced_default_panel.png` to compare `lobe_kappa=2048` with low-discrepancy sampling against the previous sharper render. The reference render is a noisy finite-sample estimate of a light band, so reference-image absolute error is a diagnostic only, not the optimization target.
+
+Every default run also evaluates a deterministic direction holdout grid after training. The default holdout has `32 x 32` surface positions, `5` incident polar samples, and `8` incident azimuth samples, and `metrics.json` records its sample count plus angular mean/p95/p99/max.
 
 Footprint size is not currently part of the input. Adding it as a constant would not help: the network would see the same value at every sample, and the Mitsuba BSDF currently does not pass a true per-hit ray footprint. It should only become an input after training samples variable footprint radii and rendering provides the same quantity, preferably as a log-scaled normalized radius such as `log2(footprint_radius_m / width_m)`.
 
@@ -68,12 +75,13 @@ Optional render:
 
 ```powershell
 uv run --project apps/python python packages/kokoro/run_demo.py `
-  --samples 8192 `
+  --samples 16384 `
   --epochs 240 `
   --render
 ```
 
 This registers the Python BSDF plugin and writes `packages/kokoro/tmp/kokoro_render.png`.
+To render with the studio HDR environment instead of the point light, add `--light-source hdr`.
 The default Mitsuba variant is `cuda_ad_rgb`, matching the existing renderer backend in `apps/python`.
 For custom loading, pass the JSON through `kokoro.mitsuba_scene.prepare_mitsuba_scene_dict(scene, mi)` before `mi.load_dict(scene)`.
 
@@ -81,7 +89,7 @@ Embedded height-field reference:
 
 ```powershell
 uv run --project apps/python python packages/kokoro/run_demo.py `
-  --samples 8192 `
+  --samples 16384 `
   --epochs 240 `
   --render `
   --reference-render
@@ -109,7 +117,7 @@ Orbit video:
 
 ```powershell
 uv run --project apps/python python packages/kokoro/run_demo.py `
-  --samples 8192 `
+  --samples 16384 `
   --epochs 240 `
   --render `
   --reference-render `
@@ -144,27 +152,27 @@ This writes `packages/kokoro/tmp/validation/validation_metrics.json` and two com
 
 ## Tuning Plan
 
-The tuning target is agreement with the embedded height-field reference render, not just low training loss. Keep every sweep output in its own `packages/kokoro/tmp/<case>` directory with the checkpoint, metadata, metrics, neural render, reference render, and diff panel.
+The tuning target is a coherent low-sample neural light band that matches the reference distribution, not a pointwise fit to the reference image noise. Keep every sweep output in its own `packages/kokoro/tmp/<case>` directory with the checkpoint, metadata, metrics, neural render, reference render, and comparison panel.
 
 1. Establish a fixed baseline.
 
-   Run one default neural/reference comparison with fixed seeds, `--samples 8192 --epochs 240 --hidden-layers 5 --hidden-dim 128 --position-frequency-count 9 --render --reference-render`. Record final loss, checkpoint metadata, image mean absolute error, max error, and a visual diff panel.
+   Run one default neural/reference comparison with fixed seeds, `--samples 16384 --epochs 240 --hidden-layers 3 --hidden-dim 128 --target-mode normal --position-frequency-count 0 --render --reference-render`. Record final loss, checkpoint metadata, holdout angular mean/p95/p99/max, neural/reference renders, and a visual comparison panel. Treat image absolute error as a smoke metric only because the reference contains sampling noise.
 
 2. Separate representation error from render sensitivity.
 
-   Before changing render settings, evaluate the exported MLP on a dense grid of `x/y/wi` samples and compare predicted directions against direct height-field normals. Track angular mean, p95, p99, and worst-case error. Then render with `--lobe-kappa 512`, `1024`, `2048`, and `4096` to see whether visible error is caused by direction error or by an overly sharp lobe.
+   Use the dense holdout angular metrics written by `run_demo.py` to compare predicted normals against direct height-field normals. Track angular mean, p95, p99, and worst-case error. Then render 1024 SPP panels while sweeping `--lobe-kappa 1024`, `2048`, `4096`, and `8192`, and keep `--sampler-type ldsampler --reconstruction-filter box` as the noise baseline. Prefer the sharpest lobe that keeps the band visible without turning normal error into isolated sparkle.
 
 3. Sweep MLP capacity within the current cap.
 
-   Test `--hidden-layers 2`, `3`, and `5` with `--hidden-dim 64` and `128`. Keep the default cap at five 128-wide layers unless a smaller model matches the reference within the same angular and image thresholds. Do not increase beyond five layers until the feature and target sweeps below are exhausted.
+   Test `--hidden-layers 2`, `3`, and `5` with `--hidden-dim 64` and `128`. Current normal-mode evidence favors three 128-wide `tanh` layers. Do not increase beyond five layers until the feature and target sweeps below are exhausted.
 
 4. Sweep position encoding.
 
-   Test `--position-frequency-count 7`, `8`, `9`, and `10`. The default 500 um pitch maps to a normalized period of `0.01`, so the useful Fourier bands should bracket angular frequencies around `200 * pi`; counts `8..10` are the main region to check. Use `--local-feature-period-m 500e-6` only as a diagnostic upper bound, not as the default solution.
+   Keep `--position-frequency-count 0` as the normal-mode baseline. Test `2`, `4`, and `8` only if the facet-slope model misses radial variation; Fourier bands previously helped reflection-mode direction fitting but also encouraged smooth bright blobs.
 
 5. Tune sample count and optimizer budget.
 
-   For the best architecture and frequency count, sweep `--samples 8192`, `16384`, and `32768`; then sweep `--epochs 240`, `400`, and `640`. Increase batch size only if training becomes unstable or too slow. Prefer the smallest setting whose angular p95 and image mean error stop improving materially.
+   For the best architecture and frequency count, sweep `--samples 8192`, `16384`, and `32768`; then sweep `--epochs 160`, `240`, and `400`. Increase batch size only if training becomes unstable or too slow. Prefer the smallest setting whose angular p95 and visible band structure stop improving materially.
 
 6. Decide whether patch averaging belongs in the target.
 
@@ -172,15 +180,15 @@ The tuning target is agreement with the embedded height-field reference render, 
 
 7. Add footprint size only after the renderer can supply it.
 
-   If patch averaging is needed, add a second experiment where every training sample draws a random footprint radius and appends a normalized log footprint feature. The same feature must be supplied in Mitsuba from ray differentials or an explicit material footprint parameter. Acceptance criteria: changing footprint size changes the learned lobe width/cone in the expected direction, and a fixed-footprint run still matches the current reference.
+   If patch averaging is needed, add a second experiment where every training sample draws a random footprint radius and appends a normalized log footprint feature. The same feature must be supplied in Mitsuba from ray differentials or an explicit material footprint parameter. Acceptance criteria: changing footprint size changes the learned lobe width/cone in the expected direction, and a fixed-footprint run still produces the low-sample light band.
 
 8. Validate on holdout height fields.
 
-   After the default radial rotated pyramid matches the reference, repeat the best settings on a flat plane, a non-rotated pyramid lattice, and at least one smooth sinusoidal field. A setting that only works on the default source is not a robust material surrogate.
+   After the default radial rotated pyramid gives a stable low-sample light band, repeat the best settings on a flat plane, a non-rotated pyramid lattice, and at least one smooth sinusoidal field. A setting that only works on the default source is not a robust material surrogate.
 
 9. Promote defaults only with evidence.
 
-   Update `run_demo.py` defaults only when a sweep shows lower reference image error and acceptable runtime. For every promoted default, keep the command, metrics, and representative panels in `packages/kokoro/tmp` so later changes can be compared against the same baseline.
+   Update `run_demo.py` defaults only when a sweep improves low-sample band visibility without unacceptable directional error or runtime. For every promoted default, keep the command, metrics, and representative panels in `packages/kokoro/tmp` so later changes can be compared against the same baseline.
 
 ## Custom Height Field
 

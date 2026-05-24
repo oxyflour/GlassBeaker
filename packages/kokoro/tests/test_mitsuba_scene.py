@@ -44,8 +44,36 @@ class MitsubaSceneTest(unittest.TestCase):
         self.assertEqual(scene["surface"]["bsdf"]["checkpoint"], str(checkpoint))
         self.assertIn("to_world_look_at", scene["sensor"])
         self.assertEqual(scene["sensor"]["fov"], 65.0)
+        self.assertEqual(scene["sensor"]["sampler"]["type"], "ldsampler")
         self.assertEqual(scene["sensor"]["film"]["width"], 64)
         self.assertEqual(scene["sensor"]["film"]["height"], 48)
+        self.assertEqual(scene["sensor"]["film"]["rfilter"]["type"], "box")
+
+    def test_scene_dict_allows_sampling_policy_overrides_for_noise_sweeps(self) -> None:
+        scene = build_kokoro_scene_dict(
+            checkpoint_path=Path("packages/kokoro/tmp/kokoro_brdf.npz"),
+            hdr_path=REPO_ROOT / "apps" / "web" / "public" / "studio_small_03_1k.hdr",
+            sampler_type="multijitter",
+            reconstruction_filter="tent",
+        )
+
+        self.assertEqual(scene["sensor"]["sampler"]["type"], "multijitter")
+        self.assertEqual(scene["sensor"]["film"]["rfilter"]["type"], "tent")
+
+    def test_scene_dict_can_use_hdr_environment_instead_of_point_light(self) -> None:
+        hdr_path = REPO_ROOT / "apps" / "web" / "public" / "studio_small_03_1k.hdr"
+
+        scene = build_kokoro_scene_dict(
+            checkpoint_path=Path("packages/kokoro/tmp/kokoro_brdf.npz"),
+            hdr_path=hdr_path,
+            light_source="hdr",
+            env_scale=1.75,
+        )
+
+        self.assertNotIn("top_point_light", scene)
+        self.assertEqual(scene["environment"]["type"], "envmap")
+        self.assertEqual(scene["environment"]["filename"], str(hdr_path))
+        self.assertEqual(scene["environment"]["scale"], 1.75)
 
     def test_scene_dict_can_enable_optional_inspection_light(self) -> None:
         scene = build_kokoro_scene_dict(
@@ -73,6 +101,7 @@ class MitsubaSceneTest(unittest.TestCase):
         self.assertEqual(scene["ring_point_light"]["type"], "point")
         self.assertEqual(scene["ring_point_light"]["position"], [0.0, 0.0, 0.04])
         self.assertEqual(scene["sensor"]["to_world_look_at"]["origin"], [0.0, 0.0, 0.12])
+        self.assertEqual(scene["sensor"]["sampler"]["type"], "ldsampler")
         self.assertEqual(scene["sensor"]["to_world_look_at"]["up"], [0.0, 1.0, 0.0])
         self.assertEqual(scene["sensor"]["film"]["width"], 128)
         self.assertEqual(scene["surface"]["bsdf"]["checkpoint"], str(checkpoint))
@@ -95,6 +124,23 @@ class MitsubaSceneTest(unittest.TestCase):
         self.assertEqual(scene["surface"]["bsdf"]["width_m"], 0.10)
         self.assertEqual(scene["surface"]["bsdf"]["depth_m"], 0.10)
         self.assertEqual(scene["sensor"]["film"]["width"], 64)
+        self.assertEqual(scene["sensor"]["sampler"]["type"], "ldsampler")
+
+    def test_height_field_reference_scene_can_share_hdr_environment(self) -> None:
+        hdr_path = REPO_ROOT / "apps" / "web" / "public" / "studio_small_03_1k.hdr"
+        source = "def height(x, y):\n    return 0.5 * x\n"
+
+        scene = build_height_field_reference_scene_dict(
+            height_source=source,
+            hdr_path=hdr_path,
+            light_source="hdr",
+            env_scale=0.5,
+        )
+
+        self.assertNotIn("top_point_light", scene)
+        self.assertEqual(scene["environment"]["type"], "envmap")
+        self.assertEqual(scene["environment"]["filename"], str(hdr_path))
+        self.assertEqual(scene["environment"]["scale"], 0.5)
 
     def test_prepare_scene_converts_serialized_look_at_transform(self) -> None:
         class FakeTransform:

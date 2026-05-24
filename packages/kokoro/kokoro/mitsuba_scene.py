@@ -14,21 +14,19 @@ def build_kokoro_scene_dict(
     width_m: float = 0.10,
     depth_m: float = 0.10,
     spp: int = 64,
+    light_source: str = "point",
     env_scale: float = 1.0,
     inspection_light_scale: float = 0.0,
     fov: float = 65.0,
     top_light_height_m: float = 0.06,
     top_light_intensity: float = 6.0,
     lobe_kappa: float = 96.0,
+    sampler_type: str = "ldsampler",
+    reconstruction_filter: str = "box",
 ) -> dict[str, Any]:
     scene: dict[str, Any] = {
         "type": "scene",
         "integrator": {"type": "path"},
-        "top_point_light": {
-            "type": "point",
-            "position": [0.0, 0.0, float(top_light_height_m)],
-            "intensity": {"type": "rgb", "value": [float(top_light_intensity)] * 3},
-        },
         "surface": {
             "type": "rectangle",
             "to_world_matrix": [
@@ -53,10 +51,20 @@ def build_kokoro_scene_dict(
                 "target": [0.0, 0.0, 0.0],
                 "up": [0.0, 0.0, 1.0],
             },
-            "sampler": {"type": "independent", "sample_count": int(spp)},
-            "film": {"type": "hdrfilm", "width": int(width), "height": int(height), "rfilter": {"type": "box"}},
+            "sampler": {"type": sampler_type, "sample_count": int(spp)},
+            "film": {"type": "hdrfilm", "width": int(width), "height": int(height), "rfilter": {"type": reconstruction_filter}},
         },
     }
+    if light_source == "point":
+        scene["top_point_light"] = {
+            "type": "point",
+            "position": [0.0, 0.0, float(top_light_height_m)],
+            "intensity": {"type": "rgb", "value": [float(top_light_intensity)] * 3},
+        }
+    elif light_source == "hdr":
+        scene["environment"] = {"type": "envmap", "filename": str(hdr_path), "scale": float(env_scale)}
+    else:
+        raise ValueError("light_source must be 'point' or 'hdr'")
     if inspection_light_scale > 0.0:
         scale = float(inspection_light_scale)
         scene["inspection_light"] = {
@@ -84,6 +92,8 @@ def build_kokoro_ring_diagnostic_scene_dict(
     light_height_m: float = 0.04,
     camera_height_m: float = 0.12,
     light_intensity: float = 6.0,
+    sampler_type: str = "ldsampler",
+    reconstruction_filter: str = "box",
 ) -> dict[str, Any]:
     return {
         "type": "scene",
@@ -117,8 +127,8 @@ def build_kokoro_ring_diagnostic_scene_dict(
                 "target": [0.0, 0.0, 0.0],
                 "up": [0.0, 1.0, 0.0],
             },
-            "sampler": {"type": "independent", "sample_count": int(spp)},
-            "film": {"type": "hdrfilm", "width": int(width), "height": int(height), "rfilter": {"type": "box"}},
+            "sampler": {"type": sampler_type, "sample_count": int(spp)},
+            "film": {"type": "hdrfilm", "width": int(width), "height": int(height), "rfilter": {"type": reconstruction_filter}},
         },
     }
 
@@ -131,21 +141,30 @@ def build_height_field_reference_scene_dict(
     width_m: float = 0.10,
     depth_m: float = 0.10,
     spp: int = 64,
+    hdr_path: Path | None = None,
+    light_source: str = "point",
+    env_scale: float = 1.0,
     inspection_light_scale: float = 0.0,
     fov: float = 65.0,
     normal_step_m: float = 25e-6,
     lobe_kappa: float = 4096.0,
+    sampler_type: str = "ldsampler",
+    reconstruction_filter: str = "box",
 ) -> dict[str, Any]:
     scene = build_kokoro_scene_dict(
         checkpoint_path=Path("unused.npz"),
-        hdr_path=Path("unused.hdr"),
+        hdr_path=hdr_path if hdr_path is not None else Path("unused.hdr"),
         width=width,
         height=height,
         width_m=width_m,
         depth_m=depth_m,
         spp=spp,
+        light_source=light_source,
+        env_scale=env_scale,
         inspection_light_scale=inspection_light_scale,
         fov=fov,
+        sampler_type=sampler_type,
+        reconstruction_filter=reconstruction_filter,
     )
     scene["surface"]["bsdf"] = {
         "type": "kokoro_height_field_reflector",

@@ -205,6 +205,50 @@ class MitsubaNeuralBsdfTest(unittest.TestCase):
 
             self.assertGreater(float(bsdf.pdf(ctx, si, on_ring, True)), float(bsdf.pdf(ctx, si, axis, True)) * 5.0)
 
+    def test_normal_target_checkpoint_reflects_runtime_incident_direction(self) -> None:
+        import mitsuba as mi
+
+        mi.set_variant("scalar_rgb")
+        register_kokoro_bsdf(mi)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "normal_target.npz"
+            model = KokoroBrdfNet(hidden_dim=4, input_dim=2)
+            normal = torch.nn.functional.normalize(torch.tensor([0.6, 0.0, 0.8]), dim=0)
+            with torch.no_grad():
+                for layer in model.layers:
+                    layer.weight.zero_()
+                    layer.bias.zero_()
+                model.layers[-1].bias[:] = normal
+            export_surrogate_npz(
+                model,
+                checkpoint,
+                width_m=0.1,
+                depth_m=0.1,
+                include_incident_features=False,
+                target_mode="normal",
+            )
+
+            scene = mi.load_dict({
+                "type": "scene",
+                "shape": {
+                    "type": "rectangle",
+                    "bsdf": {
+                        "type": "kokoro_neural_reflector",
+                        "checkpoint": str(checkpoint),
+                        "lobe_kappa": 512.0,
+                    },
+                },
+            })
+            bsdf = scene.shapes()[0].bsdf()
+            si = mi.SurfaceInteraction3f()
+            si.p = mi.Point3f(0.0, 0.0, 0.0)
+            si.wi = mi.Vector3f(0.0, 0.0, 1.0)
+            ctx = mi.BSDFContext()
+            reflected = mi.Vector3f(0.96, 0.0, 0.28)
+            upward = mi.Vector3f(0.0, 0.0, 1.0)
+
+            self.assertGreater(float(bsdf.pdf(ctx, si, reflected, True)), float(bsdf.pdf(ctx, si, upward, True)) * 100.0)
+
     def test_oriented_cone_checkpoint_preserves_fourfold_phase(self) -> None:
         import mitsuba as mi
 
@@ -325,6 +369,96 @@ class MitsubaNeuralBsdfTest(unittest.TestCase):
             third_pdf = float(bsdf.pdf(ctx, third, wo, True))
             self.assertGreater(abs(first_pdf - second_pdf), 1e-6)
             self.assertGreater(abs(first_pdf - third_pdf), 1e-6)
+
+    def test_radial_cell_feature_checkpoint_uses_rotated_local_coordinates(self) -> None:
+        import mitsuba as mi
+
+        mi.set_variant("scalar_rgb")
+        register_kokoro_bsdf(mi)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "radial_cell.npz"
+            model = KokoroBrdfNet(hidden_dim=5, input_dim=9)
+            with torch.no_grad():
+                for layer in model.layers:
+                    layer.weight.zero_()
+                    layer.bias.zero_()
+                model.layers[0].weight[0, 2] = 3.0
+                model.layers[1].weight[0, 0] = 3.0
+                model.layers[2].weight[0, 0] = 1.0
+                model.layers[2].bias[:] = torch.tensor([0.0, 0.0, 1.0])
+            export_surrogate_npz(
+                model,
+                checkpoint,
+                width_m=0.1,
+                depth_m=0.1,
+                radial_cell_feature_period_m=500e-6,
+                radial_cell_feature_max_rotation_rad=1.57079632679,
+                include_position_features=True,
+            )
+
+            scene = mi.load_dict({
+                "type": "scene",
+                "shape": {
+                    "type": "rectangle",
+                    "bsdf": {"type": "kokoro_neural_reflector", "checkpoint": str(checkpoint), "lobe_kappa": 16.0},
+                },
+            })
+            bsdf = scene.shapes()[0].bsdf()
+            ctx = mi.BSDFContext()
+            wo = mi.Vector3f(0.5, 0.0, 0.8660254)
+            first = mi.SurfaceInteraction3f()
+            first.p = mi.Point3f(55e-6, 115e-6, 0.0)
+            first.wi = mi.Vector3f(0.0, 0.0, 1.0)
+            second = mi.SurfaceInteraction3f()
+            second.p = mi.Point3f(225e-6, 115e-6, 0.0)
+            second.wi = mi.Vector3f(0.0, 0.0, 1.0)
+
+            self.assertGreater(abs(float(bsdf.pdf(ctx, first, wo, True)) - float(bsdf.pdf(ctx, second, wo, True))), 1e-6)
+
+    def test_radial_cell_facet_feature_checkpoint_uses_dominant_slope_hint(self) -> None:
+        import mitsuba as mi
+
+        mi.set_variant("scalar_rgb")
+        register_kokoro_bsdf(mi)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "radial_cell_facet.npz"
+            model = KokoroBrdfNet(hidden_dim=5, input_dim=11)
+            with torch.no_grad():
+                for layer in model.layers:
+                    layer.weight.zero_()
+                    layer.bias.zero_()
+                model.layers[0].weight[0, 6] = 3.0
+                model.layers[1].weight[0, 0] = 3.0
+                model.layers[2].weight[0, 0] = 1.0
+                model.layers[2].bias[:] = torch.tensor([0.0, 0.0, 1.0])
+            export_surrogate_npz(
+                model,
+                checkpoint,
+                width_m=0.1,
+                depth_m=0.1,
+                radial_cell_feature_period_m=500e-6,
+                radial_cell_facet_features=True,
+                include_position_features=True,
+            )
+
+            scene = mi.load_dict({
+                "type": "scene",
+                "shape": {
+                    "type": "rectangle",
+                    "bsdf": {"type": "kokoro_neural_reflector", "checkpoint": str(checkpoint), "lobe_kappa": 16.0},
+                },
+            })
+            bsdf = scene.shapes()[0].bsdf()
+            ctx = mi.BSDFContext()
+            wo = mi.Vector3f(0.5, 0.0, 0.8660254)
+            x_facet = mi.SurfaceInteraction3f()
+            x_facet.p = mi.Point3f(225e-6, 115e-6, 0.0)
+            x_facet.wi = mi.Vector3f(0.0, 0.0, 1.0)
+            y_facet = mi.SurfaceInteraction3f()
+            y_facet.p = mi.Point3f(55e-6, 225e-6, 0.0)
+            y_facet.wi = mi.Vector3f(0.0, 0.0, 1.0)
+
+            self.assertGreater(abs(float(bsdf.pdf(ctx, x_facet, wo, True)) - float(bsdf.pdf(ctx, y_facet, wo, True))), 1e-6)
 
     def test_height_field_reference_bsdf_evaluates_embedded_source(self) -> None:
         import mitsuba as mi

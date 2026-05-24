@@ -10,7 +10,11 @@ import numpy as np
 import torch
 from PIL import Image, UnidentifiedImageError
 
-from .brdf import KokoroBrdfNet
+from .direction_metrics import (
+    DirectionHoldoutConfig,
+    angular_error_degrees,
+    build_direction_holdout_dataset,
+)
 from .height_field import HeightProgram
 from .mitsuba_scene import build_kokoro_scene_dict
 
@@ -50,19 +54,6 @@ class ValidationArtifacts:
     @property
     def metrics(self) -> Path:
         return self.root / "validation_metrics.json"
-
-
-def angular_error_degrees(model: KokoroBrdfNet, features: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
-    with torch.no_grad():
-        predicted = torch.nn.functional.normalize(model(features)[:, :3], dim=1)
-        target = torch.nn.functional.normalize(targets[:, :3], dim=1)
-    cosine = torch.clamp(torch.sum(predicted * target, dim=1), -1.0, 1.0)
-    error = torch.acos(cosine) * (180.0 / torch.pi)
-    return {
-        "mean_deg": float(error.mean()),
-        "p95_deg": float(torch.quantile(error, 0.95)),
-        "max_deg": float(error.max()),
-    }
 
 
 def image_metrics(

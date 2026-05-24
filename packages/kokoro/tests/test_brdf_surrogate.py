@@ -156,6 +156,28 @@ def height(x, y):
         self.assertTrue(torch.all(dataset.targets[:, 3] >= 0.0))
         self.assertTrue(torch.all(dataset.targets[:, 3] <= 1.0))
 
+    def test_normal_target_dataset_omits_incident_features_and_targets_surface_normals(self) -> None:
+        program = compile_height_program(
+            """
+def height(x, y):
+    return x * 0.0
+"""
+        )
+
+        dataset = build_brdf_dataset(
+            program,
+            sample_count=16,
+            width_m=0.10,
+            depth_m=0.10,
+            seed=8,
+            target_mode="normal",
+        )
+
+        self.assertEqual(dataset.features.shape, (16, 2))
+        self.assertTrue(torch.allclose(dataset.targets, torch.tensor([[0.0, 0.0, 1.0]]).expand(16, 3)))
+        self.assertEqual(dataset.target_mode, "normal")
+        self.assertFalse(dataset.include_incident_features)
+
     def test_npz_export_round_trips_surrogate_weights(self) -> None:
         program = compile_height_program(
             """
@@ -251,6 +273,37 @@ def height(x, y):
         self.assertFalse(torch.allclose(features[0, :2], features[1, :2], atol=1e-6))
         self.assertTrue(torch.allclose(features[0, 2:4], features[1, 2:4], atol=1e-6))
 
+    def test_radial_cell_features_append_rotated_local_coordinates(self) -> None:
+        features = make_features(
+            torch.tensor([55e-6]),
+            torch.tensor([115e-6]),
+            torch.tensor([0.4]),
+            torch.tensor([0.2]),
+            width_m=0.10,
+            depth_m=0.10,
+            radial_cell_feature_period_m=500e-6,
+            radial_cell_feature_max_rotation_rad=torch.pi / 2.0,
+        )
+
+        self.assertEqual(features.shape, (1, 9))
+        self.assertTrue(torch.allclose(features[0, 2:6], torch.tensor([0.22, 0.46, 0.0, 1.0]), atol=1e-5))
+
+    def test_radial_cell_facet_features_append_dominant_slope_hint(self) -> None:
+        features = make_features(
+            torch.tensor([225e-6, 55e-6]),
+            torch.tensor([115e-6, 225e-6]),
+            torch.tensor([0.4, 0.4]),
+            torch.tensor([0.2, 0.2]),
+            width_m=0.10,
+            depth_m=0.10,
+            radial_cell_feature_period_m=500e-6,
+            radial_cell_facet_features=True,
+        )
+
+        self.assertEqual(features.shape, (2, 11))
+        self.assertTrue(torch.allclose(features[0, 6:8], torch.tensor([-1.0, -0.0]), atol=1e-5))
+        self.assertTrue(torch.allclose(features[1, 6:8], torch.tensor([0.0, -1.0]), atol=1e-5))
+
     def test_npz_export_records_periodic_feature_metadata(self) -> None:
         model = KokoroBrdfNet(hidden_dim=4)
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -288,6 +341,43 @@ def height(x, y):
 
         self.assertEqual(loaded.metadata["local_feature_period_m"], 0.005)
 
+    def test_npz_export_records_radial_cell_feature_metadata(self) -> None:
+        model = KokoroBrdfNet(hidden_dim=4, input_dim=9)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "radial_cell.npz"
+
+            export_surrogate_npz(
+                model,
+                checkpoint,
+                width_m=0.10,
+                depth_m=0.10,
+                radial_cell_feature_period_m=500e-6,
+                radial_cell_feature_max_rotation_rad=1.25,
+                include_position_features=True,
+            )
+            loaded = load_npz_surrogate(checkpoint)
+
+        self.assertEqual(loaded.metadata["radial_cell_feature_period_m"], 500e-6)
+        self.assertEqual(loaded.metadata["radial_cell_feature_max_rotation_rad"], 1.25)
+
+    def test_npz_export_records_radial_cell_facet_feature_metadata(self) -> None:
+        model = KokoroBrdfNet(hidden_dim=4, input_dim=11)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "radial_cell_facet.npz"
+
+            export_surrogate_npz(
+                model,
+                checkpoint,
+                width_m=0.10,
+                depth_m=0.10,
+                radial_cell_feature_period_m=500e-6,
+                radial_cell_facet_features=True,
+                include_position_features=True,
+            )
+            loaded = load_npz_surrogate(checkpoint)
+
+        self.assertTrue(loaded.metadata["radial_cell_facet_features"])
+
     def test_npz_export_records_averaged_brdf_metadata_by_default(self) -> None:
         model = KokoroBrdfNet(hidden_dim=4)
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -316,6 +406,24 @@ def height(x, y):
 
         self.assertEqual(loaded.metadata["average_patch_radius_m"], 0.002)
         self.assertEqual(loaded.metadata["average_patch_sample_count"], 16)
+
+    def test_npz_export_records_normal_target_metadata(self) -> None:
+        model = KokoroBrdfNet(hidden_dim=4, input_dim=2)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "normal_target.npz"
+
+            export_surrogate_npz(
+                model,
+                checkpoint,
+                width_m=0.10,
+                depth_m=0.10,
+                include_incident_features=False,
+                target_mode="normal",
+            )
+            loaded = load_npz_surrogate(checkpoint)
+
+        self.assertFalse(loaded.metadata["include_incident_features"])
+        self.assertEqual(loaded.metadata["target_mode"], "normal")
 
     def test_npz_export_round_trips_sine_activation_metadata(self) -> None:
         model = KokoroBrdfNet(hidden_dim=8, activation="sine", omega_0=12.0)

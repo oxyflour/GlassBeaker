@@ -30,11 +30,22 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
             self.feature_period_m = None if period is None else float(period)
             local_period = surrogate.metadata.get("local_feature_period_m")
             self.local_feature_period_m = None if local_period is None else float(local_period)
+            radial_period = surrogate.metadata.get("radial_cell_feature_period_m")
+            self.radial_cell_feature_period_m = None if radial_period is None else float(radial_period)
+            self.radial_cell_feature_max_rotation_rad = float(
+                surrogate.metadata.get("radial_cell_feature_max_rotation_rad", 1.5707963267948966)
+            )
+            self.radial_cell_feature_radial_power = float(
+                surrogate.metadata.get("radial_cell_feature_radial_power", 1.0)
+            )
+            self.radial_cell_facet_features = bool(surrogate.metadata.get("radial_cell_facet_features", False))
             self.activation = str(surrogate.metadata.get("activation", "tanh"))
             self.omega_0 = float(surrogate.metadata.get("omega_0", 12.0))
             self.position_frequency_count = int(surrogate.metadata.get("position_frequency_count", 0))
             include_position = surrogate.metadata.get("include_position_features")
             self.include_position_features = self.weights[0].shape[1] > 3 if include_position is None else bool(include_position)
+            self.include_incident_features = bool(surrogate.metadata.get("include_incident_features", True))
+            self.target_mode = str(surrogate.metadata.get("target_mode", "reflection"))
             self.output_dim = int(self.weights[-1].shape[0])
             self.reflectance = mi.Color3f(props.get("reflectance", [0.86, 0.88, 0.92]))
             self.lobe_kappa = float(props.get("lobe_kappa", 96.0))
@@ -95,6 +106,8 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
             raw = self._eval_mlp(features, dr)
             norm = dr.rsqrt(dr.maximum(raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2], 1e-8))
             axis = mi.Vector3f(raw[0] * norm, raw[1] * norm, dr.abs(raw[2] * norm))
+            if self.target_mode == "normal":
+                axis = self._reflect(_component(si.wi, 0), _component(si.wi, 1), _component(si.wi, 2), axis, dr)
             cone_cos = 1.0
             phase = 0.0
             if self.output_dim > 3:
@@ -118,6 +131,33 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
                 x_phase = x - period * dr.floor(x / period)
                 y_phase = y - period * dr.floor(y / period)
                 features.extend([x_phase / (period * 0.5) - 1.0, y_phase / (period * 0.5) - 1.0])
+            if self.radial_cell_feature_period_m is not None:
+                period = self.radial_cell_feature_period_m
+                center_x = period * dr.floor(x / period + 0.5)
+                center_y = period * dr.floor(y / period + 0.5)
+                local_x = x - center_x
+                local_y = y - center_y
+                radius = dr.sqrt(center_x * center_x + center_y * center_y)
+                max_radius = ((self.width_m * 0.5) ** 2 + (self.depth_m * 0.5) ** 2) ** 0.5
+                angle = self.radial_cell_feature_max_rotation_rad * radius / max_radius ** self.radial_cell_feature_radial_power
+                cos_angle = dr.cos(angle)
+                sin_angle = dr.sin(angle)
+                features.extend([
+                    (cos_angle * local_x + sin_angle * local_y) / (period * 0.5),
+                    (-sin_angle * local_x + cos_angle * local_y) / (period * 0.5),
+                    sin_angle,
+                    cos_angle,
+                ])
+                if self.radial_cell_facet_features:
+                    rotated_x = features[-4]
+                    rotated_y = features[-3]
+                    sign_x = dr.select(rotated_x >= 0.0, 1.0, -1.0)
+                    sign_y = dr.select(rotated_y >= 0.0, 1.0, -1.0)
+                    x_dominant = dr.abs(rotated_x) >= dr.abs(rotated_y)
+                    features.extend([
+                        dr.select(x_dominant, -sign_x * cos_angle, sign_y * sin_angle),
+                        dr.select(x_dominant, -sign_x * sin_angle, -sign_y * cos_angle),
+                    ])
             return features
 
         def _features(self, si, position_features, dr):
@@ -127,11 +167,11 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
                 _component(si.wi, 1),
             ]
             if not self.include_position_features:
-                return incident
+                return incident if self.include_incident_features else []
             x_feature = position_features[0]
             y_feature = position_features[1]
             if self.position_frequency_count <= 0:
-                return [*position_features, *incident]
+                return [*position_features, *incident] if self.include_incident_features else [*position_features]
             encoded = [*position_features]
             for index in range(self.position_frequency_count):
                 frequency = float(2 ** index) * dr.pi
@@ -141,7 +181,7 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
                     dr.sin(frequency * y_feature),
                     dr.cos(frequency * y_feature),
                 ])
-            return [*encoded, *incident]
+            return [*encoded, *incident] if self.include_incident_features else [*encoded]
 
         def _pdf_for_target(self, wo, target, dr, active):
             wo_norm = dr.rsqrt(dr.maximum(wo.x * wo.x + wo.y * wo.y + wo.z * wo.z, 1e-8))
@@ -187,6 +227,16 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
             raw = mi.Frame3f(axis).to_world(local)
             norm = dr.rsqrt(dr.maximum(raw.x * raw.x + raw.y * raw.y + raw.z * raw.z, 1e-8))
             return mi.Vector3f(raw.x * norm, raw.y * norm, dr.abs(raw.z * norm))
+
+        def _reflect(self, wi_x, wi_y, wi_z, normal, dr):
+            dot = wi_x * normal.x + wi_y * normal.y + wi_z * normal.z
+            raw = mi.Vector3f(
+                2.0 * dot * normal.x - wi_x,
+                2.0 * dot * normal.y - wi_y,
+                dr.abs(2.0 * dot * normal.z - wi_z),
+            )
+            norm = dr.rsqrt(dr.maximum(raw.x * raw.x + raw.y * raw.y + raw.z * raw.z, 1e-8))
+            return mi.Vector3f(raw.x * norm, raw.y * norm, raw.z * norm)
 
         def _vmf_pdf(self, cos_angle, dr):
             kappa = self.lobe_kappa

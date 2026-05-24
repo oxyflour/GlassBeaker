@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,8 +21,14 @@ class BrdfDataset:
     local_feature_period_m: float | None = None
     position_frequency_count: int = 0
     include_position_features: bool = True
+    include_incident_features: bool = True
+    radial_cell_feature_period_m: float | None = None
+    radial_cell_feature_max_rotation_rad: float = math.pi / 2.0
+    radial_cell_feature_radial_power: float = 1.0
+    radial_cell_facet_features: bool = False
     average_patch_radius_m: float = 0.0
     average_patch_sample_count: int = 1
+    target_mode: str = "reflection"
 
 
 @dataclass(frozen=True)
@@ -138,9 +145,17 @@ def build_brdf_dataset(
     local_feature_period_m: float | None = None,
     position_frequency_count: int = 0,
     include_position_features: bool = True,
+    include_incident_features: bool | None = None,
+    radial_cell_feature_period_m: float | None = None,
+    radial_cell_feature_max_rotation_rad: float = math.pi / 2.0,
+    radial_cell_feature_radial_power: float = 1.0,
+    radial_cell_facet_features: bool = False,
     average_patch_radius_m: float = 0.0,
     average_patch_sample_count: int = 1,
+    target_mode: str = "reflection",
 ) -> BrdfDataset:
+    if target_mode not in {"reflection", "normal"}:
+        raise ValueError("target_mode must be 'reflection' or 'normal'")
     surface = sample_height_field(program, sample_count=sample_count, width_m=width_m, depth_m=depth_m, seed=seed)
     gen = torch.Generator()
     gen.manual_seed(int(seed) + 31)
@@ -148,7 +163,10 @@ def build_brdf_dataset(
     theta = torch.acos(cos_theta)
     phi = -torch.pi + 2.0 * torch.pi * torch.rand(sample_count, generator=gen)
     wi = angles_to_direction(theta, phi)
-    if average_patch_sample_count > 1 or average_patch_radius_m > 0.0:
+    uses_incident = target_mode == "reflection" if include_incident_features is None else bool(include_incident_features)
+    if target_mode == "normal":
+        wo = surface.normals
+    elif average_patch_sample_count > 1 or average_patch_radius_m > 0.0:
         wo = patch_reflection_moments(
             program,
             surface.positions[:, 0],
@@ -171,6 +189,11 @@ def build_brdf_dataset(
         local_feature_period_m=local_feature_period_m,
         position_frequency_count=position_frequency_count,
         include_position_features=include_position_features,
+        include_incident_features=uses_incident,
+        radial_cell_feature_period_m=radial_cell_feature_period_m,
+        radial_cell_feature_max_rotation_rad=radial_cell_feature_max_rotation_rad,
+        radial_cell_feature_radial_power=radial_cell_feature_radial_power,
+        radial_cell_facet_features=radial_cell_facet_features,
     )
     return BrdfDataset(
         features=features,
@@ -181,8 +204,14 @@ def build_brdf_dataset(
         local_feature_period_m=local_feature_period_m,
         position_frequency_count=position_frequency_count,
         include_position_features=include_position_features,
+        include_incident_features=uses_incident,
+        radial_cell_feature_period_m=radial_cell_feature_period_m,
+        radial_cell_feature_max_rotation_rad=radial_cell_feature_max_rotation_rad,
+        radial_cell_feature_radial_power=radial_cell_feature_radial_power,
+        radial_cell_facet_features=radial_cell_facet_features,
         average_patch_radius_m=average_patch_radius_m,
         average_patch_sample_count=average_patch_sample_count,
+        target_mode=target_mode,
     )
 
 
@@ -229,6 +258,11 @@ def predict_outgoing_angles(
     local_feature_period_m: float | None = None,
     position_frequency_count: int = 0,
     include_position_features: bool = True,
+    include_incident_features: bool = True,
+    radial_cell_feature_period_m: float | None = None,
+    radial_cell_feature_max_rotation_rad: float = math.pi / 2.0,
+    radial_cell_feature_radial_power: float = 1.0,
+    radial_cell_facet_features: bool = False,
 ) -> torch.Tensor:
     features = make_features(
         x,
@@ -241,6 +275,11 @@ def predict_outgoing_angles(
         local_feature_period_m=local_feature_period_m,
         position_frequency_count=position_frequency_count,
         include_position_features=include_position_features,
+        include_incident_features=include_incident_features,
+        radial_cell_feature_period_m=radial_cell_feature_period_m,
+        radial_cell_feature_max_rotation_rad=radial_cell_feature_max_rotation_rad,
+        radial_cell_feature_radial_power=radial_cell_feature_radial_power,
+        radial_cell_facet_features=radial_cell_facet_features,
     )
     with torch.no_grad():
         return directions_to_angles(model(features)[:, :3])
@@ -256,11 +295,20 @@ def export_surrogate_npz(
     local_feature_period_m: float | None = None,
     position_frequency_count: int = 0,
     include_position_features: bool | None = None,
+    include_incident_features: bool = True,
+    radial_cell_feature_period_m: float | None = None,
+    radial_cell_feature_max_rotation_rad: float = math.pi / 2.0,
+    radial_cell_feature_radial_power: float = 1.0,
+    radial_cell_facet_features: bool = False,
     average_patch_radius_m: float = 0.0,
     average_patch_sample_count: int = 1,
+    target_mode: str = "reflection",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    uses_position = model.input_dim > 3 if include_position_features is None else bool(include_position_features)
+    if target_mode not in {"reflection", "normal"}:
+        raise ValueError("target_mode must be 'reflection' or 'normal'")
+    incident_dim = 3 if include_incident_features else 0
+    uses_position = model.input_dim > incident_dim if include_position_features is None else bool(include_position_features)
     metadata = {
         "width_m": float(width_m),
         "depth_m": float(depth_m),
@@ -269,15 +317,22 @@ def export_surrogate_npz(
         "position_frequency_count": int(position_frequency_count),
         "hidden_layer_count": int(model.hidden_layer_count),
         "include_position_features": uses_position,
+        "include_incident_features": bool(include_incident_features),
         "input_dim": int(model.input_dim),
         "output_dim": int(model.output_dim),
         "average_patch_radius_m": float(average_patch_radius_m),
         "average_patch_sample_count": int(average_patch_sample_count),
+        "target_mode": target_mode,
     }
     if feature_period_m is not None:
         metadata["feature_period_m"] = float(feature_period_m)
     if local_feature_period_m is not None:
         metadata["local_feature_period_m"] = float(local_feature_period_m)
+    if radial_cell_feature_period_m is not None:
+        metadata["radial_cell_feature_period_m"] = float(radial_cell_feature_period_m)
+        metadata["radial_cell_feature_max_rotation_rad"] = float(radial_cell_feature_max_rotation_rad)
+        metadata["radial_cell_feature_radial_power"] = float(radial_cell_feature_radial_power)
+        metadata["radial_cell_facet_features"] = bool(radial_cell_facet_features)
     arrays: dict[str, object] = {
         "metadata": json.dumps(metadata),
         "layer_count": np.asarray([len(model.layers)], dtype=np.int32),
@@ -308,10 +363,17 @@ def make_features(
     local_feature_period_m: float | None = None,
     position_frequency_count: int = 0,
     include_position_features: bool = True,
+    include_incident_features: bool = True,
+    radial_cell_feature_period_m: float | None = None,
+    radial_cell_feature_max_rotation_rad: float = math.pi / 2.0,
+    radial_cell_feature_radial_power: float = 1.0,
+    radial_cell_facet_features: bool = False,
 ) -> torch.Tensor:
     sin_theta = torch.sin(theta)
     incident = [torch.cos(theta), sin_theta * torch.cos(phi), sin_theta * torch.sin(phi)]
     if not include_position_features:
+        if not include_incident_features:
+            raise ValueError("at least one feature group must be enabled")
         return torch.stack(incident, dim=1).to(dtype=torch.float32)
     if feature_period_m is None:
         x_feature = x / (float(width_m) * 0.5)
@@ -331,6 +393,17 @@ def make_features(
             torch.remainder(x, local_period) / (local_period * 0.5) - 1.0,
             torch.remainder(y, local_period) / (local_period * 0.5) - 1.0,
         ])
+    if radial_cell_feature_period_m is not None:
+        encoded.extend(_radial_cell_features(
+            x,
+            y,
+            width_m=width_m,
+            depth_m=depth_m,
+            period_m=radial_cell_feature_period_m,
+            max_rotation_rad=radial_cell_feature_max_rotation_rad,
+            radial_power=radial_cell_feature_radial_power,
+            include_facet_features=radial_cell_facet_features,
+        ))
     for index in range(max(0, int(position_frequency_count))):
         frequency = float(2 ** index) * torch.pi
         encoded.extend([
@@ -339,8 +412,46 @@ def make_features(
             torch.sin(frequency * y_feature),
             torch.cos(frequency * y_feature),
         ])
-    values = [*encoded, *incident]
+    values = [*encoded, *incident] if include_incident_features else encoded
     return torch.stack(values, dim=1).to(dtype=torch.float32)
+
+
+def _radial_cell_features(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    *,
+    width_m: float,
+    depth_m: float,
+    period_m: float,
+    max_rotation_rad: float,
+    radial_power: float,
+    include_facet_features: bool = False,
+) -> list[torch.Tensor]:
+    if period_m <= 0:
+        raise ValueError("radial_cell_feature_period_m must be positive")
+    if radial_power <= 0:
+        raise ValueError("radial_cell_feature_radial_power must be positive")
+    period = float(period_m)
+    center_x = torch.floor(x / period + 0.5) * period
+    center_y = torch.floor(y / period + 0.5) * period
+    local_x = x - center_x
+    local_y = y - center_y
+    radius = torch.sqrt(center_x * center_x + center_y * center_y)
+    max_radius = math.sqrt((float(width_m) * 0.5) ** 2 + (float(depth_m) * 0.5) ** 2)
+    angle = float(max_rotation_rad) * radius / max_radius ** float(radial_power)
+    cos_angle = torch.cos(angle)
+    sin_angle = torch.sin(angle)
+    rotated_x = (cos_angle * local_x + sin_angle * local_y) / (period * 0.5)
+    rotated_y = (-sin_angle * local_x + cos_angle * local_y) / (period * 0.5)
+    features = [rotated_x, rotated_y, sin_angle, cos_angle]
+    if include_facet_features:
+        sign_x = torch.where(rotated_x >= 0.0, torch.ones_like(rotated_x), -torch.ones_like(rotated_x))
+        sign_y = torch.where(rotated_y >= 0.0, torch.ones_like(rotated_y), -torch.ones_like(rotated_y))
+        x_dominant = torch.abs(rotated_x) >= torch.abs(rotated_y)
+        facet_slope_x = torch.where(x_dominant, -sign_x * cos_angle, sign_y * sin_angle)
+        facet_slope_y = torch.where(x_dominant, -sign_x * sin_angle, -sign_y * cos_angle)
+        features.extend([facet_slope_x, facet_slope_y])
+    return features
 
 
 def average_patch_reflections(
