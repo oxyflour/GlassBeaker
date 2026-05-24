@@ -9,7 +9,7 @@ import torch
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT))
 
-from kokoro.height_field import compile_height_program, pyramid_height, sample_height_field
+from kokoro.height_field import compile_height_program, pyramid_height, radial_rotated_pyramid_height, sample_height_field
 
 
 class HeightFieldTest(unittest.TestCase):
@@ -47,6 +47,45 @@ def height(x, y):
         self.assertTrue(torch.allclose(z[2], z[3]))
         self.assertGreater(z[2].item(), z[0].item())
         self.assertTrue(torch.isclose(z[2], torch.tensor(amplitude, dtype=z.dtype), atol=1e-8))
+
+    def test_radial_rotated_pyramid_changes_cell_orientation_with_radius(self) -> None:
+        period = 0.01
+        amplitude = 0.002
+        local_x = 0.002
+        local_y = 0.004
+
+        center = radial_rotated_pyramid_height(
+            torch.tensor([local_x]),
+            torch.tensor([local_y]),
+            period_m=period,
+            amplitude_m=amplitude,
+            width_m=0.10,
+            depth_m=0.10,
+            max_rotation_rad=torch.pi / 2.0,
+        )
+        outer = radial_rotated_pyramid_height(
+            torch.tensor([0.04 + local_x]),
+            torch.tensor([local_y]),
+            period_m=period,
+            amplitude_m=amplitude,
+            width_m=0.10,
+            depth_m=0.10,
+            max_rotation_rad=torch.pi / 2.0,
+        )
+
+        self.assertFalse(torch.allclose(center, outer, atol=1e-7))
+
+    def test_height_program_exposes_radial_rotated_pyramid_baseline(self) -> None:
+        program = compile_height_program(
+            """
+def height(x, y):
+    return radial_rotated_pyramid_height(x, y, period_m=0.01, amplitude_m=0.002)
+"""
+        )
+
+        z = program.evaluate(torch.tensor([0.0]), torch.tensor([0.0]))
+
+        self.assertEqual(z.shape, (1,))
 
 
 if __name__ == "__main__":

@@ -5,8 +5,6 @@ import json
 import sys
 from pathlib import Path
 
-import torch
-
 from kokoro.brdf import BrdfTrainingConfig, build_brdf_dataset, export_surrogate_npz, train_brdf_surrogate
 from kokoro.height_field import compile_height_program
 from kokoro.mitsuba_neural_bsdf import register_kokoro_bsdf
@@ -28,7 +26,8 @@ DEFAULT_SAMPLES = 4096
 DEFAULT_EPOCHS = 200
 DEFAULT_HIDDEN_DIM = 96
 DEFAULT_LOBE_KAPPA = 4096.0
-PYRAMID_5CM_PERIOD_M = 0.05
+DEFAULT_AVERAGE_PATCH_RADIUS_M = 0.001
+DEFAULT_AVERAGE_PATCH_SAMPLES = 32
 FLAT_HEIGHT = """
 def height(x, y):
     return x * 0.0
@@ -51,6 +50,8 @@ def main() -> None:
     parser.add_argument("--spp", type=int, default=64)
     parser.add_argument("--ply-grid", type=int, default=96)
     parser.add_argument("--lobe-kappa", type=float, default=DEFAULT_LOBE_KAPPA)
+    parser.add_argument("--average-patch-radius-m", type=float, default=DEFAULT_AVERAGE_PATCH_RADIUS_M)
+    parser.add_argument("--average-patch-samples", type=int, default=DEFAULT_AVERAGE_PATCH_SAMPLES)
     parser.add_argument("--variant", default="cuda_ad_rgb")
     args = parser.parse_args()
 
@@ -64,12 +65,12 @@ def main() -> None:
         "flat_z0": _validate_case(
             mi, artifacts, "flat", compile_height_program(FLAT_HEIGHT),
             neural_path=artifacts.flat_neural, reference_path=artifacts.flat_mirror,
-            diff_path=artifacts.flat_diff, args=args, feature_period_m=None,
+            diff_path=artifacts.flat_diff, args=args,
         ),
         "pyramid_period_5cm": _validate_case(
             mi, artifacts, "pyramid", compile_height_program(PYRAMID_5CM_HEIGHT),
             neural_path=artifacts.pyramid_neural, reference_path=artifacts.pyramid_ply,
-            diff_path=artifacts.pyramid_diff, args=args, feature_period_m=PYRAMID_5CM_PERIOD_M,
+            diff_path=artifacts.pyramid_diff, args=args,
         ),
     }
     write_json(artifacts.metrics, results)
@@ -86,7 +87,6 @@ def _validate_case(
     reference_path: Path,
     diff_path: Path,
     args,
-    feature_period_m: float | None,
 ):
     dataset = build_brdf_dataset(
         program,
@@ -94,14 +94,22 @@ def _validate_case(
         width_m=0.10,
         depth_m=0.10,
         seed=19,
-        feature_period_m=feature_period_m,
+        average_patch_radius_m=args.average_patch_radius_m,
+        average_patch_sample_count=args.average_patch_samples,
     )
     result = train_brdf_surrogate(
         dataset,
         BrdfTrainingConfig(hidden_dim=args.hidden_dim, epochs=args.epochs, batch_size=128, lr=0.004, seed=23),
     )
     checkpoint = artifacts.root / f"{name}_brdf.npz"
-    export_surrogate_npz(result.model, checkpoint, width_m=0.10, depth_m=0.10, feature_period_m=feature_period_m)
+    export_surrogate_npz(
+        result.model,
+        checkpoint,
+        width_m=0.10,
+        depth_m=0.10,
+        average_patch_radius_m=args.average_patch_radius_m,
+        average_patch_sample_count=args.average_patch_samples,
+    )
     scene = neural_plane_scene(
         checkpoint, args.hdr_path, width=args.film_width, height=args.film_height,
         spp=args.spp, lobe_kappa=args.lobe_kappa,

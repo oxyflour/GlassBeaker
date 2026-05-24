@@ -14,22 +14,20 @@ def build_kokoro_scene_dict(
     width_m: float = 0.10,
     depth_m: float = 0.10,
     spp: int = 64,
-    env_scale: float = 5.0,
+    env_scale: float = 1.0,
+    inspection_light_scale: float = 0.0,
     fov: float = 65.0,
+    top_light_height_m: float = 0.06,
+    top_light_intensity: float = 6.0,
+    lobe_kappa: float = 96.0,
 ) -> dict[str, Any]:
     scene: dict[str, Any] = {
         "type": "scene",
         "integrator": {"type": "path"},
-        "environment": {"type": "envmap", "filename": str(hdr_path), "scale": float(env_scale)},
-        "inspection_light": {
-            "type": "rectangle",
-            "to_world_matrix": [
-                [0.16, 0.0, 0.0, 0.0],
-                [0.0, -0.16, 0.0, 0.0],
-                [0.0, 0.0, -1.0, 0.14],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            "emitter": {"type": "area", "radiance": {"type": "rgb", "value": [5.0, 5.2, 5.6]}},
+        "top_point_light": {
+            "type": "point",
+            "position": [0.0, 0.0, float(top_light_height_m)],
+            "intensity": {"type": "rgb", "value": [float(top_light_intensity)] * 3},
         },
         "surface": {
             "type": "rectangle",
@@ -43,7 +41,8 @@ def build_kokoro_scene_dict(
                 "type": "kokoro_neural_reflector",
                 "checkpoint": str(checkpoint_path),
                 "reflectance": [0.86, 0.88, 0.92],
-                "lobe_kappa": 96.0,
+                "lobe_kappa": float(lobe_kappa),
+                "ring_lobe_count": 4,
             },
         },
         "sensor": {
@@ -57,6 +56,105 @@ def build_kokoro_scene_dict(
             "sampler": {"type": "independent", "sample_count": int(spp)},
             "film": {"type": "hdrfilm", "width": int(width), "height": int(height), "rfilter": {"type": "box"}},
         },
+    }
+    if inspection_light_scale > 0.0:
+        scale = float(inspection_light_scale)
+        scene["inspection_light"] = {
+            "type": "rectangle",
+            "to_world_matrix": [
+                [0.16, 0.0, 0.0, 0.0],
+                [0.0, -0.16, 0.0, 0.0],
+                [0.0, 0.0, -1.0, 0.14],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "emitter": {"type": "area", "radiance": {"type": "rgb", "value": [5.0 * scale, 5.2 * scale, 5.6 * scale]}},
+        }
+    return scene
+
+
+def build_kokoro_ring_diagnostic_scene_dict(
+    *,
+    checkpoint_path: Path,
+    width: int = 512,
+    height: int = 512,
+    width_m: float = 0.10,
+    depth_m: float = 0.10,
+    spp: int = 512,
+    fov: float = 55.0,
+    light_height_m: float = 0.04,
+    camera_height_m: float = 0.12,
+    light_intensity: float = 6.0,
+) -> dict[str, Any]:
+    return {
+        "type": "scene",
+        "integrator": {"type": "path"},
+        "ring_point_light": {
+            "type": "point",
+            "position": [0.0, 0.0, float(light_height_m)],
+            "intensity": {"type": "rgb", "value": [float(light_intensity)] * 3},
+        },
+        "surface": {
+            "type": "rectangle",
+            "to_world_matrix": [
+                [float(width_m) * 0.5, 0.0, 0.0, 0.0],
+                [0.0, float(depth_m) * 0.5, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            "bsdf": {
+                "type": "kokoro_neural_reflector",
+                "checkpoint": str(checkpoint_path),
+                "reflectance": [0.86, 0.88, 0.92],
+                "lobe_kappa": 128.0,
+                "ring_lobe_count": 4,
+            },
+        },
+        "sensor": {
+            "type": "perspective",
+            "fov": float(fov),
+            "to_world_look_at": {
+                "origin": [0.0, 0.0, float(camera_height_m)],
+                "target": [0.0, 0.0, 0.0],
+                "up": [0.0, 1.0, 0.0],
+            },
+            "sampler": {"type": "independent", "sample_count": int(spp)},
+            "film": {"type": "hdrfilm", "width": int(width), "height": int(height), "rfilter": {"type": "box"}},
+        },
+    }
+
+
+def build_height_field_reference_scene_dict(
+    *,
+    height_source: str,
+    width: int = 512,
+    height: int = 384,
+    width_m: float = 0.10,
+    depth_m: float = 0.10,
+    spp: int = 64,
+    inspection_light_scale: float = 0.0,
+    fov: float = 65.0,
+    normal_step_m: float = 25e-6,
+    lobe_kappa: float = 4096.0,
+) -> dict[str, Any]:
+    scene = build_kokoro_scene_dict(
+        checkpoint_path=Path("unused.npz"),
+        hdr_path=Path("unused.hdr"),
+        width=width,
+        height=height,
+        width_m=width_m,
+        depth_m=depth_m,
+        spp=spp,
+        inspection_light_scale=inspection_light_scale,
+        fov=fov,
+    )
+    scene["surface"]["bsdf"] = {
+        "type": "kokoro_height_field_reflector",
+        "height_source": height_source,
+        "width_m": float(width_m),
+        "depth_m": float(depth_m),
+        "normal_step_m": float(normal_step_m),
+        "reflectance": [0.86, 0.88, 0.92],
+        "lobe_kappa": float(lobe_kappa),
     }
     return scene
 

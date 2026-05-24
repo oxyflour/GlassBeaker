@@ -41,7 +41,8 @@ class ValidationTest(unittest.TestCase):
         self.assertEqual(validate_material.DEFAULT_EPOCHS, 200)
         self.assertEqual(validate_material.DEFAULT_HIDDEN_DIM, 96)
         self.assertEqual(validate_material.DEFAULT_LOBE_KAPPA, 4096.0)
-        self.assertEqual(validate_material.PYRAMID_5CM_PERIOD_M, 0.05)
+        self.assertGreater(validate_material.DEFAULT_AVERAGE_PATCH_RADIUS_M, 0.0)
+        self.assertGreater(validate_material.DEFAULT_AVERAGE_PATCH_SAMPLES, 1)
 
     def test_validation_ply_is_local_artifact_for_large_period_reference(self) -> None:
         program = compile_height_program("def height(x, y):\n    return x * 0.0\n")

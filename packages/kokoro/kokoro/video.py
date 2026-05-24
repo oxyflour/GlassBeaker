@@ -4,8 +4,19 @@ import io
 import struct
 from pathlib import Path
 
+import imageio.v2 as imageio
 import numpy as np
 from PIL import Image
+
+
+def write_mp4(path: Path, frames: list[np.ndarray], *, fps: int) -> None:
+    if not frames:
+        raise ValueError("frames must not be empty")
+    if fps <= 0:
+        raise ValueError("fps must be positive")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rgb_frames = [_rgb8_frame(frame) for frame in frames]
+    imageio.mimsave(path, rgb_frames, fps=fps, codec="libx264", quality=8, macro_block_size=1)
 
 
 def write_mjpeg_avi(path: Path, frames: list[np.ndarray], *, fps: int) -> None:
@@ -21,6 +32,13 @@ def write_mjpeg_avi(path: Path, frames: list[np.ndarray], *, fps: int) -> None:
 
 
 def _jpeg_bytes(frame: np.ndarray) -> bytes:
+    image = Image.fromarray(_rgb8_frame(frame), mode="RGB")
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
+
+
+def _rgb8_frame(frame: np.ndarray) -> np.ndarray:
     array = np.asarray(frame)
     if array.ndim != 3 or array.shape[2] < 3:
         raise ValueError("frame must be an RGB-like array")
@@ -29,10 +47,7 @@ def _jpeg_bytes(frame: np.ndarray) -> bytes:
         array = np.maximum(array, 0.0)
         array = array / (1.0 + array)
         array = np.power(array, 1.0 / 2.2) * 255.0
-    image = Image.fromarray(np.asarray(np.clip(array, 0, 255), dtype=np.uint8), mode="RGB")
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=90)
-    return buffer.getvalue()
+    return np.asarray(np.clip(array, 0, 255), dtype=np.uint8)
 
 
 def _frame_size(frame: np.ndarray) -> tuple[int, int]:

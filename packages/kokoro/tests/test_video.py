@@ -10,10 +10,25 @@ import numpy as np
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT))
 
-from kokoro.video import write_mjpeg_avi
+from kokoro.video import write_mjpeg_avi, write_mp4
 
 
 class VideoTest(unittest.TestCase):
+    def test_write_mp4_creates_h264_mp4_file(self) -> None:
+        frames = [
+            np.full((8, 10, 3), [220, 40, 20], dtype=np.uint8),
+            np.full((8, 10, 3), [20, 80, 220], dtype=np.uint8),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "orbit.mp4"
+
+            write_mp4(path, frames, fps=12)
+
+            data = path.read_bytes()
+            self.assertGreater(len(data), 128)
+            self.assertIn(b"ftyp", data[:16])
+            self.assertIn(b"mp4", data[:32].lower())
+
     def test_write_mjpeg_avi_creates_indexed_avi_file(self) -> None:
         frames = [
             np.full((8, 10, 3), [220, 40, 20], dtype=np.uint8),

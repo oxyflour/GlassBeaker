@@ -54,8 +54,8 @@ class ValidationArtifacts:
 
 def angular_error_degrees(model: KokoroBrdfNet, features: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
     with torch.no_grad():
-        predicted = torch.nn.functional.normalize(model(features), dim=1)
-        target = torch.nn.functional.normalize(targets, dim=1)
+        predicted = torch.nn.functional.normalize(model(features)[:, :3], dim=1)
+        target = torch.nn.functional.normalize(targets[:, :3], dim=1)
     cosine = torch.clamp(torch.sum(predicted * target, dim=1), -1.0, 1.0)
     error = torch.acos(cosine) * (180.0 / torch.pi)
     return {
