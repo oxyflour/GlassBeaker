@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 import sys
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -147,6 +149,31 @@ class SessionThreadingTest(unittest.IsolatedAsyncioTestCase):
 
         result = await asyncio.wait_for(blocked, timeout=0.5)
         self.assertEqual(result, {"method": "ping", "args": ["value"]})
+
+    async def test_call_warns_when_method_takes_more_than_half_second(self):
+        class DummySession(Session):
+            def call_once(self, method: str, args: tuple):
+                return {"method": method, "args": list(args)}
+
+        session = DummySession.__new__(DummySession)
+        session.calls = queue.Queue()
+        session._deferred_calls = []
+        session._world_owner = None
+        session._running_calls = 0
+        session.active = 0
+
+        pending = asyncio.create_task(session.call("slow_method", "value"))
+        await asyncio.sleep(0)
+
+        with mock.patch("utils.session.time.time", side_effect=[10.0, 10.6]):
+            with mock.patch("builtins.print") as print_mock:
+                session.proc_once()
+
+        self.assertEqual(
+            await asyncio.wait_for(pending, timeout=0.5),
+            {"method": "slow_method", "args": ["value"]},
+        )
+        print_mock.assert_called_once_with("WARN: session call slow_method took 0.600s")
 
 
 class SessionLoopBindingTest(SessionTestCase):

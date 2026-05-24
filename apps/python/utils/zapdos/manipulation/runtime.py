@@ -54,7 +54,7 @@ class ManipulationRuntime:
         self.executor = executor or PickExecutor(session.physics, session.bundle)
         self.operation_tasks: dict[str, ConcurrentFuture[Any] | asyncio.Task[Any]] = {}
 
-    def list_scene_objects(self) -> dict[str, object]:
+    def list_manipulation_objects(self) -> dict[str, object]:
         return {
             "items": self._scene_objects(),
             "scene_revision": self.session.editor.scene_revision,
@@ -94,19 +94,34 @@ class ManipulationRuntime:
         }))
 
     def place_apple(self) -> dict[str, object]:
-        objects = self._scene_objects()
-        grounded = self._ground_target({
+        return self._place_grounded_object({
             "target_query": BENCHMARK_OBJECT_TARGET_QUERY,
             "support_query": BENCHMARK_OBJECT_SUPPORT_QUERY,
-        }, objects)
+        }, arm=BENCHMARK_OBJECT_ARM, unattached_label="cube")
+
+    def place_object(self, args: dict[str, object]) -> dict[str, object]:
+        if not isinstance(args, dict):
+            raise HTTPException(status_code=400, detail="place_object expects a single object argument")
+        return self._place_grounded_object(args, arm=str(args.get("arm") or "left"), unattached_label="object")
+
+    def _place_grounded_object(
+        self,
+        request: dict[str, object],
+        *,
+        arm: str,
+        unattached_label: str,
+    ) -> dict[str, object]:
+        objects = self._scene_objects()
+        grounded = self._ground_target(request, objects)
         target = grounded["target"]
-        if self.session.physics.get_attachment(target["body"]) is None:
-            raise HTTPException(status_code=409, detail=f"Place cube requires {target['body']} to be attached")
+        target_body = target["body"]
+        if self.session.physics.get_attachment(target_body) is None:
+            raise HTTPException(status_code=409, detail=f"Place {unattached_label} requires {target_body} to be attached")
         self._sync_executor_state()
         return self._start_operation(self.executor.iter_execute({
             "kind": "release",
-            "arm": BENCHMARK_OBJECT_ARM,
-            "target_body": target["body"],
+            "arm": arm,
+            "target_body": target_body,
             "stages": [
                 {
                     "name": "open_gripper",
@@ -119,7 +134,7 @@ class ManipulationRuntime:
 
     def _scene_objects(self) -> list[SceneObject]:
         return self.catalog_loader(
-            self.session.editor.list_scene_bodies(),
+            self.session.editor.list_placement_bodies(),
             self.session.editor.overlay_state,
         )
 

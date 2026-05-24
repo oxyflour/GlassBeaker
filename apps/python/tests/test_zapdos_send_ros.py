@@ -88,6 +88,25 @@ class ZapdosSendRosTest(unittest.IsolatedAsyncioTestCase):
         )
         session.renderer.image_messages.assert_not_called()
 
+    async def test_send_ros_publishes_state_without_waiting_for_renderer_ready(self):
+        session = self.make_session()
+        session.renderer.wait_ready = mock.AsyncMock(side_effect=AssertionError("send_ros should not block on renderer readiness"))
+        bridge = _BridgeStub()
+
+        with self.sleep_patch:
+            with mock.patch.object(session_module, "bridge", bridge):
+                with mock.patch.object(session_module, "tf_message", return_value={"transforms": []}):
+                    await session.send_ros()
+
+        self.assertEqual(
+            [topic for topic, _, _ in bridge.publish_calls],
+            [
+                session_module.JOINT_STATES_TOPIC,
+                session_module.TF_RENDER_TOPIC,
+            ],
+        )
+        session.renderer.wait_ready.assert_not_called()
+
     async def test_send_ros_publishes_images_when_renderer_allows_publish(self):
         session = self.make_session()
         bridge = _BridgeStub()

@@ -17,6 +17,12 @@ class RendererFramePolicyTest(unittest.TestCase):
 
         self.assertTrue(should_render_frame(subscribers, frame_counter=0))
 
+    def test_startup_warmup_renders_first_few_frames_without_dirty_subscribers(self):
+        subscribers = [SimpleNamespace(_dirty=False)]
+
+        self.assertTrue(should_render_frame(subscribers, frame_counter=1))
+        self.assertTrue(should_render_frame(subscribers, frame_counter=2))
+
     def test_later_frame_skips_when_no_subscriber_is_dirty(self):
         subscribers = [SimpleNamespace(_dirty=False), SimpleNamespace(_dirty=False)]
 

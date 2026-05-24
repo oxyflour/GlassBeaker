@@ -7,7 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
-from utils.teleop.arm_config import ARM_CONFIGS, get_arm_config  # noqa: E402
+from utils.teleop.arm_config import ARM_CONFIGS, get_arm_config, load_arm_configs  # noqa: E402
 
 
 class SpaceMouseArmConfigTest(unittest.TestCase):
@@ -39,6 +39,7 @@ class SpaceMouseArmConfigTest(unittest.TestCase):
                 "Root_r1_pro_with_gripper_left_gripper_finger_link2",
             ),
         )
+        self.assertEqual(config.target_offset, (0.0, 0.0, 0.0))
 
     def test_right_arm_config_matches_r1pro_names(self):
         config = get_arm_config("right")
@@ -68,9 +69,24 @@ class SpaceMouseArmConfigTest(unittest.TestCase):
                 "Root_r1_pro_with_gripper_right_gripper_finger_link2",
             ),
         )
+        self.assertEqual(config.target_offset, (0.0, 0.0, 0.0))
 
     def test_configs_only_expose_left_and_right(self):
         self.assertEqual(sorted(ARM_CONFIGS), ["left", "right"])
+
+    def test_load_arm_configs_applies_target_offset_from_config(self):
+        configs = load_arm_configs("r1pro", config={
+            "override": {
+                "target_offset": {
+                    "r1pro": {
+                        "left": [0.01, -0.02, 0.03],
+                    },
+                },
+            },
+        })
+
+        self.assertEqual(configs["left"].target_offset, (0.01, -0.02, 0.03))
+        self.assertEqual(configs["right"].target_offset, (0.0, 0.0, 0.0))
 
 
 if __name__ == "__main__":

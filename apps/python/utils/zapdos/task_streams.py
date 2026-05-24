@@ -5,11 +5,14 @@ from typing import Any, Awaitable, Callable
 
 FINITE_TASK_NAMES = {
     "set_scene_assets",
+    "add_assets_to_scene",
     "remove_asset_from_scene",
+    "remove_assets_from_scene",
     "reset_pose",
     "pick_apple",
     "place_apple",
     "pick_object",
+    "place_object",
 }
 
 type SessionFutureAwaiter = Callable[[str, asyncio.Future], Awaitable[object]]

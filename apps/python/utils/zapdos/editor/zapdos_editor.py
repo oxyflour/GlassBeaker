@@ -6,7 +6,12 @@ import mujoco  # type: ignore
 import numpy as np
 
 from utils.zapdos.bundle.camera_specs import camera_name_to_index
-from utils.zapdos.editor.commands import build_remove_asset_overlay, build_set_scene_assets_overlay
+from utils.zapdos.editor.commands import (
+    build_add_scene_assets_overlay,
+    build_remove_asset_overlay,
+    build_remove_assets_overlay,
+    build_set_scene_assets_overlay,
+)
 from utils.zapdos.editor.rebuild_events import (
     SceneRebuildState,
     discard_scene_rebuild_job,
@@ -70,7 +75,7 @@ class ZapdosEditor:
 
     def stream_rebuild_job(self, op_id: str):
         return stream_scene_rebuild_job(self, op_id)
-    def list_scene_bodies(self) -> dict[str, object]:
+    def list_placement_bodies(self) -> dict[str, object]:
         support_infos = self._build_support_infos()
         items = []
         for body in sorted(self.session.physics.editable_body_names):
@@ -94,9 +99,17 @@ class ZapdosEditor:
         next_overlay, items = build_set_scene_assets_overlay(self, assets)
         return self._start_overlay_operation(next_overlay, {"ok": True, "items": items})
 
+    def add_assets_to_scene(self, assets: list[dict[str, object]]) -> dict[str, object]:
+        next_overlay, items = build_add_scene_assets_overlay(self, assets)
+        return self._start_overlay_operation(next_overlay, {"ok": True, "items": items})
+
     def remove_asset_from_scene(self, instance_id: str) -> dict[str, object]:
         next_overlay, _ = build_remove_asset_overlay(self, instance_id)
         return self._start_overlay_operation(next_overlay, {"ok": True, "instance_id": instance_id})
+
+    def remove_assets_from_scene(self, instance_ids: list[str]) -> dict[str, object]:
+        next_overlay, removed_ids = build_remove_assets_overlay(self, instance_ids)
+        return self._start_overlay_operation(next_overlay, {"ok": True, "instance_ids": removed_ids})
 
     def set_body_pose(self, body: str, pos: list[float], quat: list[float]) -> dict[str, object]:
         result = self.session.physics.set_body_pose(body, pos, quat)

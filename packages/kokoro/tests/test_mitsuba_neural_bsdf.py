@@ -13,6 +13,7 @@ sys.path.insert(0, str(PACKAGE_ROOT))
 from kokoro.brdf import KokoroBrdfNet, export_surrogate_npz
 from kokoro.mitsuba_height_field_bsdf import register_height_field_bsdf
 from kokoro.mitsuba_neural_bsdf import register_kokoro_bsdf
+from run_demo import WAVE_BLOCK_HEIGHT_SOURCE
 
 
 class MitsubaNeuralBsdfTest(unittest.TestCase):
@@ -317,6 +318,83 @@ class MitsubaNeuralBsdfTest(unittest.TestCase):
             pdf = float(bsdf.pdf(mi.BSDFContext(), si, mi.Vector3f(0.0, 0.0, 1.0), True))
             self.assertGreaterEqual(pdf, 0.0)
 
+    def test_dft_phase_vector_checkpoint_uses_saved_meter_space_phase(self) -> None:
+        import mitsuba as mi
+
+        mi.set_variant("scalar_rgb")
+        register_kokoro_bsdf(mi)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "dft_phase.npz"
+            model = KokoroBrdfNet(hidden_dim=5, input_dim=7)
+            with torch.no_grad():
+                for layer in model.layers:
+                    layer.weight.zero_()
+                    layer.bias.zero_()
+                model.layers[0].weight[0, 2] = 3.0
+                model.layers[1].weight[0, 0] = 3.0
+                model.layers[2].weight[0, 0] = 1.0
+                model.layers[2].bias[:] = torch.tensor([0.0, 0.0, 1.0])
+            export_surrogate_npz(
+                model,
+                checkpoint,
+                width_m=0.1,
+                depth_m=0.1,
+                dft_phase_vectors=[(2.0 * torch.pi / 250e-6, 0.0)],
+                include_position_features=True,
+            )
+
+            scene = mi.load_dict({
+                "type": "scene",
+                "shape": {
+                    "type": "rectangle",
+                    "bsdf": {"type": "kokoro_neural_reflector", "checkpoint": str(checkpoint), "lobe_kappa": 16.0},
+                },
+            })
+            bsdf = scene.shapes()[0].bsdf()
+            ctx = mi.BSDFContext()
+            wo = mi.Vector3f(0.5, 0.0, 0.8660254)
+            zero_phase = mi.SurfaceInteraction3f()
+            zero_phase.p = mi.Point3f(0.0, 0.0, 0.0)
+            zero_phase.wi = mi.Vector3f(0.0, 0.0, 1.0)
+            quarter_phase = mi.SurfaceInteraction3f()
+            quarter_phase.p = mi.Point3f(62.5e-6, 0.0, 0.0)
+            quarter_phase.wi = mi.Vector3f(0.0, 0.0, 1.0)
+            repeated_phase = mi.SurfaceInteraction3f()
+            repeated_phase.p = mi.Point3f(250e-6, 0.0, 0.0)
+            repeated_phase.wi = mi.Vector3f(0.0, 0.0, 1.0)
+
+            zero_pdf = float(bsdf.pdf(ctx, zero_phase, wo, True))
+            quarter_pdf = float(bsdf.pdf(ctx, quarter_phase, wo, True))
+            repeated_pdf = float(bsdf.pdf(ctx, repeated_phase, wo, True))
+            self.assertGreater(abs(zero_pdf - quarter_pdf), 1e-6)
+            self.assertAlmostEqual(zero_pdf, repeated_pdf, delta=1e-5)
+
+    def test_dft_phase_checkpoint_rejects_feature_count_mismatch(self) -> None:
+        import mitsuba as mi
+
+        mi.set_variant("scalar_rgb")
+        register_kokoro_bsdf(mi)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "bad_dft_phase.npz"
+            model = KokoroBrdfNet(hidden_dim=5, input_dim=5)
+            export_surrogate_npz(
+                model,
+                checkpoint,
+                width_m=0.1,
+                depth_m=0.1,
+                dft_phase_vectors=[(2.0 * torch.pi / 250e-6, 0.0)],
+                include_position_features=True,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "feature count mismatch"):
+                mi.load_dict({
+                    "type": "scene",
+                    "shape": {
+                        "type": "rectangle",
+                        "bsdf": {"type": "kokoro_neural_reflector", "checkpoint": str(checkpoint)},
+                    },
+                })
+
     def test_local_feature_period_checkpoint_uses_macro_and_cell_phase_features(self) -> None:
         import mitsuba as mi
 
@@ -492,6 +570,31 @@ class MitsubaNeuralBsdfTest(unittest.TestCase):
             load_pdf(positive_x_source, positive_x_lobe),
             load_pdf(negative_x_source, positive_x_lobe) * 100.0,
         )
+
+    def test_height_field_reference_bsdf_evaluates_wave_block_source(self) -> None:
+        import mitsuba as mi
+
+        mi.set_variant("scalar_rgb")
+        register_height_field_bsdf(mi)
+        scene = mi.load_dict({
+            "type": "scene",
+            "shape": {
+                "type": "rectangle",
+                "bsdf": {
+                    "type": "kokoro_height_field_reflector",
+                    "height_source": WAVE_BLOCK_HEIGHT_SOURCE,
+                    "normal_step_m": 1e-6,
+                    "lobe_kappa": 64.0,
+                },
+            },
+        })
+        si = mi.SurfaceInteraction3f()
+        si.p = mi.Point3f(0.0, 0.0, 0.0)
+        si.wi = mi.Vector3f(0.0, 0.0, 1.0)
+
+        pdf = float(scene.shapes()[0].bsdf().pdf(mi.BSDFContext(), si, mi.Vector3f(0.0, 0.0, 1.0), True))
+
+        self.assertGreaterEqual(pdf, 0.0)
 
 
 if __name__ == "__main__":

@@ -177,84 +177,72 @@ class IsaacRendererReadTest(unittest.TestCase):
         self.assertIn("snapshot failed", str(err.exception))
 
     def test_reload_scene_updates_bundle_and_camera_index_after_success(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            renderer = IsaacRenderer.__new__(IsaacRenderer)
-            renderer._running = True
-            renderer.proc_id = "renderer"
-            renderer.proc = None
-            renderer.control_dir = Path(tmp)
-            renderer.log_path = Path(tmp) / "renderer.log"
-            renderer._refresh_process_state = lambda: True
-            renderer._control_lock = threading.Lock()
-            renderer.bundle = self._bundle("old_scene.usda", "old_camera")
-            renderer.camera_index = {"old_camera": 0}
-            next_bundle = self._bundle("new_scene.usda", "head_camera", "wrist_camera")
-            requests: list[dict[str, object]] = []
+        renderer = IsaacRenderer.__new__(IsaacRenderer)
+        renderer._shm_prefix = "glassbeaker_sess_frames"
+        renderer._spawn_generation = 0
+        renderer.shm_name = "glassbeaker_sess_frames"
+        renderer.width = 4
+        renderer.height = 3
+        renderer.bundle = self._bundle("old_scene.usda", "old_camera")
+        renderer.camera_index = {"old_camera": 0}
+        renderer.close = mock.Mock()
+        renderer._spawn = mock.Mock()
+        next_bundle = self._bundle("new_scene.usda", "head_camera", "wrist_camera")
 
-            def respond() -> None:
-                request_path = renderer.control_dir / "request.json"
-                response_path = renderer.control_dir / "response.json"
-                deadline = time.time() + 2.0
-                while time.time() < deadline and not request_path.exists():
-                    time.sleep(0.01)
-                payload = json.loads(request_path.read_text(encoding="utf-8"))
-                requests.append(payload)
-                response_path.write_text(json.dumps({
-                    "id": payload["id"],
-                    "ok": True,
-                }), encoding="utf-8")
-
-            responder = threading.Thread(target=respond, daemon=True)
-            responder.start()
-
-            renderer.reload_scene(next_bundle, timeout=2.0)
+        renderer.reload_scene(next_bundle, timeout=2.0)
 
         self.assertIs(renderer.bundle, next_bundle)
         self.assertEqual(renderer.camera_index, {"head_camera": 0, "wrist_camera": 1})
-        self.assertEqual(requests[0]["op"], "reload_scene")
-        self.assertEqual(requests[0]["scene_usd"], "new_scene.usda")
-        self.assertEqual(requests[0]["cameras"], [
-            {"name": "head_camera", "prim": "/MyRobot/head_camera"},
-            {"name": "wrist_camera", "prim": "/MyRobot/wrist_camera"},
-        ])
+        self.assertEqual(renderer.frame_buffer.num_cameras, 2)
+        renderer.close.assert_called_once_with()
+        renderer._spawn.assert_called_once_with()
 
-    def test_reload_scene_keeps_existing_state_when_renderer_reports_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            renderer = IsaacRenderer.__new__(IsaacRenderer)
-            renderer._running = True
-            renderer.proc_id = "renderer"
-            renderer.proc = None
-            renderer.control_dir = Path(tmp)
-            renderer.log_path = Path(tmp) / "renderer.log"
-            renderer._refresh_process_state = lambda: True
-            renderer._control_lock = threading.Lock()
-            old_bundle = self._bundle("old_scene.usda", "old_camera")
-            renderer.bundle = old_bundle
-            renderer.camera_index = {"old_camera": 0}
-            next_bundle = self._bundle("new_scene.usda", "head_camera")
+    def test_reload_scene_keeps_existing_state_when_restart_fails(self):
+        renderer = IsaacRenderer.__new__(IsaacRenderer)
+        renderer._shm_prefix = "glassbeaker_sess_frames"
+        renderer._spawn_generation = 0
+        renderer.shm_name = "glassbeaker_sess_frames"
+        renderer.width = 4
+        renderer.height = 3
+        old_bundle = self._bundle("old_scene.usda", "old_camera")
+        renderer.bundle = old_bundle
+        renderer.camera_index = {"old_camera": 0}
+        renderer.close = mock.Mock()
+        renderer._spawn = mock.Mock(side_effect=RuntimeError("restart failed"))
+        next_bundle = self._bundle("new_scene.usda", "head_camera")
 
-            def respond() -> None:
-                request_path = renderer.control_dir / "request.json"
-                response_path = renderer.control_dir / "response.json"
-                deadline = time.time() + 2.0
-                while time.time() < deadline and not request_path.exists():
-                    time.sleep(0.01)
-                payload = json.loads(request_path.read_text(encoding="utf-8"))
-                response_path.write_text(json.dumps({
-                    "id": payload["id"],
-                    "ok": False,
-                    "error": "reload failed",
-                }), encoding="utf-8")
+        with self.assertRaises(RuntimeError) as err:
+            renderer.reload_scene(next_bundle, timeout=2.0)
 
-            responder = threading.Thread(target=respond, daemon=True)
-            responder.start()
-
-            with self.assertRaises(RuntimeError) as err:
-                renderer.reload_scene(next_bundle, timeout=2.0)
-
-        self.assertIn("reload failed", str(err.exception))
+        self.assertIn("restart failed", str(err.exception))
         self.assertIs(renderer.bundle, old_bundle)
         self.assertEqual(renderer.camera_index, {"old_camera": 0})
+        self.assertEqual(renderer.shm_name, "glassbeaker_sess_frames")
+        self.assertEqual(renderer._spawn_generation, 0)
+
+    def test_reload_scene_restarts_renderer_without_control_ipc(self):
+        renderer = IsaacRenderer.__new__(IsaacRenderer)
+        renderer._shm_prefix = "glassbeaker_sess_frames"
+        renderer._spawn_generation = 0
+        renderer.shm_name = "glassbeaker_sess_frames"
+        renderer.width = 4
+        renderer.height = 3
+        renderer.bundle = self._bundle("old_scene.usda", "old_camera")
+        renderer.camera_index = {"old_camera": 0}
+        renderer.close = mock.Mock()
+        renderer._spawn = mock.Mock()
+        renderer._control_request = mock.Mock(side_effect=AssertionError("reload should restart instead of hot reloading"))
+        next_bundle = self._bundle("new_scene.usda", "head_camera", "wrist_camera")
+
+        renderer.reload_scene(next_bundle, timeout=2.0)
+
+        renderer.close.assert_called_once_with()
+        renderer._spawn.assert_called_once_with()
+        self.assertIs(renderer.bundle, next_bundle)
+        self.assertEqual(renderer.camera_index, {"head_camera": 0, "wrist_camera": 1})
+        self.assertEqual(renderer.shm_name, "glassbeaker_sess_frames_r1")
+        self.assertEqual(renderer.frame_buffer.shm_name, "glassbeaker_sess_frames_r1")
+        self.assertEqual(renderer.frame_buffer.num_cameras, 2)
 
     def test_wait_ready_reports_log_path_when_renderer_exits(self):
         with tempfile.TemporaryDirectory() as tmp:

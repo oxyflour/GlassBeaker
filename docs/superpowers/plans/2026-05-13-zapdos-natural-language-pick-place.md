@@ -23,7 +23,7 @@
 - `apps/python/utils/zapdos/manipulation/executor.py`
   Execute plan steps through `IKController` and MuJoCo stepping.
 - `apps/python/utils/zapdos/manipulation/runtime.py`
-  Session-facing orchestration API: `list_scene_objects`, `pick_object`, `place_held_object`, `pick_and_place_object`.
+  Session-facing orchestration API: `list_manipulation_objects`, `pick_object`, `place_held_object`, `pick_and_place_object`.
 - `apps/python/utils/zapdos/physics/attachment.py`
   Held-object attachment state and pose-follow helper.
 - `apps/python/utils/zapdos/physics/base.py`
@@ -293,15 +293,15 @@ Expected: FAIL because `call_once` has no `pick_object` branch.
 
 ```python
 class ZapdosManipulationRuntime:
-    def list_scene_objects(self) -> dict[str, object]: ...
+    def list_manipulation_objects(self) -> dict[str, object]: ...
     def pick_object(self, args: dict[str, object]) -> dict[str, object]:
         grounded = ground_pick_target(self._catalog(), args["target_query"], args.get("support_query"))
         plan = plan_pick(grounded, arm=str(args.get("arm", "right")))
         return self.executor.execute(plan)
 
 def call_once(self, method: str, args: tuple):
-    if method == "list_scene_objects":
-        return self.manipulation.list_scene_objects()
+    if method == "list_manipulation_objects":
+        return self.manipulation.list_manipulation_objects()
     if method == "pick_object":
         return self.manipulation.pick_object(*args)
 ```

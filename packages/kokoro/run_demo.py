@@ -3,10 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any
 
-from kokoro.brdf import BrdfTrainingConfig, build_brdf_dataset, export_surrogate_npz, train_brdf_surrogate
+from kokoro.brdf import (
+    BrdfTrainingConfig,
+    build_brdf_dataset,
+    estimate_periodic_phase_vectors,
+    export_surrogate_npz,
+    train_brdf_surrogate,
+)
 from kokoro.direction_metrics import (
     DirectionHoldoutConfig,
     angular_error_degrees,
@@ -24,7 +31,63 @@ from kokoro.mitsuba_scene import (
 )
 from kokoro.video import write_mp4
 
-DEFAULT_HEIGHT_SOURCE = """
+WAVE_BLOCK_HEIGHT_SOURCE = """
+def _sin(value):
+    if "torch" in globals():
+        return torch.sin(value)
+    return dr.sin(value)
+
+
+def _abs(value):
+    if "torch" in globals():
+        return torch.abs(value)
+    return dr.abs(value)
+
+
+def _maximum(a, b):
+    if "torch" in globals():
+        return torch.maximum(a, b)
+    return dr.maximum(a, b)
+
+
+def _where(condition, when_true, when_false):
+    if "torch" in globals():
+        return torch.where(condition, when_true, when_false)
+    return dr.select(condition, when_true, when_false)
+
+
+def _remainder(value, period):
+    if "torch" in globals():
+        return torch.remainder(value, period)
+    return value - period * dr.floor(value / period)
+
+
+def wave(x, y):
+    phase = (2.0 * math.pi / 250e-6) * (x + 0.01 * y)
+    return 2e-6 * (0.5 + 0.5 * _sin(phase))
+
+
+def block(x, y):
+    period_m = 500e-6
+    gap_m = 80e-6
+    block_width_m = 40e-6
+    slope_width_m = 80e-6
+    block_pitch_m = block_width_m + 2.0 * slope_width_m + gap_m
+    local_x = _remainder(x + 0.5 * period_m, period_m) - 0.5 * period_m
+    local_y = _remainder(y + 0.5 * period_m, period_m) - 0.5 * period_m
+    cell_x = _remainder(local_x + 0.5 * block_pitch_m, block_pitch_m) - 0.5 * block_pitch_m
+    cell_y = _remainder(local_y + 0.5 * block_pitch_m, block_pitch_m) - 0.5 * block_pitch_m
+    edge_distance = _maximum(_abs(cell_x), _abs(cell_y))
+    top_half_width_m = 0.5 * block_width_m
+    ramp = 1.0 - _maximum(edge_distance - top_half_width_m, x * 0.0) / slope_width_m
+    height = 10e-6 * _maximum(ramp, x * 0.0)
+    return _where(height > 0.0, height, x * 0.0)
+
+
+def height(x, y):
+    return _maximum(wave(x, y), block(x, y))
+"""
+RADIAL_PYRAMID_HEIGHT_SOURCE = """
 def height(x, y):
     return radial_rotated_pyramid_height(
         x,
@@ -34,10 +97,19 @@ def height(x, y):
         max_rotation_rad=2.0 * math.pi / 4.0,
     )
 """
+DEFAULT_HEIGHT_PRESET = "wave-block"
+HEIGHT_PRESET_SOURCES = {
+    "wave-block": WAVE_BLOCK_HEIGHT_SOURCE,
+    "radial-pyramid": RADIAL_PYRAMID_HEIGHT_SOURCE,
+}
+DEFAULT_HEIGHT_SOURCE = HEIGHT_PRESET_SOURCES[DEFAULT_HEIGHT_PRESET]
 DEFAULT_OUTPUT_DIR = Path("packages/kokoro/tmp")
 DEFAULT_HDR_PATH = Path("apps/web/public/studio_small_03_1k.hdr")
 DEFAULT_FEATURE_PERIOD_M = None
 DEFAULT_LOCAL_FEATURE_PERIOD_M = None
+DEFAULT_DFT_PHASE_VECTOR_COUNT = 4
+DEFAULT_DFT_PHASE_GRID_SIZE = 256
+DEFAULT_DFT_PHASE_WINDOW_M = 2.0e-3
 DEFAULT_POSITION_FREQUENCY_COUNT = 0
 DEFAULT_RADIAL_CELL_FEATURE_PERIOD_M = 500e-6
 DEFAULT_RADIAL_CELL_FEATURE_MAX_ROTATION_RAD = math.pi / 2.0
@@ -53,6 +125,7 @@ DEFAULT_HOLDOUT_GRID_SIZE = 32
 DEFAULT_HOLDOUT_THETA_COUNT = 5
 DEFAULT_HOLDOUT_PHI_COUNT = 8
 DEFAULT_TARGET_MODE = "normal"
+DEFAULT_NORMAL_STEP_M = 0.5e-6
 DEFAULT_ACTIVATION = "tanh"
 DEFAULT_OMEGA_0 = 4.0
 DEFAULT_AVERAGE_PATCH_RADIUS_M = 0.0
@@ -75,6 +148,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train a kokoro neural BRDF and write a Mitsuba scene.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--height-source", type=Path, default=None)
+    parser.add_argument("--height-preset", choices=sorted(HEIGHT_PRESET_SOURCES), default=DEFAULT_HEIGHT_PRESET)
     parser.add_argument("--hdr-path", type=Path, default=DEFAULT_HDR_PATH)
     parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
@@ -83,6 +157,10 @@ def main() -> None:
     parser.add_argument("--activation", choices=["sine", "tanh"], default=DEFAULT_ACTIVATION)
     parser.add_argument("--omega-0", type=float, default=DEFAULT_OMEGA_0)
     parser.add_argument("--local-feature-period-m", type=float, default=DEFAULT_LOCAL_FEATURE_PERIOD_M)
+    parser.add_argument("--dft-phase-vector-count", type=int, default=DEFAULT_DFT_PHASE_VECTOR_COUNT)
+    parser.add_argument("--dft-phase-grid-size", type=int, default=DEFAULT_DFT_PHASE_GRID_SIZE)
+    parser.add_argument("--dft-phase-window-m", type=float, default=DEFAULT_DFT_PHASE_WINDOW_M)
+    parser.add_argument("--disable-dft-phase-features", action="store_true")
     parser.add_argument("--position-frequency-count", type=int, default=DEFAULT_POSITION_FREQUENCY_COUNT)
     parser.add_argument("--radial-cell-feature-period-m", type=float, default=None)
     parser.add_argument("--radial-cell-feature-max-rotation-rad", type=float, default=DEFAULT_RADIAL_CELL_FEATURE_MAX_ROTATION_RAD)
@@ -94,6 +172,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
     parser.add_argument("--target-mode", choices=["reflection", "normal"], default=DEFAULT_TARGET_MODE)
+    parser.add_argument("--normal-step-m", type=float, default=DEFAULT_NORMAL_STEP_M)
     parser.add_argument("--holdout-grid-size", type=int, default=DEFAULT_HOLDOUT_GRID_SIZE)
     parser.add_argument("--holdout-theta-count", type=int, default=DEFAULT_HOLDOUT_THETA_COUNT)
     parser.add_argument("--holdout-phi-count", type=int, default=DEFAULT_HOLDOUT_PHI_COUNT)
@@ -121,29 +200,38 @@ def main() -> None:
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--reference-render", action="store_true")
     parser.add_argument("--reference-lobe-kappa", type=float, default=4096.0)
-    parser.add_argument("--reference-normal-step-m", type=float, default=25e-6)
+    parser.add_argument("--reference-normal-step-m", type=float, default=DEFAULT_NORMAL_STEP_M)
     parser.add_argument("--ring-diagnostic", action="store_true")
     parser.add_argument("--video", action="store_true")
     parser.add_argument("--video-frames", type=int, default=DEFAULT_VIDEO_FRAMES)
     parser.add_argument("--video-fps", type=int, default=DEFAULT_VIDEO_FPS)
-    parser.add_argument("--orbit-radius", type=float, default=0.18)
+    parser.add_argument("--orbit-radius", type=float, default=0.1)
     parser.add_argument("--camera-height", type=float, default=0.10)
     parser.add_argument("--variant", default="cuda_ad_rgb")
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    source = args.height_source.read_text(encoding="utf-8") if args.height_source else DEFAULT_HEIGHT_SOURCE
+    source = args.height_source.read_text(encoding="utf-8") if args.height_source else HEIGHT_PRESET_SOURCES[args.height_preset]
     radial_cell_feature_period_m = args.radial_cell_feature_period_m
-    if radial_cell_feature_period_m is None and args.height_source is None:
+    uses_radial_default = args.height_source is None and args.height_preset == "radial-pyramid"
+    if radial_cell_feature_period_m is None and uses_radial_default:
         radial_cell_feature_period_m = DEFAULT_RADIAL_CELL_FEATURE_PERIOD_M
     if radial_cell_feature_period_m is not None and radial_cell_feature_period_m <= 0.0:
         radial_cell_feature_period_m = None
     radial_cell_facet_features = (
         radial_cell_feature_period_m is not None
         and not args.disable_radial_cell_facet_features
-        and (args.radial_cell_facet_features or (args.height_source is None and DEFAULT_RADIAL_CELL_FACET_FEATURES))
+        and (args.radial_cell_facet_features or (uses_radial_default and DEFAULT_RADIAL_CELL_FACET_FEATURES))
     )
     program = compile_height_program(source)
+    dft_phase_vectors = [] if args.disable_dft_phase_features else default_dft_phase_vectors(
+        program,
+        width_m=args.width_m,
+        depth_m=args.depth_m,
+        window_m=args.dft_phase_window_m,
+        grid_size=args.dft_phase_grid_size,
+        max_vectors=args.dft_phase_vector_count,
+    )
     height_path = height_output_path(args.output_dir)
     write_height_map_png(
         program,
@@ -152,6 +240,7 @@ def main() -> None:
         depth_m=args.depth_m,
         image_size=args.height_map_size,
     )
+    sample_generation_start = time.perf_counter()
     dataset = build_brdf_dataset(
         program,
         sample_count=args.samples,
@@ -159,6 +248,7 @@ def main() -> None:
         depth_m=args.depth_m,
         seed=13,
         local_feature_period_m=args.local_feature_period_m,
+        dft_phase_vectors=dft_phase_vectors,
         position_frequency_count=args.position_frequency_count,
         radial_cell_feature_period_m=radial_cell_feature_period_m,
         radial_cell_feature_max_rotation_rad=args.radial_cell_feature_max_rotation_rad,
@@ -166,8 +256,11 @@ def main() -> None:
         radial_cell_facet_features=radial_cell_facet_features,
         average_patch_radius_m=args.average_patch_radius_m,
         average_patch_sample_count=args.average_patch_samples,
+        normal_step_m=args.normal_step_m,
         target_mode=args.target_mode,
     )
+    sample_generation_time_seconds = time.perf_counter() - sample_generation_start
+    training_start = time.perf_counter()
     result = train_brdf_surrogate(
         dataset,
         BrdfTrainingConfig(
@@ -181,6 +274,7 @@ def main() -> None:
             omega_0=args.omega_0,
         ),
     )
+    training_time_seconds = time.perf_counter() - training_start
     checkpoint = args.output_dir / "kokoro_brdf.npz"
     export_surrogate_npz(
         result.model,
@@ -188,6 +282,7 @@ def main() -> None:
         width_m=args.width_m,
         depth_m=args.depth_m,
         local_feature_period_m=args.local_feature_period_m,
+        dft_phase_vectors=dft_phase_vectors,
         position_frequency_count=args.position_frequency_count,
         radial_cell_feature_period_m=radial_cell_feature_period_m,
         radial_cell_feature_max_rotation_rad=args.radial_cell_feature_max_rotation_rad,
@@ -195,6 +290,7 @@ def main() -> None:
         radial_cell_facet_features=radial_cell_facet_features,
         average_patch_radius_m=args.average_patch_radius_m,
         average_patch_sample_count=args.average_patch_samples,
+        normal_step_m=args.normal_step_m,
         include_incident_features=args.target_mode == "reflection",
         target_mode=args.target_mode,
     )
@@ -212,11 +308,13 @@ def main() -> None:
         width_m=args.width_m,
         depth_m=args.depth_m,
         local_feature_period_m=args.local_feature_period_m,
+        dft_phase_vectors=dft_phase_vectors,
         position_frequency_count=args.position_frequency_count,
         radial_cell_feature_period_m=radial_cell_feature_period_m,
         radial_cell_feature_max_rotation_rad=args.radial_cell_feature_max_rotation_rad,
         radial_cell_feature_radial_power=args.radial_cell_feature_radial_power,
         radial_cell_facet_features=radial_cell_facet_features,
+        normal_step_m=args.normal_step_m,
         include_incident_features=args.target_mode == "reflection",
         target_mode=args.target_mode,
     )
@@ -238,29 +336,27 @@ def main() -> None:
     )
     scene_path = args.output_dir / "kokoro_scene.json"
     scene_path.write_text(json.dumps(scene, indent=2), encoding="utf-8")
-    metrics = {
-        "initial_loss": result.loss_history[0],
-        "final_loss": result.loss_history[-1],
-        "holdout_sample_count": int(holdout.features.shape[0]),
-        "holdout_angular_error": angular_error_degrees(result.model, holdout.features, holdout.targets),
-    }
     metrics_path = args.output_dir / "metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     saved_files = {
         "height_map": height_path,
         "checkpoint": checkpoint,
         "scene": scene_path,
         "metrics": metrics_path,
     }
+    render_times_seconds: dict[str, float] = {}
     reference_scene: dict[str, Any] | None = None
     if args.render:
         render_path = render_output_path(args.output_dir)
+        render_start = time.perf_counter()
         _render(scene, render_path, args.variant)
+        render_times_seconds["render"] = time.perf_counter() - render_start
         saved_files["render"] = render_path
     if args.reference_render:
         reference_scene = _build_reference_scene(source, args)
         reference_path = reference_render_output_path(args.output_dir)
+        render_start = time.perf_counter()
         _render(reference_scene, reference_path, args.variant)
+        render_times_seconds["height_reference"] = time.perf_counter() - render_start
         saved_files["height_reference"] = reference_path
     if args.ring_diagnostic:
         ring_scene = build_kokoro_ring_diagnostic_scene_dict(
@@ -274,10 +370,13 @@ def main() -> None:
             reconstruction_filter=args.reconstruction_filter,
         )
         ring_path = ring_diagnostic_output_path(args.output_dir)
+        render_start = time.perf_counter()
         _render(ring_scene, ring_path, args.variant)
+        render_times_seconds["ring_diagnostic"] = time.perf_counter() - render_start
         saved_files["ring_diagnostic"] = ring_path
     if args.video:
         video_path = video_output_path(args.output_dir)
+        render_start = time.perf_counter()
         _render_video(
             scene,
             video_path,
@@ -287,11 +386,13 @@ def main() -> None:
             radius_m=args.orbit_radius,
             height_m=args.camera_height,
         )
+        render_times_seconds["video"] = time.perf_counter() - render_start
         saved_files["video"] = video_path
         if args.reference_render:
             if reference_scene is None:
                 reference_scene = _build_reference_scene(source, args)
             reference_video_path = video_reference_output_path(args.output_dir)
+            render_start = time.perf_counter()
             _render_video(
                 reference_scene,
                 reference_video_path,
@@ -301,13 +402,63 @@ def main() -> None:
                 radius_m=args.orbit_radius,
                 height_m=args.camera_height,
             )
+            render_times_seconds["video_reference"] = time.perf_counter() - render_start
             saved_files["video_reference"] = reference_video_path
+    metrics = {
+        "initial_loss": result.loss_history[0],
+        "final_loss": result.loss_history[-1],
+        "sample_count": int(dataset.features.shape[0]),
+        "loss_every_100_steps": [
+            {"step": step, "loss": result.loss_history[step - 1]}
+            for step in range(100, len(result.loss_history) + 1, 100)
+        ],
+        "sample_generation_time_seconds": sample_generation_time_seconds,
+        "training_time_seconds": training_time_seconds,
+        "rendering_time_seconds": sum(render_times_seconds.values(), 0.0),
+        "render_times_seconds": render_times_seconds,
+        "holdout_sample_count": int(holdout.features.shape[0]),
+        "dft_phase_vectors": [list(vector) for vector in dft_phase_vectors],
+        "dft_phase_window_m": args.dft_phase_window_m,
+        "holdout_angular_error": angular_error_degrees(result.model, holdout.features, holdout.targets),
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     print("Saved files:")
     for label, path in saved_files.items():
         print(f"  {label}: {path.resolve()}")
     print("Metrics:")
     print(f"  initial_loss: {metrics['initial_loss']}")
     print(f"  final_loss: {metrics['final_loss']}")
+    print(f"  sample_count: {metrics['sample_count']}")
+    print(f"  sample_generation_time_seconds: {metrics['sample_generation_time_seconds']}")
+    print(f"  training_time_seconds: {metrics['training_time_seconds']}")
+    print(f"  rendering_time_seconds: {metrics['rendering_time_seconds']}")
+    if render_times_seconds:
+        print("  render_times_seconds:")
+        for label, duration_seconds in render_times_seconds.items():
+            print(f"    {label}: {duration_seconds}")
+    print("  loss_every_100_steps:")
+    for loss_point in metrics["loss_every_100_steps"]:
+        print(f"    step {loss_point['step']}: {loss_point['loss']}")
+
+
+def default_dft_phase_vectors(
+    program,
+    *,
+    width_m: float,
+    depth_m: float,
+    window_m: float = DEFAULT_DFT_PHASE_WINDOW_M,
+    grid_size: int = DEFAULT_DFT_PHASE_GRID_SIZE,
+    max_vectors: int = DEFAULT_DFT_PHASE_VECTOR_COUNT,
+) -> list[tuple[float, float]]:
+    return estimate_periodic_phase_vectors(
+        program,
+        width_m=width_m,
+        depth_m=depth_m,
+        window_width_m=window_m,
+        window_depth_m=window_m,
+        grid_size=grid_size,
+        max_vectors=max_vectors,
+    )
 
 
 def _build_reference_scene(source: str, args: argparse.Namespace) -> dict[str, Any]:

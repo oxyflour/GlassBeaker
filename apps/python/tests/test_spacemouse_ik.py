@@ -5,6 +5,7 @@ import math
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -119,6 +120,40 @@ class SpaceMouseIKControllerTest(unittest.TestCase):
         expected = np.asarray(desired_finger_center, dtype=float) - _quat_matrix(target_rotation) @ local_offset
         self.assertLess(math.dist(gripper_joint_target["position"], tuple(expected.tolist())), 1e-9)
         self.assertEqual(gripper_joint_target["rotation"], target_rotation)
+
+    def test_finger_center_target_offset_shifts_resolved_gripper_target(self):
+        arm = "left"
+        target_offset = (0.01, -0.02, 0.03)
+        target_rotation = (
+            0.7071067811865476,
+            0.0,
+            0.7071067811865475,
+            0.0,
+        )
+        desired_finger_center = (0.5, -0.1, 0.83)
+
+        baseline = self.controller.finger_center_pose_to_end_effector_pose(arm, {
+            "position": desired_finger_center,
+            "rotation": target_rotation,
+        })
+        with mock.patch("utils.teleop.arm_config.read_user_config", return_value={
+            "override": {
+                "target_offset": {
+                    "r1pro": {
+                        arm: list(target_offset),
+                    },
+                },
+            },
+        }):
+            shifted_controller = IKController(ROBOT_USD, SCENE_USD)
+        shifted = shifted_controller.finger_center_pose_to_end_effector_pose(arm, {
+            "position": desired_finger_center,
+            "rotation": target_rotation,
+        })
+
+        expected = np.asarray(baseline["position"], dtype=float) - _quat_matrix(target_rotation) @ np.asarray(target_offset, dtype=float)
+        self.assertLess(math.dist(shifted["position"], tuple(expected.tolist())), 1e-9)
+        self.assertEqual(shifted["rotation"], target_rotation)
 
     def test_left_arm_position_only_with_torso_reaches_vertical_target(self):
         body_map = json.loads(self.controller.bundle.body_map_json.read_text(encoding="utf-8"))

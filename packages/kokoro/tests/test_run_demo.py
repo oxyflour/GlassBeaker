@@ -14,11 +14,15 @@ from run_demo import (
     DEFAULT_ACTIVATION,
     DEFAULT_AVERAGE_PATCH_RADIUS_M,
     DEFAULT_AVERAGE_PATCH_SAMPLES,
+    DEFAULT_DFT_PHASE_VECTOR_COUNT,
+    DEFAULT_DFT_PHASE_GRID_SIZE,
+    DEFAULT_DFT_PHASE_WINDOW_M,
     DEFAULT_FEATURE_PERIOD_M,
     DEFAULT_BATCH_SIZE,
     DEFAULT_EPOCHS,
     DEFAULT_FILM_HEIGHT,
     DEFAULT_FILM_WIDTH,
+    DEFAULT_HEIGHT_PRESET,
     DEFAULT_HIDDEN_DIM,
     DEFAULT_HIDDEN_LAYERS,
     DEFAULT_HOLDOUT_GRID_SIZE,
@@ -31,6 +35,7 @@ from run_demo import (
     DEFAULT_LOCAL_FEATURE_PERIOD_M,
     DEFAULT_LOBE_KAPPA,
     DEFAULT_LR,
+    DEFAULT_NORMAL_STEP_M,
     DEFAULT_OMEGA_0,
     DEFAULT_POSITION_FREQUENCY_COUNT,
     DEFAULT_RADIAL_CELL_FEATURE_MAX_ROTATION_RAD,
@@ -44,6 +49,10 @@ from run_demo import (
     DEFAULT_OUTPUT_DIR,
     DEFAULT_VIDEO_FPS,
     DEFAULT_VIDEO_FRAMES,
+    HEIGHT_PRESET_SOURCES,
+    RADIAL_PYRAMID_HEIGHT_SOURCE,
+    WAVE_BLOCK_HEIGHT_SOURCE,
+    default_dft_phase_vectors,
     render_output_path,
     reference_render_output_path,
     ring_diagnostic_output_path,
@@ -59,9 +68,31 @@ class RunDemoTest(unittest.TestCase):
     def test_default_feature_period_does_not_assume_periodic_height_fields(self) -> None:
         self.assertIsNone(DEFAULT_FEATURE_PERIOD_M)
 
-    def test_default_height_source_uses_radial_rotated_pyramid_baseline(self) -> None:
-        self.assertIn("radial_rotated_pyramid_height", DEFAULT_HEIGHT_SOURCE)
-        self.assertIn("max_rotation_rad=", DEFAULT_HEIGHT_SOURCE)
+    def test_wave_block_default_dft_phase_vectors_are_estimated_from_height_field(self) -> None:
+        vectors = default_dft_phase_vectors(
+            compile_height_program(WAVE_BLOCK_HEIGHT_SOURCE),
+            width_m=0.10,
+            depth_m=0.10,
+            grid_size=256,
+        )
+
+        self.assertEqual(len(vectors), DEFAULT_DFT_PHASE_VECTOR_COUNT)
+        wave_frequency = 2.0 * torch.pi / 50e-6
+        self.assertTrue(any(abs(abs(kx) - wave_frequency) < 0.06 * wave_frequency for kx, _ in vectors))
+
+    def test_default_dft_window_keeps_microstructure_sampled_above_nyquist(self) -> None:
+        self.assertEqual(DEFAULT_DFT_PHASE_WINDOW_M, 2.0e-3)
+        self.assertLess(DEFAULT_DFT_PHASE_WINDOW_M / DEFAULT_DFT_PHASE_GRID_SIZE, 25e-6)
+
+    def test_default_height_source_uses_wave_block_baseline(self) -> None:
+        self.assertEqual(DEFAULT_HEIGHT_PRESET, "wave-block")
+        self.assertIs(DEFAULT_HEIGHT_SOURCE, WAVE_BLOCK_HEIGHT_SOURCE)
+        self.assertIn("return _maximum(wave(x, y), block(x, y))", DEFAULT_HEIGHT_SOURCE)
+
+    def test_radial_pyramid_preset_remains_available(self) -> None:
+        self.assertIs(HEIGHT_PRESET_SOURCES["radial-pyramid"], RADIAL_PYRAMID_HEIGHT_SOURCE)
+        self.assertIn("radial_rotated_pyramid_height", RADIAL_PYRAMID_HEIGHT_SOURCE)
+        self.assertIn("max_rotation_rad=", RADIAL_PYRAMID_HEIGHT_SOURCE)
 
     def test_default_height_source_is_not_zero_rotation(self) -> None:
         zero_rotation = compile_height_program(
@@ -76,13 +107,13 @@ def height(x, y):
     )
 """
         )
-        default = compile_height_program(DEFAULT_HEIGHT_SOURCE)
+        default = compile_height_program(RADIAL_PYRAMID_HEIGHT_SOURCE)
         x = torch.tensor([0.0402, 0.0302, 0.0202])
         y = torch.tensor([0.00017, 0.01017, 0.02017])
 
         self.assertFalse(torch.allclose(default.evaluate(x, y), zero_rotation.evaluate(x, y), atol=1e-8))
 
-    def test_default_uses_normal_target_with_explicit_facet_features(self) -> None:
+    def test_normal_target_and_radial_preset_feature_defaults_remain_available(self) -> None:
         self.assertEqual(DEFAULT_TARGET_MODE, "normal")
         self.assertEqual(DEFAULT_POSITION_FREQUENCY_COUNT, 0)
         self.assertIsNone(DEFAULT_LOCAL_FEATURE_PERIOD_M)
@@ -114,6 +145,9 @@ def height(x, y):
         self.assertEqual(DEFAULT_HIDDEN_LAYERS, 3)
         self.assertEqual(DEFAULT_BATCH_SIZE, 256)
         self.assertEqual(DEFAULT_LR, 2e-3)
+
+    def test_default_normal_step_matches_fabrication_precision(self) -> None:
+        self.assertEqual(DEFAULT_NORMAL_STEP_M, 0.5e-6)
 
     def test_default_holdout_grid_is_dense_enough_for_direction_diagnostics(self) -> None:
         self.assertEqual(DEFAULT_HOLDOUT_GRID_SIZE, 32)

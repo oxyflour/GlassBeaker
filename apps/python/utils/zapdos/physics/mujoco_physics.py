@@ -194,6 +194,17 @@ class MujocoPhysics:
             raise HTTPException(status_code=404, detail=f"Body not found: {body}")
         return body_id
 
+    def _subtree_body_ids(self, body_id: int) -> set[int]:
+        subtree_body_ids = {body_id}
+        for candidate_body_id in range(self.model.nbody):
+            current_body_id = candidate_body_id
+            while current_body_id > 0:
+                if current_body_id == body_id:
+                    subtree_body_ids.add(candidate_body_id)
+                    break
+                current_body_id = int(self.model.body_parentid[current_body_id])
+        return subtree_body_ids
+
     def _mesh_anchor_body(self, body_name: str, body_matrices: dict[str, np.ndarray]) -> str | None:
         if body_name not in body_matrices:
             return None
@@ -272,14 +283,7 @@ class MujocoPhysics:
 
     def body_world_aabb(self, body_name: str) -> dict[str, list[float]] | None:
         body_id = self._body_id(body_name)
-        subtree_body_ids = {body_id}
-        for candidate_body_id in range(self.model.nbody):
-            current_body_id = candidate_body_id
-            while current_body_id > 0:
-                if current_body_id == body_id:
-                    subtree_body_ids.add(candidate_body_id)
-                    break
-                current_body_id = int(self.model.body_parentid[current_body_id])
+        subtree_body_ids = self._subtree_body_ids(body_id)
         bounds_min = None
         bounds_max = None
         for geom_id in range(self.model.ngeom):
@@ -297,6 +301,19 @@ class MujocoPhysics:
             "min": bounds_min.astype(float).round(6).tolist(),
             "max": bounds_max.astype(float).round(6).tolist(),
         }
+
+    def bodies_in_contact(self, body_a: str, body_b: str) -> bool:
+        body_a_ids = self._subtree_body_ids(self._body_id(body_a))
+        body_b_ids = self._subtree_body_ids(self._body_id(body_b))
+        for contact_id in range(self.data.ncon):
+            contact = self.data.contact[contact_id]
+            geom1_body = int(self.model.geom_bodyid[int(contact.geom1)])
+            geom2_body = int(self.model.geom_bodyid[int(contact.geom2)])
+            if geom1_body in body_a_ids and geom2_body in body_b_ids:
+                return True
+            if geom1_body in body_b_ids and geom2_body in body_a_ids:
+                return True
+        return False
 
     def attach_body(self, parent_body: str, child_body: str) -> dict[str, object]:
         parent_id = self._body_id(parent_body)

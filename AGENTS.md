@@ -7,6 +7,7 @@
 - **DO NOT KEEP ASKING ME QUESTIONS AFTER THINKING**. Prepare your questions and let me answer them at once.
 - use zod to define parameters in CopilotKit
 - Ask me before you switch branch
+- DO NOT write tests for unnecessary feature changes
 
 # Coding styles
 - Try to limit content of each file in 200 lines

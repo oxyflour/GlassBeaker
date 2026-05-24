@@ -42,10 +42,22 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
             self.activation = str(surrogate.metadata.get("activation", "tanh"))
             self.omega_0 = float(surrogate.metadata.get("omega_0", 12.0))
             self.position_frequency_count = int(surrogate.metadata.get("position_frequency_count", 0))
+            self.dft_phase_vectors = [
+                (float(vector[0]), float(vector[1]))
+                for vector in surrogate.metadata.get("dft_phase_vectors", [])
+            ]
             include_position = surrogate.metadata.get("include_position_features")
             self.include_position_features = self.weights[0].shape[1] > 3 if include_position is None else bool(include_position)
             self.include_incident_features = bool(surrogate.metadata.get("include_incident_features", True))
             self.target_mode = str(surrogate.metadata.get("target_mode", "reflection"))
+            self.input_dim = int(surrogate.metadata.get("input_dim", self.weights[0].shape[1]))
+            expected_feature_count = self._expected_feature_count()
+            if self.input_dim != self.weights[0].shape[1] or expected_feature_count != self.weights[0].shape[1]:
+                raise ValueError(
+                    "kokoro_neural_reflector checkpoint feature count mismatch: "
+                    f"metadata input_dim={self.input_dim}, metadata features={expected_feature_count}, "
+                    f"weights expect {self.weights[0].shape[1]}"
+                )
             self.output_dim = int(self.weights[-1].shape[0])
             self.reflectance = mi.Color3f(props.get("reflectance", [0.86, 0.88, 0.92]))
             self.lobe_kappa = float(props.get("lobe_kappa", 96.0))
@@ -54,6 +66,22 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
             flags = mi.BSDFFlags.GlossyReflection | mi.BSDFFlags.FrontSide | mi.BSDFFlags.BackSide
             self.m_components = [flags]
             self.m_flags = flags
+
+        def _expected_feature_count(self):
+            count = 0
+            if self.include_position_features:
+                count += 2
+                if self.local_feature_period_m is not None:
+                    count += 2
+                if self.radial_cell_feature_period_m is not None:
+                    count += 4
+                    if self.radial_cell_facet_features:
+                        count += 2
+                count += 2 * len(self.dft_phase_vectors)
+                count += 4 * max(0, int(self.position_frequency_count))
+            if self.include_incident_features:
+                count += 3
+            return count
 
         def sample(self, ctx, si, sample1, sample2, active):
             axis, cone_cos, phase = self._target_lobe(si, dr)
@@ -85,6 +113,11 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
 
         def _eval_mlp(self, values, dr):
             x = values
+            if len(x) != self.weights[0].shape[1]:
+                raise ValueError(
+                    "kokoro_neural_reflector feature count mismatch: "
+                    f"got {len(x)}, weights expect {self.weights[0].shape[1]}"
+                )
             for layer_index, (weight, bias) in enumerate(zip(self.weights, self.biases)):
                 out = []
                 for row, b_value in zip(weight, bias):
@@ -170,9 +203,15 @@ def register_kokoro_bsdf(mi: Any | None = None) -> None:
                 return incident if self.include_incident_features else []
             x_feature = position_features[0]
             y_feature = position_features[1]
-            if self.position_frequency_count <= 0:
-                return [*position_features, *incident] if self.include_incident_features else [*position_features]
             encoded = [*position_features]
+            if self.position_frequency_count <= 0:
+                for kx, ky in self.dft_phase_vectors:
+                    phase = float(kx) * _component(si.p, 0) + float(ky) * _component(si.p, 1)
+                    encoded.extend([dr.sin(phase), dr.cos(phase)])
+                return [*encoded, *incident] if self.include_incident_features else [*encoded]
+            for kx, ky in self.dft_phase_vectors:
+                phase = float(kx) * _component(si.p, 0) + float(ky) * _component(si.p, 1)
+                encoded.extend([dr.sin(phase), dr.cos(phase)])
             for index in range(self.position_frequency_count):
                 frequency = float(2 ** index) * dr.pi
                 encoded.extend([

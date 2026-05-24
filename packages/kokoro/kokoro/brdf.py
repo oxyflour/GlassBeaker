@@ -4,6 +4,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import torch
@@ -19,6 +20,7 @@ class BrdfDataset:
     depth_m: float
     feature_period_m: float | None = None
     local_feature_period_m: float | None = None
+    dft_phase_vectors: tuple[tuple[float, float], ...] = ()
     position_frequency_count: int = 0
     include_position_features: bool = True
     include_incident_features: bool = True
@@ -28,6 +30,7 @@ class BrdfDataset:
     radial_cell_facet_features: bool = False
     average_patch_radius_m: float = 0.0
     average_patch_sample_count: int = 1
+    normal_step_m: float = 25e-6
     target_mode: str = "reflection"
 
 
@@ -143,6 +146,7 @@ def build_brdf_dataset(
     seed: int = 0,
     feature_period_m: float | None = None,
     local_feature_period_m: float | None = None,
+    dft_phase_vectors: Sequence[Sequence[float]] | None = None,
     position_frequency_count: int = 0,
     include_position_features: bool = True,
     include_incident_features: bool | None = None,
@@ -152,11 +156,19 @@ def build_brdf_dataset(
     radial_cell_facet_features: bool = False,
     average_patch_radius_m: float = 0.0,
     average_patch_sample_count: int = 1,
+    normal_step_m: float = 25e-6,
     target_mode: str = "reflection",
 ) -> BrdfDataset:
     if target_mode not in {"reflection", "normal"}:
         raise ValueError("target_mode must be 'reflection' or 'normal'")
-    surface = sample_height_field(program, sample_count=sample_count, width_m=width_m, depth_m=depth_m, seed=seed)
+    surface = sample_height_field(
+        program,
+        sample_count=sample_count,
+        width_m=width_m,
+        depth_m=depth_m,
+        seed=seed,
+        normal_step_m=normal_step_m,
+    )
     gen = torch.Generator()
     gen.manual_seed(int(seed) + 31)
     cos_theta = 0.15 + 0.8 * torch.rand(sample_count, generator=gen)
@@ -174,6 +186,7 @@ def build_brdf_dataset(
             wi,
             patch_radius_m=average_patch_radius_m,
             patch_sample_count=average_patch_sample_count,
+            normal_step_m=normal_step_m,
             seed=int(seed) + 53,
         )
     else:
@@ -187,6 +200,7 @@ def build_brdf_dataset(
         depth_m,
         feature_period_m=feature_period_m,
         local_feature_period_m=local_feature_period_m,
+        dft_phase_vectors=dft_phase_vectors,
         position_frequency_count=position_frequency_count,
         include_position_features=include_position_features,
         include_incident_features=uses_incident,
@@ -202,6 +216,7 @@ def build_brdf_dataset(
         depth_m=depth_m,
         feature_period_m=feature_period_m,
         local_feature_period_m=local_feature_period_m,
+        dft_phase_vectors=_phase_vector_tuple(dft_phase_vectors),
         position_frequency_count=position_frequency_count,
         include_position_features=include_position_features,
         include_incident_features=uses_incident,
@@ -211,6 +226,7 @@ def build_brdf_dataset(
         radial_cell_facet_features=radial_cell_facet_features,
         average_patch_radius_m=average_patch_radius_m,
         average_patch_sample_count=average_patch_sample_count,
+        normal_step_m=float(normal_step_m),
         target_mode=target_mode,
     )
 
@@ -256,6 +272,7 @@ def predict_outgoing_angles(
     depth_m: float,
     feature_period_m: float | None = None,
     local_feature_period_m: float | None = None,
+    dft_phase_vectors: Sequence[Sequence[float]] | None = None,
     position_frequency_count: int = 0,
     include_position_features: bool = True,
     include_incident_features: bool = True,
@@ -273,6 +290,7 @@ def predict_outgoing_angles(
         depth_m,
         feature_period_m=feature_period_m,
         local_feature_period_m=local_feature_period_m,
+        dft_phase_vectors=dft_phase_vectors,
         position_frequency_count=position_frequency_count,
         include_position_features=include_position_features,
         include_incident_features=include_incident_features,
@@ -293,6 +311,7 @@ def export_surrogate_npz(
     depth_m: float,
     feature_period_m: float | None = None,
     local_feature_period_m: float | None = None,
+    dft_phase_vectors: Sequence[Sequence[float]] | None = None,
     position_frequency_count: int = 0,
     include_position_features: bool | None = None,
     include_incident_features: bool = True,
@@ -302,6 +321,7 @@ def export_surrogate_npz(
     radial_cell_facet_features: bool = False,
     average_patch_radius_m: float = 0.0,
     average_patch_sample_count: int = 1,
+    normal_step_m: float = 25e-6,
     target_mode: str = "reflection",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -315,6 +335,7 @@ def export_surrogate_npz(
         "activation": model.activation,
         "omega_0": float(model.omega_0),
         "position_frequency_count": int(position_frequency_count),
+        "dft_phase_vectors": [list(vector) for vector in _phase_vector_tuple(dft_phase_vectors)],
         "hidden_layer_count": int(model.hidden_layer_count),
         "include_position_features": uses_position,
         "include_incident_features": bool(include_incident_features),
@@ -322,6 +343,7 @@ def export_surrogate_npz(
         "output_dim": int(model.output_dim),
         "average_patch_radius_m": float(average_patch_radius_m),
         "average_patch_sample_count": int(average_patch_sample_count),
+        "normal_step_m": float(normal_step_m),
         "target_mode": target_mode,
     }
     if feature_period_m is not None:
@@ -361,6 +383,7 @@ def make_features(
     depth_m: float,
     feature_period_m: float | None = None,
     local_feature_period_m: float | None = None,
+    dft_phase_vectors: Sequence[Sequence[float]] | None = None,
     position_frequency_count: int = 0,
     include_position_features: bool = True,
     include_incident_features: bool = True,
@@ -404,6 +427,9 @@ def make_features(
             radial_power=radial_cell_feature_radial_power,
             include_facet_features=radial_cell_facet_features,
         ))
+    for kx, ky in _phase_vector_tuple(dft_phase_vectors):
+        phase = float(kx) * x + float(ky) * y
+        encoded.extend([torch.sin(phase), torch.cos(phase)])
     for index in range(max(0, int(position_frequency_count))):
         frequency = float(2 ** index) * torch.pi
         encoded.extend([
@@ -414,6 +440,97 @@ def make_features(
         ])
     values = [*encoded, *incident] if include_incident_features else encoded
     return torch.stack(values, dim=1).to(dtype=torch.float32)
+
+
+def estimate_periodic_phase_vectors(
+    program: HeightProgram,
+    *,
+    width_m: float,
+    depth_m: float,
+    window_width_m: float | None = None,
+    window_depth_m: float | None = None,
+    grid_size: int = 256,
+    max_vectors: int = 4,
+) -> list[tuple[float, float]]:
+    if width_m <= 0 or depth_m <= 0:
+        raise ValueError("width_m and depth_m must be positive")
+    sample_width_m = float(width_m if window_width_m is None else min(window_width_m, width_m))
+    sample_depth_m = float(depth_m if window_depth_m is None else min(window_depth_m, depth_m))
+    if sample_width_m <= 0 or sample_depth_m <= 0:
+        raise ValueError("DFT sampling window must be positive")
+    if grid_size <= 1:
+        raise ValueError("grid_size must be greater than one")
+    if max_vectors <= 0:
+        return []
+    size = int(grid_size)
+    x = (torch.arange(size, dtype=torch.float32) / float(size) - 0.5) * sample_width_m
+    y = (torch.arange(size, dtype=torch.float32) / float(size) - 0.5) * sample_depth_m
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
+    with torch.no_grad():
+        heights = program.evaluate(xx, yy).to(dtype=torch.float32)
+    heights = heights - heights.mean()
+    spectrum = torch.fft.fft2(heights)
+    energy = torch.abs(spectrum) ** 2
+    energy[0, 0] = 0.0
+    peak_energy = float(energy.max())
+    if peak_energy <= 0.0:
+        return []
+    kx_values = 2.0 * math.pi * torch.fft.fftfreq(size, d=sample_width_m / float(size))
+    ky_values = 2.0 * math.pi * torch.fft.fftfreq(size, d=sample_depth_m / float(size))
+    min_kx = 2.0 * math.pi / sample_width_m
+    min_ky = 2.0 * math.pi / sample_depth_m
+    base_k = min(min_kx, min_ky)
+    flat_indices = torch.argsort(energy.reshape(-1), descending=True)
+    band_candidates: dict[int, list[tuple[tuple[float, float], float]]] = {}
+    kept_vectors: list[tuple[float, float]] = []
+    for flat_index in flat_indices.tolist():
+        y_index = flat_index // size
+        x_index = flat_index % size
+        candidate_energy = float(energy[y_index, x_index])
+        if candidate_energy < peak_energy * 1e-4:
+            break
+        candidate = _canonical_phase_vector(float(kx_values[x_index]), float(ky_values[y_index]))
+        if candidate == (0.0, 0.0):
+            continue
+        if any(abs(candidate[0] - kept[0]) <= 0.5 * min_kx and abs(candidate[1] - kept[1]) <= 0.5 * min_ky for kept in kept_vectors):
+            continue
+        kept_vectors.append(candidate)
+        magnitude = math.hypot(candidate[0], candidate[1])
+        band = int(math.floor(math.log2(max(magnitude / base_k, 1.0)))) if base_k > 0.0 else 0
+        band_candidates.setdefault(band, []).append((candidate, candidate_energy))
+
+    if not band_candidates:
+        return []
+
+    selected: list[tuple[float, float]] = []
+    bands = sorted(
+        band_candidates.values(),
+        key=lambda candidates: candidates[0][1],
+        reverse=True,
+    )
+    while len(selected) < int(max_vectors):
+        added = False
+        for candidates in bands:
+            if candidates:
+                selected.append(candidates.pop(0)[0])
+                added = True
+                if len(selected) >= int(max_vectors):
+                    break
+        if not added:
+            break
+    return selected
+
+
+def _phase_vector_tuple(vectors: Sequence[Sequence[float]] | None) -> tuple[tuple[float, float], ...]:
+    if vectors is None:
+        return ()
+    return tuple((float(vector[0]), float(vector[1])) for vector in vectors)
+
+
+def _canonical_phase_vector(kx: float, ky: float) -> tuple[float, float]:
+    if kx < 0.0 or (kx == 0.0 and ky < 0.0):
+        return (-kx, -ky)
+    return (kx, ky)
 
 
 def _radial_cell_features(
@@ -462,6 +579,7 @@ def average_patch_reflections(
     *,
     patch_radius_m: float,
     patch_sample_count: int,
+    normal_step_m: float = 25e-6,
     seed: int = 0,
 ) -> torch.Tensor:
     return patch_reflection_moments(
@@ -471,6 +589,7 @@ def average_patch_reflections(
         wi,
         patch_radius_m=patch_radius_m,
         patch_sample_count=patch_sample_count,
+        normal_step_m=normal_step_m,
         seed=seed,
     )[:, :3]
 
@@ -483,6 +602,7 @@ def patch_reflection_moments(
     *,
     patch_radius_m: float,
     patch_sample_count: int,
+    normal_step_m: float = 25e-6,
     seed: int = 0,
 ) -> torch.Tensor:
     if patch_sample_count <= 0:
@@ -501,7 +621,7 @@ def patch_reflection_moments(
         dy = (torch.rand((count, int(patch_sample_count)), generator=gen, dtype=x.dtype, device=x.device) * 2.0 - 1.0) * radius
     sample_x = (x[:, None] + dx).reshape(-1)
     sample_y = (y[:, None] + dy).reshape(-1)
-    normals = surface_normals(program, sample_x, sample_y)
+    normals = surface_normals(program, sample_x, sample_y, step_m=normal_step_m)
     repeated_wi = wi[:, None, :].expand(count, int(patch_sample_count), 3).reshape(-1, 3)
     reflected = reflect(repeated_wi, normals).reshape(count, int(patch_sample_count), 3)
     mean = reflected.mean(dim=1)

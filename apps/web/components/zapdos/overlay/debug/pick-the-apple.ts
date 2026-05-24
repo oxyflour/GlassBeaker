@@ -1,24 +1,27 @@
 import {
-  createManipulationToolRequest,
+  createPickObjectRequest,
+  pickObject,
 } from "../../agent/zapdos-manipulation-tool-api";
 import {
-  runSceneTask,
   type SceneTaskOptions,
 } from "../../agent/zapdos-tool-api";
 
-export function createPickTheAppleRequest(): RequestInit {
-  return createManipulationToolRequest([]);
+function buildPickSelectedObjectInput(selectedBody: string) {
+  const target_query = selectedBody.trim();
+  if (!target_query) {
+    throw new Error("Select an object before picking");
+  }
+  return { target_query, arm: "left" as const };
 }
 
-export async function pickTheApple(
+export function createPickSelectedObjectRequest(selectedBody: string): RequestInit {
+  return createPickObjectRequest(buildPickSelectedObjectInput(selectedBody));
+}
+
+export async function pickSelectedObject(
   sess: string,
+  selectedBody: string,
   options: SceneTaskOptions = {},
 ) {
-  return await runSceneTask<{
-    arm?: string;
-    ok?: boolean;
-    scene_revision: string;
-    status?: string;
-    target_body?: string;
-  }>(sess, "pick_apple", createPickTheAppleRequest(), options);
+  return await pickObject(sess, buildPickSelectedObjectInput(selectedBody), options);
 }

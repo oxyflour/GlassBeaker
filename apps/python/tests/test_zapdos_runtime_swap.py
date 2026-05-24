@@ -43,6 +43,27 @@ class ZapdosRuntimeSwapTest(unittest.TestCase):
             finally:
                 physics.close()
 
+    def test_mujoco_physics_reports_gripper_target_contact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = ensure_render_bundle(ROBOT_USD, _write_benchmark_table_scene(Path(tmp)))
+            physics = _physics("benchmark-gripper-contact", bundle)
+            cube = "Scene_benchmark_building_blocks_006_01"
+            gripper = "Root_r1_pro_with_gripper_left_gripper_link"
+            try:
+                finger_geom = next(
+                    geom_id
+                    for geom_id in range(physics.model.ngeom)
+                    if "left_gripper_finger_link1_collisions" in (
+                        mujoco.mj_id2name(physics.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+                    )
+                )
+                physics.set_body_pose(cube, physics.data.geom_xpos[finger_geom].tolist(), [1.0, 0.0, 0.0, 0.0])
+                physics.step()
+
+                self.assertTrue(physics.bodies_in_contact(gripper, cube))
+            finally:
+                physics.close()
+
     def test_swap_runtime_bundle_copies_robot_joint_state_by_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

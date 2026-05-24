@@ -26,3 +26,6 @@ export const ZAPDOS_SET_SCENE_ASSETS_EXAMPLE = [
   "  ],",
   "})",
 ].join("\n");
+
+export const ZAPDOS_ADD_ASSETS_TO_SCENE_EXAMPLE =
+  ZAPDOS_SET_SCENE_ASSETS_EXAMPLE.replace("set_scene_assets", "add_assets_to_scene");

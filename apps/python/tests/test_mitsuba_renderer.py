@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import asyncio
+import tempfile
 import threading
 import time
 import unittest
@@ -48,6 +49,48 @@ class _FakeMitsuba:
         del scene, sensor, spp
         self.render_calls += 1
         return np.full((3, 4, 3), self.render_calls, dtype=np.float32)
+
+
+_UNCHANGED = object()
+
+
+class _FakeParams(dict):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.update_calls = 0
+
+    def update(self) -> None:
+        self.update_calls += 1
+
+
+class _FakeTransform:
+    def __init__(self, value=None) -> None:
+        self.value = value
+
+    @classmethod
+    def look_at(cls, *, origin, target, up):
+        return cls({"origin": origin, "target": target, "up": up})
+
+
+class _FakeMutableMitsuba(_FakeMitsuba):
+    ScalarTransform4f = _FakeTransform
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.load_calls: list[dict] = []
+        self.params = _FakeParams({
+            "mesh_0.vertex_positions": None,
+            "mesh_static.vertex_positions": _UNCHANGED,
+            "sensor_main.to_world": None,
+        })
+
+    def load_dict(self, scene_dict):
+        self.load_calls.append(scene_dict)
+        return {"scene": len(self.load_calls)}
+
+    def traverse(self, scene):
+        del scene
+        return self.params
 
 
 class MitsubaRendererTest(unittest.IsolatedAsyncioTestCase):
@@ -163,7 +206,7 @@ class MitsubaRendererTest(unittest.IsolatedAsyncioTestCase):
                 "to_world_matrix": np.eye(4).tolist(),
             },
         }
-        pose = {"box": [1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 3.0, 0.0, 0.0, 1.0, 4.0, 0.0, 0.0, 0.0, 1.0]}
+        pose = {"box": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 3.0, 4.0, 1.0]}
 
         posed = renderer._scene_for_pose(scene, pose)
 
@@ -183,12 +226,74 @@ class MitsubaRendererTest(unittest.IsolatedAsyncioTestCase):
                 "_zapdos_camera_local_up": [0.0, 1.0, 0.0],
             },
         }
-        pose = {"head": [1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 3.0, 0.0, 0.0, 1.0, 4.0, 0.0, 0.0, 0.0, 1.0]}
+        pose = {"head": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 3.0, 4.0, 1.0]}
 
         posed = renderer._scene_for_pose(scene, pose)
 
         self.assertEqual(posed["sensor_main"]["to_world_look_at"]["origin"], [2.0, 3.0, 5.0])
         self.assertEqual(posed["sensor_main"]["to_world_look_at"]["target"], [2.0, 3.0, 4.0])
+
+    def test_pose_update_updates_scene_params_without_reloading_ply(self):
+        fake = _FakeMutableMitsuba()
+        pose = {
+            "box": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 3.0, 4.0, 1.0],
+            "head": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 3.0, 4.0, 1.0],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            mesh_path = Path(tmp) / "mesh.ply"
+            mesh_path.write_text(
+                "\n".join([
+                    "ply",
+                    "format ascii 1.0",
+                    "element vertex 3",
+                    "property float x",
+                    "property float y",
+                    "property float z",
+                    "element face 1",
+                    "property list uchar int vertex_indices",
+                    "end_header",
+                    "0 0 0",
+                    "1 0 0",
+                    "0 1 0",
+                    "3 0 1 2",
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            scene = {
+                "type": "scene",
+                "sensor_main": {
+                    "type": "perspective",
+                    "_zapdos_body": "head",
+                    "_zapdos_camera_local_origin": [0.0, 0.0, 1.0, 1.0],
+                    "_zapdos_camera_local_target": [0.0, 0.0, 0.0, 1.0],
+                    "_zapdos_camera_local_up": [0.0, 1.0, 0.0],
+                    "to_world_look_at": {"origin": [0.0, 0.0, 1.0], "target": [0.0, 0.0, 0.0], "up": [0.0, 1.0, 0.0]},
+                },
+                "mesh_0": {
+                    "type": "ply",
+                    "filename": str(mesh_path),
+                    "_zapdos_body": "box",
+                    "_zapdos_body_local_matrix": np.eye(4).tolist(),
+                    "to_world_matrix": np.eye(4).tolist(),
+                },
+                "mesh_static": {
+                    "type": "ply",
+                    "filename": str(mesh_path),
+                    "to_world_matrix": np.eye(4).tolist(),
+                },
+            }
+            with mock.patch("utils.zapdos.renderer.mitsuba_renderer.load_mitsuba", return_value=fake):
+                with mock.patch("utils.zapdos.renderer.mitsuba_renderer.build_mitsuba_scene_dict", return_value=(scene, [])):
+                    renderer = MitsubaRenderer("sess-1", _bundle(), 4, 3, 30, True, 0)
+                    renderer._load_scene()
+                    renderer.update_pose(pose)
+                    renderer._load_pose_scene()
+
+        self.assertEqual(len(fake.load_calls), 1)
+        self.assertEqual(fake.params.update_calls, 1)
+        self.assertEqual(list(fake.params["mesh_0.vertex_positions"]), [2.0, 3.0, 4.0, 3.0, 3.0, 4.0, 2.0, 4.0, 4.0])
+        self.assertIs(fake.params["mesh_static.vertex_positions"], _UNCHANGED)
+        self.assertEqual(fake.params["sensor_main.to_world"].value["origin"], [2.0, 3.0, 5.0])
 
     async def test_wait_ready_reports_mitsuba_startup_failure_with_cuda_hint(self):
         with mock.patch("utils.zapdos.renderer.mitsuba_renderer.load_mitsuba", side_effect=RuntimeError("CUDA unavailable")):

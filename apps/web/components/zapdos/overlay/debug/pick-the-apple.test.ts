@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-type PickTheAppleModule = typeof import("./pick-the-apple");
+type PickSelectedObjectModule = typeof import("./pick-the-apple");
 
-test("createPickTheAppleRequest posts the canned cube pick payload", async () => {
-  const { createPickTheAppleRequest } = await loadModule<PickTheAppleModule>("./pick-the-apple.ts");
+test("createPickSelectedObjectRequest posts the selected object pick payload", async () => {
+  const { createPickSelectedObjectRequest } = await loadModule<PickSelectedObjectModule>("./pick-the-apple.ts");
 
-  assert.deepEqual(createPickTheAppleRequest(), {
+  assert.deepEqual(createPickSelectedObjectRequest("Scene_Crate"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify([]),
+    body: JSON.stringify([{ target_query: "Scene_Crate", arm: "left" }]),
   });
 });
 
-test("pickTheApple posts to the zapdos pick_apple route", async () => {
-  const { createPickTheAppleRequest, pickTheApple } = await loadModule<PickTheAppleModule>("./pick-the-apple.ts");
+test("createPickSelectedObjectRequest rejects an empty selected object", async () => {
+  const { createPickSelectedObjectRequest } = await loadModule<PickSelectedObjectModule>("./pick-the-apple.ts");
+
+  assert.throws(() => createPickSelectedObjectRequest("  "), /Select an object before picking/);
+});
+
+test("pickSelectedObject posts to the zapdos pick_object route", async () => {
+  const { createPickSelectedObjectRequest, pickSelectedObject } = await loadModule<PickSelectedObjectModule>("./pick-the-apple.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
@@ -28,9 +34,9 @@ test("pickTheApple posts to the zapdos pick_apple route", async () => {
   }) as typeof fetch;
 
   try {
-    const payload = await pickTheApple("sess-1");
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/pick_apple");
-    assert.deepEqual(calls[0]?.init, createPickTheAppleRequest());
+    const payload = await pickSelectedObject("sess-1", "Scene_benchmark_building_blocks_006_01");
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/pick_object");
+    assert.deepEqual(calls[0]?.init, createPickSelectedObjectRequest("Scene_benchmark_building_blocks_006_01"));
     assert.equal(payload.target_body, "Scene_benchmark_building_blocks_006_01");
     assert.equal(payload.scene_revision, "rev-3");
   } finally {

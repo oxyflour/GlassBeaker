@@ -83,7 +83,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             editor=SimpleNamespace(
                 scene_revision=scene_revision,
                 overlay_state={},
-                list_scene_bodies=mock.Mock(return_value={"items": []}),
+                list_placement_bodies=mock.Mock(return_value={"items": []}),
                 scene_rebuild_state=EDITOR_REBUILD_EVENTS.SceneRebuildState(),
             ),
             bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
@@ -555,6 +555,8 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             ("init", "start"),
             ("op", "op-1"),
             ("call", "set_scene_assets"),
+            ("call", "add_assets_to_scene"),
+            ("call", "remove_assets_from_scene"),
         ]:
             with self.subTest(action=action, name=name):
                 with self.assertRaises(HTTPException) as err:
@@ -760,10 +762,10 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bodies["Arm_link"]["selectable"])
         self.assertEqual(bodies["Arm_link"]["selectionBody"], "Root_base_link")
 
-    def test_list_scene_bodies_returns_top_level_robot_bounds(self):
+    def test_list_placement_bodies_returns_top_level_robot_bounds(self):
         session = self.build_robot_root_pose_edit_session()
 
-        payload = session.call_once("list_scene_bodies", ())
+        payload = session.call_once("list_placement_bodies", ())
 
         self.assertEqual([item["body"] for item in payload["items"]], ["Scene_Crate"])
         self.assertEqual(payload["robot_bounds"], {
@@ -771,10 +773,10 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "max": [0.35, 0.1, 0.4],
         })
 
-    def test_list_scene_bodies_includes_world_aabb_for_editable_bodies(self):
+    def test_list_placement_bodies_includes_world_aabb_for_editable_bodies(self):
         session = self.build_pose_edit_session()
 
-        payload = session.call_once("list_scene_bodies", ())
+        payload = session.call_once("list_placement_bodies", ())
 
         self.assertEqual(payload["items"][0]["body"], "Scene_Crate")
         self.assertEqual(payload["items"][0]["world_aabb"], {
@@ -783,10 +785,10 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(payload["items"][0]["support"], {"top_z": 3.2})
 
-    def test_list_scene_bodies_includes_descendant_geom_world_aabb_for_editable_body(self):
+    def test_list_placement_bodies_includes_descendant_geom_world_aabb_for_editable_body(self):
         session = self.build_nested_pose_edit_session()
 
-        payload = session.call_once("list_scene_bodies", ())
+        payload = session.call_once("list_placement_bodies", ())
 
         self.assertEqual(payload["items"][0]["body"], "Scene_Crate")
         self.assertEqual(payload["items"][0]["world_aabb"], {
@@ -1034,6 +1036,17 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"ok": True, "op_id": "op-9"})
         session.editor.set_scene_assets.assert_called_once_with([{"asset_id": "table_000"}])
 
+    def test_add_assets_to_scene_delegates_to_editor(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.editor = mock.Mock(
+            add_assets_to_scene=mock.Mock(return_value={"ok": True, "op_id": "op-10"}),
+        )
+
+        result = MODULE.ZapdosSession.call_once(session, "add_assets_to_scene", ([{"asset_id": "table_000"}],))
+
+        self.assertEqual(result, {"ok": True, "op_id": "op-10"})
+        session.editor.add_assets_to_scene.assert_called_once_with([{"asset_id": "table_000"}])
+
     def test_set_scene_assets_rejects_ambiguous_placement(self):
         session = self.build_pose_edit_session()
         editor = session.editor
@@ -1194,6 +1207,54 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
         }])
 
+    def test_add_assets_to_scene_appends_to_latest_pending_overlay(self):
+        session = self.build_pose_edit_session()
+        editor = session.editor
+        editor.base_scene_usd = Path("scene.usda")
+        editor.robot_usd = Path("robot.usda")
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.scene_revision = "rev-1"
+        editor.overlay_path = Path("overlay.json")
+        editor.composed_scene_usd = Path("overlay_scene.usda")
+        editor.rebuilding_scene = False
+        pending_overlay = default_overlay_state("C:/assets")
+        pending_overlay["instances"] = [{
+            "id": "table_000_01",
+            "asset_id": "table_000",
+            "url": "objects/table_000/Aligned.usda",
+            "motion": "static",
+            "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
+        }]
+        pending_overlay["pose_overrides"] = {
+            "Scene_table_000_01": {"pos": [1.0, 2.0, 3.0], "quat": [1.0, 0.0, 0.0, 0.0]},
+        }
+        EDITOR_REBUILD_EVENTS.register_scene_rebuild_candidate(editor, "op-1", pending_overlay)
+        captured = {}
+
+        with mock.patch.object(
+            EDITOR_COMMANDS_MODULE,
+            "resolve_asset_record",
+            return_value={"asset_id": "table_000", "url": "objects/table_000/Aligned.usda", "description": {}},
+        ):
+            with mock.patch.object(editor, "_start_overlay_operation", side_effect=lambda next_overlay, payload: captured.update({"state": next_overlay, "payload": payload}) or {"ok": True, "op_id": "op-2"}):
+                result = session.editor.add_assets_to_scene([{
+                    "asset_id": "table_000",
+                    "motion": "dynamic",
+                    "placement": {"kind": "world_pose", "pos": [0.0, 0.0, 0.5], "quat": [1.0, 0.0, 0.0, 0.0]},
+                }])
+
+        self.assertEqual(result, {"ok": True, "op_id": "op-2"})
+        self.assertEqual([item["id"] for item in captured["state"]["instances"]], ["table_000_01", "table_000_02"])
+        self.assertEqual(captured["state"]["pose_overrides"], pending_overlay["pose_overrides"])
+        self.assertEqual(captured["payload"], {
+            "ok": True,
+            "items": [{
+                "asset_id": "table_000",
+                "instance_id": "table_000_02",
+                "body": "Scene_table_000_02",
+            }],
+        })
+
     def test_set_body_pose_persists_pose_override_without_changing_scene_revision(self):
         session = self.build_freejoint_pose_edit_session()
         session.editor.overlay_state = default_overlay_state("C:/assets")
@@ -1338,6 +1399,17 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"ok": True, "instance_id": "table_000_01"})
         session.editor.remove_asset_from_scene.assert_called_once_with("table_000_01")
+
+    def test_remove_assets_from_scene_delegates_to_editor(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.editor = mock.Mock(
+            remove_assets_from_scene=mock.Mock(return_value={"ok": True, "instance_ids": ["table_000_01", "mug_000_01"]}),
+        )
+
+        result = MODULE.ZapdosSession.call_once(session, "remove_assets_from_scene", (["table_000_01", "mug_000_01"],))
+
+        self.assertEqual(result, {"ok": True, "instance_ids": ["table_000_01", "mug_000_01"]})
+        session.editor.remove_assets_from_scene.assert_called_once_with(["table_000_01", "mug_000_01"])
 
     def test_swap_runtime_bundle_closes_previous_physics_after_successful_swap(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
@@ -1688,28 +1760,43 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"ok": True, "op_id": "op-1"})
         session.editor.set_scene_assets.assert_called_once_with([{"asset_id": "table_000"}])
 
+    def test_call_once_dispatches_list_placement_bodies(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.editor = mock.Mock(
+            list_placement_bodies=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}]}),
+        )
+
+        result = MODULE.ZapdosSession.call_once(session, "list_placement_bodies", ())
+
+        self.assertEqual(result["items"][0]["body"], "Scene_Crate")
+        session.editor.list_placement_bodies.assert_called_once_with()
+
     def test_call_once_dispatches_manipulation_runtime_methods(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.runtime = mock.Mock(
-            list_scene_objects=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}], "scene_revision": "rev-1"}),
+            list_manipulation_objects=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}], "scene_revision": "rev-1"}),
             pick_apple=mock.Mock(return_value={"ok": True, "op_id": "op-1"}),
             place_apple=mock.Mock(return_value={"ok": True, "op_id": "op-2"}),
             pick_object=mock.Mock(return_value={"ok": True, "op_id": "op-3"}),
+            place_object=mock.Mock(return_value={"ok": True, "op_id": "op-4"}),
         )
 
-        listed = MODULE.ZapdosSession.call_once(session, "list_scene_objects", ())
+        listed = MODULE.ZapdosSession.call_once(session, "list_manipulation_objects", ())
         apple_pick = MODULE.ZapdosSession.call_once(session, "pick_apple", ())
         placed = MODULE.ZapdosSession.call_once(session, "place_apple", ())
         picked = MODULE.ZapdosSession.call_once(session, "pick_object", ({"target_query": "crate"},))
+        placed_object = MODULE.ZapdosSession.call_once(session, "place_object", ({"target_query": "crate"},))
 
         self.assertEqual(listed["items"][0]["body"], "Scene_Crate")
         self.assertEqual(apple_pick["op_id"], "op-1")
         self.assertEqual(placed["op_id"], "op-2")
         self.assertEqual(picked["op_id"], "op-3")
-        session.runtime.list_scene_objects.assert_called_once_with()
+        self.assertEqual(placed_object["op_id"], "op-4")
+        session.runtime.list_manipulation_objects.assert_called_once_with()
         session.runtime.pick_apple.assert_called_once_with()
         session.runtime.place_apple.assert_called_once_with()
         session.runtime.pick_object.assert_called_once_with({"target_query": "crate"})
+        session.runtime.place_object.assert_called_once_with({"target_query": "crate"})
 
     async def test_manipulation_runtime_executes_grounded_pick_plan(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
@@ -1742,7 +1829,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         result = runtime.pick_object({"target_query": "crate"})
 
         self.assertEqual(result, {"ok": True, "op_id": "op-1"})
-        session.editor.list_scene_bodies.assert_called_once_with()
+        session.editor.list_placement_bodies.assert_called_once_with()
         catalog_loader.assert_called_once_with({"items": []}, {})
         grounder.assert_called_once_with(catalog_loader.return_value, target_query="crate", support_query=None)
         planner.assert_called_once_with(
@@ -1911,6 +1998,58 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             {"ok": True, "target_body": "Scene_benchmark_building_blocks_006_1", "attachment": None, "scene_revision": "rev-2"},
         )
 
+    async def test_manipulation_runtime_executes_grounded_place_object_plan(self):
+        from utils.zapdos.manipulation.runtime import ManipulationRuntime
+
+        target = {
+            "body": "Scene_Crate",
+            "label": "crate",
+            "motion": "dynamic",
+        }
+        physics = mock.Mock()
+        physics.get_attachment.return_value = {
+            "parent_body": "Root_r1_pro_with_gripper_left_gripper_link",
+            "child_body": "Scene_Crate",
+            "relative_position": [0.0, 0.0, 0.0],
+            "relative_quat": [1.0, 0.0, 0.0, 0.0],
+        }
+        session, scheduled, reservations = self._build_manipulation_session(
+            scene_revision="rev-3",
+            physics=physics,
+        )
+
+        def run_release():
+            yield None
+            return {"ok": True, "target_body": "Scene_Crate", "attachment": None}
+
+        executor = mock.Mock(iter_execute=mock.Mock(return_value=run_release()))
+        catalog_loader = mock.Mock(return_value=[target])
+        grounder = mock.Mock(return_value={"target": target, "support": None})
+
+        runtime = ManipulationRuntime(
+            session,
+            catalog_loader=catalog_loader,
+            grounding_fn=grounder,
+            executor=executor,
+        )
+        result = runtime.place_object({"target_query": "Scene_Crate"})
+
+        self.assertEqual(result, {"ok": True, "op_id": "op-1"})
+        grounder.assert_called_once_with(catalog_loader.return_value, target_query="Scene_Crate", support_query=None)
+        physics.get_attachment.assert_called_once_with("Scene_Crate")
+        executor.iter_execute.assert_called_once_with({
+            "kind": "release",
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "stages": [{"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 18}],
+        })
+        await asyncio.gather(*scheduled)
+        self.assertEqual(reservations, ["enter", "exit"])
+        self.assertEqual(
+            session.editor.scene_rebuild_state.jobs["op-1"].future.result(timeout=1),
+            {"ok": True, "target_body": "Scene_Crate", "attachment": None, "scene_revision": "rev-3"},
+        )
+
     async def test_manipulation_runtime_passes_start_pose_and_scene_objects_to_planner(self):
         from utils.zapdos.manipulation.runtime import ManipulationRuntime
 
@@ -2010,7 +2149,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                 self.editor = SimpleNamespace(
                     scene_revision="rev-boundary",
                     overlay_state={},
-                    list_scene_bodies=mock.Mock(return_value={"items": []}),
+                    list_placement_bodies=mock.Mock(return_value={"items": []}),
                     scene_rebuild_state=EDITOR_REBUILD_EVENTS.SceneRebuildState(),
                 )
                 self.bundle = SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda"))
@@ -2072,7 +2211,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                 self.editor = SimpleNamespace(
                     scene_revision="rev-blocked",
                     overlay_state={},
-                    list_scene_bodies=mock.Mock(return_value={"items": []}),
+                    list_placement_bodies=mock.Mock(return_value={"items": []}),
                     scene_rebuild_state=EDITOR_REBUILD_EVENTS.SceneRebuildState(),
                 )
                 self.bundle = SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda"))
@@ -2157,7 +2296,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
                 self.editor = SimpleNamespace(
                     scene_revision="rev-cancel",
                     overlay_state={},
-                    list_scene_bodies=mock.Mock(return_value={"items": []}),
+                    list_placement_bodies=mock.Mock(return_value={"items": []}),
                     scene_rebuild_state=EDITOR_REBUILD_EVENTS.SceneRebuildState(),
                 )
                 self.bundle = SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda"))
@@ -2575,6 +2714,56 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["op_id"], "op-1")
         self.assertEqual(removed["op_id"], "op-2")
         self.assertEqual(removed["instance_id"], "table_000_01")
+
+    def test_remove_assets_from_scene_removes_multiple_from_latest_pending_overlay(self):
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.sess = "sess-1"
+        session.bundle = SimpleNamespace(cameras=[])
+        editor = self.attach_editor(session)
+        session.editor = editor
+        editor.overlay_state = default_overlay_state("C:/assets")
+        editor.scene_revision = "rev-1"
+        pending_overlay = default_overlay_state("C:/assets")
+        pending_overlay["instances"] = [
+            {
+                "id": "table_000_01",
+                "asset_id": "table_000",
+                "url": "objects/table_000/Aligned.usda",
+                "motion": "static",
+                "placement": {"kind": "floor_at_xy", "xy": [0.0, 0.0], "z_offset": 0.0, "yaw": 0.0},
+            },
+            {
+                "id": "mug_000_01",
+                "asset_id": "mug_000",
+                "url": "objects/mug_000/Aligned.usda",
+                "motion": "dynamic",
+                "placement": {"kind": "world_pose", "pos": [0.0, 0.0, 0.5], "quat": [1.0, 0.0, 0.0, 0.0]},
+            },
+            {
+                "id": "crate_000_01",
+                "asset_id": "crate_000",
+                "url": "objects/crate_000/Aligned.usda",
+                "motion": "dynamic",
+                "placement": {"kind": "world_pose", "pos": [1.0, 0.0, 0.5], "quat": [1.0, 0.0, 0.0, 0.0]},
+            },
+        ]
+        pending_overlay["pose_overrides"] = {
+            "Scene_table_000_01": {"pos": [0.0, 0.0, 0.0], "quat": [1.0, 0.0, 0.0, 0.0]},
+            "Scene_mug_000_01": {"pos": [0.1, 0.0, 0.0], "quat": [1.0, 0.0, 0.0, 0.0]},
+            "Scene_crate_000_01": {"pos": [0.2, 0.0, 0.0], "quat": [1.0, 0.0, 0.0, 0.0]},
+        }
+        captured = {}
+
+        with mock.patch.object(editor, "_start_overlay_operation", side_effect=lambda next_overlay, payload: captured.update({"state": next_overlay, "payload": payload}) or {"ok": True, "op_id": "op-2"}):
+            EDITOR_REBUILD_EVENTS.register_scene_rebuild_candidate(editor, "op-1", pending_overlay)
+            removed = editor.remove_assets_from_scene(["table_000_01", "mug_000_01"])
+
+        self.assertEqual(removed["op_id"], "op-2")
+        self.assertEqual(captured["payload"], {"ok": True, "instance_ids": ["table_000_01", "mug_000_01"]})
+        self.assertEqual([item["id"] for item in captured["state"]["instances"]], ["crate_000_01"])
+        self.assertEqual(captured["state"]["pose_overrides"], {
+            "Scene_crate_000_01": {"pos": [0.2, 0.0, 0.0], "quat": [1.0, 0.0, 0.0, 0.0]},
+        })
 
     async def test_concurrent_overlay_rebuilds_apply_latest_candidate_only(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)

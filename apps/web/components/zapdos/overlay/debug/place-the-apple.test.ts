@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-type PlaceTheAppleModule = typeof import("./place-the-apple");
+type PlaceSelectedObjectModule = typeof import("./place-the-apple");
 
-test("createPlaceTheAppleRequest posts the canned cube release payload", async () => {
-  const { createPlaceTheAppleRequest } = await loadModule<PlaceTheAppleModule>("./place-the-apple.ts");
+test("createPlaceSelectedObjectRequest posts the selected object release payload", async () => {
+  const { createPlaceSelectedObjectRequest } = await loadModule<PlaceSelectedObjectModule>("./place-the-apple.ts");
 
-  assert.deepEqual(createPlaceTheAppleRequest(), {
+  assert.deepEqual(createPlaceSelectedObjectRequest("Scene_Crate"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify([]),
+    body: JSON.stringify([{ target_query: "Scene_Crate", arm: "left" }]),
   });
 });
 
-test("placeTheApple posts to the zapdos place_apple route", async () => {
-  const { createPlaceTheAppleRequest, placeTheApple } = await loadModule<PlaceTheAppleModule>("./place-the-apple.ts");
+test("createPlaceSelectedObjectRequest rejects an empty selected object", async () => {
+  const { createPlaceSelectedObjectRequest } = await loadModule<PlaceSelectedObjectModule>("./place-the-apple.ts");
+
+  assert.throws(() => createPlaceSelectedObjectRequest("  "), /Select an object before placing/);
+});
+
+test("placeSelectedObject posts to the zapdos place_object route", async () => {
+  const { createPlaceSelectedObjectRequest, placeSelectedObject } = await loadModule<PlaceSelectedObjectModule>("./place-the-apple.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
@@ -28,9 +34,9 @@ test("placeTheApple posts to the zapdos place_apple route", async () => {
   }) as typeof fetch;
 
   try {
-    const payload = await placeTheApple("sess-1");
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/place_apple");
-    assert.deepEqual(calls[0]?.init, createPlaceTheAppleRequest());
+    const payload = await placeSelectedObject("sess-1", "Scene_benchmark_building_blocks_006_01");
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/tasks/place_object");
+    assert.deepEqual(calls[0]?.init, createPlaceSelectedObjectRequest("Scene_benchmark_building_blocks_006_01"));
     assert.equal(payload.target_body, "Scene_benchmark_building_blocks_006_01");
     assert.equal(payload.scene_revision, "rev-4");
   } finally {

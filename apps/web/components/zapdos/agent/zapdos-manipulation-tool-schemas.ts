@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const listSceneObjectsToolArgsSchema = z.object({}).strict();
+export const listManipulationObjectsToolArgsSchema = z.object({}).strict();
 
 export const pickObjectToolArgsSchema = z.object({
   target_query: z.string().trim().min(1).describe("Natural-language description of the object to pick."),

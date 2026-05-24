@@ -119,7 +119,7 @@ Add Zapdos session tools that the agent can call through the existing frontend t
 - Reuse the current Genie Sim asset search behavior.
 - Return `asset_id`, `description`, `url`, and `assets_root`.
 
-### `list_scene_bodies`
+### `list_placement_bodies`
 
 - Return editable body names, labels, current world pose, and support metadata needed for placement.
 - Include a coarse support descriptor such as world-space AABB or top surface height.

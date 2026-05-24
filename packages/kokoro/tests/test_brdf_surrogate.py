@@ -17,6 +17,7 @@ from kokoro.brdf import (
     average_patch_reflections,
     build_brdf_dataset,
     angles_to_direction,
+    estimate_periodic_phase_vectors,
     export_surrogate_npz,
     load_npz_surrogate,
     make_features,
@@ -178,6 +179,37 @@ def height(x, y):
         self.assertEqual(dataset.target_mode, "normal")
         self.assertFalse(dataset.include_incident_features)
 
+    def test_normal_target_dataset_uses_configured_normal_step(self) -> None:
+        program = compile_height_program(
+            """
+def height(x, y):
+    return 5e-6 * torch.sin((2.0 * torch.pi / 50e-6) * x)
+"""
+        )
+
+        fine = build_brdf_dataset(
+            program,
+            sample_count=64,
+            width_m=0.10,
+            depth_m=0.10,
+            seed=8,
+            target_mode="normal",
+            normal_step_m=0.5e-6,
+        )
+        coarse = build_brdf_dataset(
+            program,
+            sample_count=64,
+            width_m=0.10,
+            depth_m=0.10,
+            seed=8,
+            target_mode="normal",
+            normal_step_m=25e-6,
+        )
+
+        fine_xy = torch.linalg.vector_norm(fine.targets[:, :2], dim=1).mean()
+        coarse_xy = torch.linalg.vector_norm(coarse.targets[:, :2], dim=1).mean()
+        self.assertGreater(fine_xy.item(), coarse_xy.item() * 10.0)
+
     def test_npz_export_round_trips_surrogate_weights(self) -> None:
         program = compile_height_program(
             """
@@ -253,6 +285,61 @@ def height(x, y):
 
         self.assertEqual(features.shape, (2, 21))
         self.assertFalse(torch.allclose(features[0], features[1]))
+
+    def test_dft_phase_detection_finds_known_height_sine_direction_and_period(self) -> None:
+        program = compile_height_program(
+            """
+def height(x, y):
+    return torch.sin((2.0 * torch.pi / 250e-6) * x + (2.0 * torch.pi / 500e-6) * y)
+"""
+        )
+
+        vectors = estimate_periodic_phase_vectors(
+            program,
+            width_m=2.0e-3,
+            depth_m=2.0e-3,
+            grid_size=96,
+            max_vectors=1,
+        )
+
+        expected = torch.tensor([2.0 * torch.pi / 250e-6, 2.0 * torch.pi / 500e-6], dtype=torch.float32)
+        detected = torch.tensor(vectors[0], dtype=torch.float32)
+        if torch.dot(detected, expected) < 0:
+            detected = -detected
+        self.assertTrue(torch.allclose(detected, expected, rtol=0.04, atol=1e-3))
+
+    def test_dft_phase_vectors_append_meter_space_sin_cos_features_and_metadata(self) -> None:
+        phase_vectors = [(2.0 * torch.pi / 250e-6, 0.0), (0.0, 2.0 * torch.pi / 500e-6)]
+        features = make_features(
+            torch.tensor([0.0, 62.5e-6]),
+            torch.tensor([0.0, 125e-6]),
+            torch.tensor([0.4, 0.4]),
+            torch.tensor([0.2, 0.2]),
+            width_m=0.10,
+            depth_m=0.10,
+            dft_phase_vectors=phase_vectors,
+            include_position_features=True,
+            include_incident_features=False,
+        )
+        model = KokoroBrdfNet(hidden_dim=4, input_dim=6)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "dft_phase.npz"
+
+            export_surrogate_npz(
+                model,
+                checkpoint,
+                width_m=0.10,
+                depth_m=0.10,
+                dft_phase_vectors=phase_vectors,
+                include_position_features=True,
+                include_incident_features=False,
+            )
+            loaded = load_npz_surrogate(checkpoint)
+
+        self.assertEqual(features.shape, (2, 6))
+        self.assertTrue(torch.allclose(features[0, 2:6], torch.tensor([0.0, 1.0, 0.0, 1.0]), atol=1e-5))
+        self.assertTrue(torch.allclose(features[1, 2:6], torch.tensor([1.0, 0.0, 1.0, 0.0]), atol=1e-5))
+        self.assertEqual(loaded.metadata["dft_phase_vectors"], [[float(phase_vectors[0][0]), 0.0], [0.0, float(phase_vectors[1][1])]])
 
     def test_local_feature_period_appends_cell_phase_without_dropping_macro_position(self) -> None:
         theta = torch.tensor([0.4, 0.4])

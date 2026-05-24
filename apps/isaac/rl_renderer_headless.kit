@@ -1,0 +1,76 @@
+[package]
+description = "Headless Isaac Sim app for the GlassBeaker RL camera renderer"
+title = "GlassBeaker RL Renderer Headless"
+version = "0.1.0"
+keywords = ["experience", "app", "usd", "isaacsim", "headless"]
+
+[dependencies]
+"isaacsim.core.api" = {}
+"isaacsim.core.cloner" = {}
+"isaacsim.core.deprecation_manager" = { order = -100 }
+"isaacsim.core.nodes" = {}
+"isaacsim.core.prims" = {}
+"isaacsim.core.simulation_manager" = {}
+"isaacsim.core.throttling" = {}
+"isaacsim.core.utils" = {}
+"isaacsim.core.version" = {}
+"isaacsim.sensors.camera" = {}
+"isaacsim.simulation_app" = {}
+"isaacsim.storage.native" = {}
+"omni.hydra.engine.stats" = {}
+"omni.hydra.rtx" = {}
+"omni.hydra.usdrt_delegate" = {}
+"omni.isaac.cloner" = {}
+"omni.isaac.core" = {}
+"omni.isaac.utils" = {}
+"omni.kit.loop-isaac" = {}
+"omni.physx.tensors" = {}
+"omni.physics.physx" = {}
+"omni.physics.stageupdate" = {}
+"omni.replicator.core" = {}
+"omni.syntheticdata" = {}
+"omni.usd.schema.isaac" = {}
+"omni.usd.schema.semantics" = {}
+"omni.warp.core" = {}
+
+[settings]
+app.name = "GlassBeaker-RL-Renderer-Headless"
+app.version = "0.1.0"
+app.vulkan = true
+app.enableDeveloperWarnings = false
+app.gatherRenderResults = true
+app.settings.fabricDefaultStageFrameHistoryCount = 3
+app.useFabricSceneDelegate = true
+app.asyncRendering = false
+app.asyncRenderingLowLatency = false
+app.window.hideUi = true
+app.viewport.createCameraModelRep = false
+exts."omni.kit.viewport.window".startup.disableWindowOnLoad = true
+exts."omni.kit.viewport.window".startup.showOnLaunch = []
+exts."omni.kit.viewport.window".windowMenu.entryCount = 0
+exts."omni.kit.renderer.core".present.enabled = false
+omni.replicator.asyncRendering = false
+persistent.omni.replicator.captureOnPlay = true
+rtx-transient.dlssg.enabled = false
+rtx.dataWindow.fitOutputToDataWindow = true
+rtx.dataWindowNDC.'0' = 0.0
+rtx.dataWindowNDC.'1' = 0.0
+rtx.dataWindowNDC.'2' = 1.0
+rtx.dataWindowNDC.'3' = 1.0
+rtx.hydra.mdlMaterialWarmup = false
+
+[settings.app.exts.folders]
+'++' = [
+    "${app}",
+    "${app}/../exts",
+    "${app}/../extscache",
+    "${app}/../extsUser",
+    "${app}/../extsDeprecated",
+]
+
+[settings.exts."omni.kit.registry.nucleus"]
+registries = [
+    { name = "kit/default", url = "https://ovextensionsprod.blob.core.windows.net/exts/kit/prod/107/shared" },
+    { name = "kit/sdk", url = "https://ovextensionsprod.blob.core.windows.net/exts/kit/prod/sdk/${kit_version_short}/${kit_git_hash}" },
+    { name = "kit/community", url = "https://dw290v42wisod.cloudfront.net/exts/kit/community" },
+]

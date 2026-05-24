@@ -141,6 +141,35 @@ class ValidationTest(unittest.TestCase):
         self.assertTrue(torch.allclose(first.features, second.features))
         self.assertTrue(torch.all(first.targets[:, 2] >= 0.15))
 
+    def test_direction_holdout_dataset_uses_configured_normal_step(self) -> None:
+        program = compile_height_program(
+            """
+def height(x, y):
+    return 5e-6 * torch.sin((2.0 * torch.pi / 50e-6) * x)
+"""
+        )
+
+        fine = build_direction_holdout_dataset(
+            program,
+            DirectionHoldoutConfig(x_count=7, y_count=1, theta_count=1, phi_count=1),
+            width_m=0.10,
+            depth_m=0.10,
+            target_mode="normal",
+            normal_step_m=0.5e-6,
+        )
+        coarse = build_direction_holdout_dataset(
+            program,
+            DirectionHoldoutConfig(x_count=7, y_count=1, theta_count=1, phi_count=1),
+            width_m=0.10,
+            depth_m=0.10,
+            target_mode="normal",
+            normal_step_m=25e-6,
+        )
+
+        fine_xy = torch.linalg.vector_norm(fine.targets[:, :2], dim=1).mean()
+        coarse_xy = torch.linalg.vector_norm(coarse.targets[:, :2], dim=1).mean()
+        self.assertGreater(fine_xy.item(), coarse_xy.item() * 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()

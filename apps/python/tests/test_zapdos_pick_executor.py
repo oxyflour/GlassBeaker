@@ -16,8 +16,9 @@ sys.path.insert(0, str(REPO_ROOT / "apps" / "python"))
 
 from utils.zapdos.bundle.bundle_builder import ensure_render_bundle  # noqa: E402
 from utils.zapdos.bundle.usd_to_mjcf_adapter import sanitize_name  # noqa: E402
-from utils.zapdos.manipulation.executor import PickExecutor  # noqa: E402
+from utils.zapdos.manipulation.executor import GRIPPER_STAGE_STEPS, PickExecutor  # noqa: E402
 from utils.zapdos.physics.mujoco_physics import MujocoPhysics  # noqa: E402
+from utils.teleop.arm_config import get_arm_config  # noqa: E402
 
 
 class _FakePhysics:
@@ -57,6 +58,53 @@ class _FakePhysics:
 
     def body_world_aabb(self, body_name: str) -> dict[str, list[float]] | None:
         return self.aabbs.get(body_name)
+
+
+class _LaggingGripperPhysics(_FakePhysics):
+    def __init__(self, arm: str, *, initial_width: float, close_rate: float) -> None:
+        super().__init__()
+        config = get_arm_config(arm)
+        self.joint1, self.joint2 = config.gripper_joint_names
+        self.width = initial_width
+        self.target_width = initial_width
+        self.close_rate = close_rate
+        self.width_at_attach: float | None = None
+
+    def joint_state_msg(self) -> dict[str, list[object]]:
+        return {"name": [self.joint1, self.joint2], "position": [self.width, -self.width]}
+
+    def apply_joint_command(self, message: dict[str, object]) -> None:
+        values = dict(zip(message.get("name") or [], message.get("position") or []))
+        if self.joint1 in values:
+            self.target_width = float(values[self.joint1])
+
+    def step(self) -> None:
+        super().step()
+        if self.width > self.target_width:
+            self.width = max(self.target_width, self.width - self.close_rate)
+        elif self.width < self.target_width:
+            self.width = min(self.target_width, self.width + self.close_rate)
+
+    def attach_body(self, parent_body: str, child_body: str) -> dict[str, object]:
+        self.width_at_attach = self.width
+        return super().attach_body(parent_body, child_body)
+
+
+class _ContactingGripperPhysics(_LaggingGripperPhysics):
+    def __init__(self, arm: str, *, initial_width: float, close_rate: float, contact_width: float) -> None:
+        super().__init__(arm, initial_width=initial_width, close_rate=close_rate)
+        self.contact_width = contact_width
+        self.commanded_widths: list[float] = []
+
+    def apply_joint_command(self, message: dict[str, object]) -> None:
+        super().apply_joint_command(message)
+        values = dict(zip(message.get("name") or [], message.get("position") or []))
+        if self.joint1 in values:
+            self.commanded_widths.append(float(values[self.joint1]))
+
+    def bodies_in_contact(self, body_a: str, body_b: str) -> bool:
+        del body_a, body_b
+        return self.width <= self.contact_width
 
 
 class _StaticIK:
@@ -104,6 +152,7 @@ class _RecordingIK(_MutableIK):
     def __init__(self, pose: dict[str, tuple[float, ...]]) -> None:
         super().__init__(pose)
         self.solve_kwargs: list[dict[str, object]] = []
+        self.gripper_openings: list[float] = []
 
     def solve_step(
         self,
@@ -113,7 +162,43 @@ class _RecordingIK(_MutableIK):
         **kwargs: object,
     ) -> dict[str, list[object]]:
         self.solve_kwargs.append(dict(kwargs))
+        self.gripper_openings.append(float(gripper_opening))
         return super().solve_step(arm, target_pose, gripper_opening, **kwargs)
+
+
+class _GripperCommandIK(_MutableIK):
+    def solve_step(
+        self,
+        arm: str,
+        target_pose: dict[str, tuple[float, ...]],
+        gripper_opening: float,
+        **_kwargs: object,
+    ) -> dict[str, list[object]]:
+        self.pose = target_pose
+        joint1, joint2 = get_arm_config(arm).gripper_joint_names
+        return {"name": [joint1, joint2], "position": [gripper_opening, -gripper_opening]}
+
+
+class _CloseHoldRecordingIK(_MutableIK):
+    def __init__(self, pose: dict[str, tuple[float, ...]], *, descend_pose: dict[str, tuple[float, ...]]) -> None:
+        super().__init__(pose)
+        self.descend_pose = descend_pose
+        self.close_targets: list[tuple[float, ...]] = []
+
+    def solve_step(
+        self,
+        arm: str,
+        target_pose: dict[str, tuple[float, ...]],
+        gripper_opening: float,
+        **_kwargs: object,
+    ) -> dict[str, list[object]]:
+        del arm
+        if gripper_opening < 0.04:
+            self.close_targets.append(target_pose["position"])
+            self.pose = target_pose
+        else:
+            self.pose = self.descend_pose
+        return {"name": [], "position": []}
 
 
 class _FingerCenterIK(_MutableIK):
@@ -139,6 +224,32 @@ class _FingerCenterIK(_MutableIK):
             "position": target_pose["position"],  # type: ignore
             "rotation": target_pose["rotation"],  # type: ignore
         }
+        return {"name": [], "position": []}
+
+
+class _DeadbandFingerCenterIK(_FingerCenterIK):
+    def __init__(self, pose: dict[str, tuple[float, ...]], deadband: float) -> None:
+        super().__init__(pose)
+        self.deadband = deadband
+
+    def solve_step(
+        self,
+        arm: str,
+        target_pose: dict[str, object],
+        gripper_opening: float,
+        **_kwargs: object,
+    ) -> dict[str, list[object]]:
+        del arm, gripper_opening
+        self.solve_targets.append(target_pose)
+        distance = math.dist(
+            self.finger_pose["position"],
+            target_pose["position"],  # type: ignore
+        )
+        if distance >= self.deadband:
+            self.finger_pose = {
+                "position": target_pose["position"],  # type: ignore
+                "rotation": target_pose["rotation"],  # type: ignore
+            }
         return {"name": [], "position": []}
 
 
@@ -225,7 +336,7 @@ class PickExecutorTest(unittest.TestCase):
             "min": [-0.01, -0.01, 0.01],
             "max": [0.01, 0.01, 0.03],
         }
-        ik = _MutableIK(_pose(0.1, 0.2, 0.3))
+        ik = _RecordingIK(_pose(0.1, 0.2, 0.3))
         executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
         driven: list[tuple[tuple[float, ...], float, int]] = []
 
@@ -259,8 +370,162 @@ class PickExecutorTest(unittest.TestCase):
         self.assertEqual(driven, [
             ((0.1, 0.2, 0.3), 0.05, 18),
             ((0.0, 0.0, 0.02), 0.05, 24),
-            ((0.0, 0.0, 0.02), 0.0, 6),
         ])
+        self.assertEqual(len(ik.gripper_openings), GRIPPER_STAGE_STEPS)
+        self.assertAlmostEqual(ik.gripper_openings[-1], 0.0)
+
+    def test_execute_close_gripper_interpolates_width_over_stage_steps(self):
+        physics = _FakePhysics()
+        ik = _RecordingIK(_pose(0.0, 0.0, 0.02))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+
+        result = executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "open_gripper": 0.04,
+            "pick_tolerance": 0.16,
+            "attach_tolerance": 0.11,
+            "stages": [
+                {
+                    "name": "descend_to_pick",
+                    "kind": "move_pose",
+                    "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                    "steps": 1,
+                    "tolerance": 0.16,
+                },
+                {"name": "close_gripper", "kind": "gripper", "width": 0.0, "steps": 4},
+            ],
+        })
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(ik.gripper_openings[-4:], [0.03, 0.02, 0.01, 0.0])
+
+    def test_execute_close_gripper_holds_actual_pose_after_descend(self):
+        actual_descend_pose = _pose(0.0, 0.0, 0.04)
+        ik = _CloseHoldRecordingIK(_pose(0.0, 0.0, 0.08), descend_pose=actual_descend_pose)
+        executor = PickExecutor(_FakePhysics(), bundle=_bundle(), ik_controller=ik)
+
+        result = executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "open_gripper": 0.04,
+            "pick_tolerance": 0.03,
+            "attach_tolerance": 0.11,
+            "stages": [
+                {
+                    "name": "descend_to_pick",
+                    "kind": "move_pose",
+                    "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                    "steps": 1,
+                    "tolerance": 0.03,
+                },
+                {"name": "close_gripper", "kind": "gripper", "width": 0.0, "steps": 2},
+            ],
+        })
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(ik.close_targets, [actual_descend_pose["position"], actual_descend_pose["position"]])
+
+    def test_execute_waits_for_close_gripper_joint_state_before_attach(self):
+        physics = _LaggingGripperPhysics("left", initial_width=0.04, close_rate=0.005)
+        physics.aabbs["Scene_Crate"] = {
+            "min": [-0.01, -0.01, 0.01],
+            "max": [0.01, 0.01, 0.03],
+        }
+        ik = _GripperCommandIK(_pose(0.0, 0.0, 0.02))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+
+        result = executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "open_gripper": 0.04,
+            "pick_tolerance": 0.16,
+            "attach_tolerance": 0.11,
+            "stages": [
+                {
+                    "name": "descend_to_pick",
+                    "kind": "move_pose",
+                    "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                    "steps": 1,
+                    "tolerance": 0.16,
+                },
+                {"name": "close_gripper", "kind": "gripper", "width": 0.0, "steps": 1},
+            ],
+        })
+
+        self.assertTrue(result["ok"])
+        self.assertIsNotNone(physics.width_at_attach)
+        self.assertLessEqual(physics.width_at_attach, 0.002)
+
+    def test_execute_stops_closing_gripper_when_target_contacts_fingers(self):
+        physics = _ContactingGripperPhysics("left", initial_width=0.04, close_rate=0.01, contact_width=0.02)
+        physics.aabbs["Scene_Crate"] = {
+            "min": [-0.01, -0.01, 0.01],
+            "max": [0.01, 0.01, 0.03],
+        }
+        ik = _GripperCommandIK(_pose(0.0, 0.0, 0.02))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+
+        result = executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "open_gripper": 0.04,
+            "pick_tolerance": 0.16,
+            "attach_tolerance": 0.11,
+            "stages": [
+                {
+                    "name": "descend_to_pick",
+                    "kind": "move_pose",
+                    "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                    "steps": 1,
+                    "tolerance": 0.16,
+                },
+                {"name": "close_gripper", "kind": "gripper", "width": 0.0, "steps": 4},
+            ],
+        })
+
+        self.assertTrue(result["ok"])
+        self.assertIsNotNone(physics.width_at_attach)
+        self.assertGreaterEqual(physics.width_at_attach, 0.02)
+        self.assertGreaterEqual(min(physics.commanded_widths), 0.02)
+
+    def test_execute_rejects_close_gripper_when_joint_state_never_settles(self):
+        physics = _LaggingGripperPhysics("left", initial_width=0.04, close_rate=0.0)
+        physics.aabbs["Scene_Crate"] = {
+            "min": [-0.01, -0.01, 0.01],
+            "max": [0.01, 0.01, 0.03],
+        }
+        ik = _GripperCommandIK(_pose(0.0, 0.0, 0.02))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+
+        with self.assertRaises(HTTPException) as err:
+            executor.execute({
+                "arm": "left",
+                "target_body": "Scene_Crate",
+                "open_gripper": 0.04,
+                "pick_tolerance": 0.16,
+                "attach_tolerance": 0.11,
+                "stages": [
+                    {
+                        "name": "descend_to_pick",
+                        "kind": "move_pose",
+                        "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                        "steps": 1,
+                        "tolerance": 0.16,
+                    },
+                    {"name": "close_gripper", "kind": "gripper", "width": 0.0, "steps": 1},
+                    {
+                        "name": "retreat",
+                        "kind": "move_pose",
+                        "pose": {"position": [0.0, 0.0, 0.2], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                    },
+                ],
+            })
+
+        self.assertEqual(err.exception.status_code, 409)
+        self.assertIn("close_gripper", err.exception.detail)
+        self.assertEqual(physics.attached, [])
+        self.assertIsNone(physics.width_at_attach)
 
     def test_execute_position_only_stage_uses_explicit_steps_to_slow_motion(self):
         target = {"position": [0.3, 0.0, 0.08], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]}
@@ -298,6 +563,55 @@ class PickExecutorTest(unittest.TestCase):
         })
 
         self.assertGreater(slow_physics.step_count, default_physics.step_count)
+
+    def test_execute_vertical_position_only_stage_uses_step_subgoals(self):
+        physics = _FakePhysics()
+        ik = _FingerCenterIK(_pose(0.0, 0.0, 0.2))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+
+        executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "stages": [
+                {
+                    "name": "descend_to_pick",
+                    "kind": "move_pose",
+                    "target_point": "finger_center",
+                    "pose": {"position": [0.0, 0.0, 0.12], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                    "position_only": True,
+                    "steps": 8,
+                    "tolerance": 0.01,
+                },
+            ],
+        })
+
+        self.assertEqual(physics.step_count, 8)
+        self.assertEqual(ik.solve_targets[0]["position"], (0.0, 0.0, 0.19))
+        self.assertEqual(ik.solve_targets[-1]["position"], (0.0, 0.0, 0.12))
+
+    def test_execute_vertical_position_only_stage_continues_past_tiny_stalled_subgoals(self):
+        physics = _FakePhysics()
+        ik = _DeadbandFingerCenterIK(_pose(0.0, 0.0, 0.2), deadband=0.006)
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+
+        result = executor.execute({
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "stages": [
+                {
+                    "name": "descend_to_pick",
+                    "kind": "move_pose",
+                    "target_point": "finger_center",
+                    "pose": {"position": [0.0, 0.0, 0.12], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                    "position_only": True,
+                    "steps": 80,
+                    "tolerance": 0.01,
+                },
+            ],
+        })
+
+        self.assertTrue(result["ok"])
+        self.assertLess(math.dist(ik.finger_pose["position"], (0.0, 0.0, 0.12)), 0.01)
 
     def test_execute_rejects_gripper_stage_before_pick_stage(self):
         physics = _FakePhysics()

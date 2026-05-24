@@ -47,6 +47,7 @@ def build_direction_holdout_dataset(
     depth_m: float,
     feature_period_m: float | None = None,
     local_feature_period_m: float | None = None,
+    dft_phase_vectors: tuple[tuple[float, float], ...] = (),
     position_frequency_count: int = 0,
     include_position_features: bool = True,
     include_incident_features: bool = True,
@@ -54,6 +55,7 @@ def build_direction_holdout_dataset(
     radial_cell_feature_max_rotation_rad: float = math.pi / 2.0,
     radial_cell_feature_radial_power: float = 1.0,
     radial_cell_facet_features: bool = False,
+    normal_step_m: float = 25e-6,
     target_mode: str = "reflection",
 ) -> BrdfDataset:
     for name, value in (
@@ -78,7 +80,7 @@ def build_direction_holdout_dataset(
     theta = theta.reshape(-1)
     phi = phi.reshape(-1)
     wi = angles_to_direction(theta, phi)
-    normals = surface_normals(program, x, y)
+    normals = surface_normals(program, x, y, step_m=normal_step_m)
     targets = normals if target_mode == "normal" else reflect(wi, normals)
     features = make_features(
         x,
@@ -89,6 +91,7 @@ def build_direction_holdout_dataset(
         depth_m,
         feature_period_m=feature_period_m,
         local_feature_period_m=local_feature_period_m,
+        dft_phase_vectors=dft_phase_vectors,
         position_frequency_count=position_frequency_count,
         include_position_features=include_position_features,
         include_incident_features=include_incident_features,
@@ -104,6 +107,7 @@ def build_direction_holdout_dataset(
         depth_m=depth_m,
         feature_period_m=feature_period_m,
         local_feature_period_m=local_feature_period_m,
+        dft_phase_vectors=dft_phase_vectors,
         position_frequency_count=position_frequency_count,
         include_position_features=include_position_features,
         include_incident_features=include_incident_features,
@@ -111,5 +115,6 @@ def build_direction_holdout_dataset(
         radial_cell_feature_max_rotation_rad=radial_cell_feature_max_rotation_rad,
         radial_cell_feature_radial_power=radial_cell_feature_radial_power,
         radial_cell_facet_features=radial_cell_facet_features,
+        normal_step_m=float(normal_step_m),
         target_mode=target_mode,
     )

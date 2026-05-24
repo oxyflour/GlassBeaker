@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
@@ -7,6 +6,7 @@ import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "
 import type { PiFrontendToolDefinition, PiRequestMessage } from "../../../components/agent/pi/protocol";
 import { cleanupFrontendToolCalls, createFrontendTools } from "./frontend-tools";
 import { convertPiMessages } from "./messages";
+import { createPiSessionPaths, resolveWorkspaceDir } from "./session-paths";
 
 export const runtime = "nodejs";
 
@@ -20,6 +20,7 @@ type PiModel = {
 
 type PiRequestBody = {
   model?: PiModel;
+  sessionId?: string;
   context?: {
     frontendTools?: PiFrontendToolDefinition[];
     systemPrompt?: string;
@@ -34,25 +35,6 @@ type PiRequestBody = {
 const encoder = new TextEncoder();
 const WORKSPACE_DIR = resolveWorkspaceDir();
 const AGENT_DIR = path.join(WORKSPACE_DIR, ".pi", "agent");
-const ATTACHMENTS_DIR = path.join(AGENT_DIR, "uploads");
-
-function resolveWorkspaceDir() {
-  let current = process.cwd();
-
-  for (let i = 0; i < 6; i += 1) {
-    if (existsSync(path.join(current, "pnpm-workspace.yaml"))) {
-      return current;
-    }
-
-    const parent = path.dirname(current);
-    if (parent === current) {
-      break;
-    }
-    current = parent;
-  }
-
-  return process.cwd();
-}
 
 function sendEvent(controller: ReadableStreamDefaultController<Uint8Array>, event: PiEvent) {
   controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -76,7 +58,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    const convertedMessages = await convertPiMessages(messages, WORKSPACE_DIR, ATTACHMENTS_DIR);
+    const sessionPaths = createPiSessionPaths(AGENT_DIR, body.sessionId);
+    const sessionManager = SessionManager.continueRecent(WORKSPACE_DIR, sessionPaths.sessionDir);
+    const convertedMessages = await convertPiMessages(messages, WORKSPACE_DIR, sessionPaths.attachmentsDir);
     const prompt = convertedMessages[convertedMessages.length - 1];
     if (!prompt || prompt.role !== "user") {
       return Response.json({ error: "Invalid Pi request payload." }, { status: 400 });
@@ -98,7 +82,7 @@ export async function POST(request: Request) {
       thinkingLevel: body.options?.reasoning ?? "off",
       authStorage,
       modelRegistry,
-      sessionManager: SessionManager.inMemory(),
+      sessionManager,
     });
 
     if (context?.systemPrompt) {

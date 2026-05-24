@@ -4,7 +4,7 @@ import {
   type SceneTaskOptions,
 } from "./zapdos-tool-api";
 
-export type ListSceneObjectsResult = {
+export type ListManipulationObjectsResult = {
   items: unknown[];
   scene_revision: string;
 };
@@ -29,15 +29,15 @@ export function createPickObjectRequest(input: PickObjectToolArgs): RequestInit 
   return createManipulationToolRequest([input]);
 }
 
-export async function listSceneObjects(sess: string) {
+export async function listManipulationObjects(sess: string) {
   const response = await fetch(
-    `/python/zapdos/${sess}/call/list_scene_objects`,
+    `/python/zapdos/${sess}/call/list_manipulation_objects`,
     createManipulationToolRequest([])
   );
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return await response.json() as ListSceneObjectsResult;
+  return await response.json() as ListManipulationObjectsResult;
 }
 
 export async function pickObject(

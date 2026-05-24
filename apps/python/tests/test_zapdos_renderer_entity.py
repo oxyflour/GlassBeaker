@@ -70,6 +70,25 @@ class ZapdosRendererEntityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(renderer.bundle, second_bundle)
         self.assertEqual(renderer.last_frame_index, {"wrist_camera": -1})
 
+    def test_update_pose_delegates_to_backend_when_supported(self):
+        backend = SimpleNamespace(
+            ready=True,
+            wait_ready=mock.AsyncMock(return_value={"ready": True}),
+            read=mock.Mock(return_value=None),
+            reload_scene=mock.Mock(),
+            update_pose=mock.Mock(),
+            snapshot_cameras=mock.Mock(return_value=[]),
+            close=mock.Mock(),
+        )
+        renderer = self.make_renderer(backend=backend)
+        pose = {"box": [1.0] * 16}
+        update_pose = getattr(renderer, "update_pose", None)
+
+        self.assertTrue(callable(update_pose))
+        update_pose(pose)
+
+        backend.update_pose.assert_called_once_with(pose)
+
     def test_default_frame_delay_matches_previous_ros_cadence(self):
         renderer = self.make_renderer()
 

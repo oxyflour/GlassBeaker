@@ -78,24 +78,30 @@ class ZapdosSession(Session):
             return self.physics.get_pose()
         if method == "get_camera":
             return self.physics.get_camera()
-        if method == "list_scene_bodies":
-            return self.editor.list_scene_bodies()
-        if method == "list_scene_objects":
-            return self.runtime.list_scene_objects()
+        if method == "list_placement_bodies":
+            return self.editor.list_placement_bodies()
+        if method == "list_manipulation_objects":
+            return self.runtime.list_manipulation_objects()
         if method == "pick_apple":
             return self.runtime.pick_apple()
         if method == "place_apple":
             return self.runtime.place_apple()
         if method == "set_scene_assets":
             return self.editor.set_scene_assets(*args)
+        if method == "add_assets_to_scene":
+            return self.editor.add_assets_to_scene(*args)
         if method == "remove_asset_from_scene":
             return self.editor.remove_asset_from_scene(*args)
+        if method == "remove_assets_from_scene":
+            return self.editor.remove_assets_from_scene(*args)
         if method == "set_body_pose":
             return self.editor.set_body_pose(*args)
         if method == "reset_pose":
             return self.editor.reset_pose()
         if method == "pick_object":
             return self.runtime.pick_object(*args)
+        if method == "place_object":
+            return self.runtime.place_object(*args)
         if method == "save_camera_override":
             return self.save_camera_override()
         return super().call_once(method, args)
@@ -109,7 +115,6 @@ class ZapdosSession(Session):
         self.msgs.put_nowait({"pose": self.physics.get_pose()})
 
     async def send_ros(self) -> None:
-        await self.renderer.wait_ready()
         while self.is_active():
             try:
                 if not self.command_subscribed and bridge.conns:

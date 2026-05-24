@@ -357,13 +357,13 @@ First, extend the session dispatch test:
     def test_call_once_dispatches_manipulation_runtime_methods(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
         session.runtime = mock.Mock(
-            list_scene_objects=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}], "scene_revision": "rev-1"}),
+            list_manipulation_objects=mock.Mock(return_value={"items": [{"body": "Scene_Crate"}], "scene_revision": "rev-1"}),
             grab_apple=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1", "scene_revision": "rev-1"}),
             place_apple=mock.Mock(return_value={"ok": True, "target_body": "Scene_apple_1", "scene_revision": "rev-2"}),
             pick_object=mock.Mock(return_value={"ok": True, "target_body": "Scene_Crate", "scene_revision": "rev-1"}),
         )
 
-        listed = MODULE.ZapdosSession.call_once(session, "list_scene_objects", ())
+        listed = MODULE.ZapdosSession.call_once(session, "list_manipulation_objects", ())
         grabbed = MODULE.ZapdosSession.call_once(session, "grab_apple", ())
         placed = MODULE.ZapdosSession.call_once(session, "place_apple", ())
         picked = MODULE.ZapdosSession.call_once(session, "pick_object", ({"target_query": "crate"},))
@@ -403,7 +403,7 @@ Then add a new runtime test:
             editor=SimpleNamespace(
                 scene_revision="rev-2",
                 overlay_state={},
-                list_scene_bodies=mock.Mock(return_value={"items": []}),
+                list_placement_bodies=mock.Mock(return_value={"items": []}),
             ),
             bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
             physics=physics,

@@ -21,10 +21,12 @@ DRIVE_STAGNATION_STEPS = 24
 DRIVE_MIN_PROGRESS = 0.01
 DRIVE_DIVERGENCE_MARGIN = 0.001
 SUPPORT_ESCAPE_MARGIN = 0.06
+GRIPPER_STAGE_STEPS = 100
+GRIPPER_SETTLE_STEPS = 300
+GRIPPER_WIDTH_TOLERANCE = 0.002
 POSITION_STAGE_SEGMENT_LENGTH = 0.05
 POSITION_STAGE_SEGMENT_STEPS = 32
 POSITION_STAGE_SUBGOAL_TOLERANCE = 0.02
-POSITION_STAGE_STEP_SCALE = 0.0005
 
 
 class PickExecutor:
@@ -105,22 +107,42 @@ class PickExecutor:
                 if stage_kind != "gripper":
                     raise HTTPException(status_code=409, detail=f"Pick failed: unsupported stage kind {stage_kind} at {stage_name}")
                 stage_width = float(stage.get("width", 0.0))
-                stage_steps = max(1, int(stage.get("steps", 6)))
+                stage_steps = max(1, int(stage.get("steps", GRIPPER_STAGE_STEPS)))
                 if stage_name != "close_gripper":
                     hold_pose = ik.get_end_effector_pose(arm)
-                    yield from self._yield_drive_pose(ik, arm, hold_pose, stage_width, steps=stage_steps)
+                    current_width = closed_width if attached else open_width
+                    yield from self._yield_drive_pose(
+                        ik,
+                        arm,
+                        hold_pose,
+                        stage_width,
+                        steps=stage_steps,
+                        start_gripper=current_width,
+                    )
                     if attached:
                         closed_width = stage_width
                     else:
                         open_width = stage_width
                     continue
-                closed_width = stage_width
                 if pick_pose is None:
                     raise HTTPException(status_code=409, detail=f"Pick failed: missing descend_to_pick stage before {stage_name}")
-                yield from self._yield_drive_pose(ik, arm, pick_pose, closed_width, steps=stage_steps)
+                hold_pose = self._current_pose_for_target(ik, arm, pick_pose)
+                if pick_pose.get("target_point") == "finger_center":
+                    hold_pose["target_point"] = "finger_center"  # type: ignore
+                gripper_body = str(plan.get("gripper_body") or get_arm_config(arm).end_effector_body)
+                closed_width = yield from self._yield_close_gripper(
+                    ik,
+                    arm,
+                    hold_pose,
+                    open_width,
+                    stage_width,
+                    stage_steps,
+                    gripper_body,
+                    target_body,
+                )
                 self._require_pose_reached(ik, arm, pick_pose, pick_tolerance, stage_name)
                 self._require_target_near_gripper(ik, arm, target_body, attach_tolerance)
-                self.physics.attach_body(str(plan.get("gripper_body") or get_arm_config(arm).end_effector_body), target_body)
+                self.physics.attach_body(gripper_body, target_body)
                 attached = True
         except Exception:
             if attached:
@@ -138,17 +160,21 @@ class PickExecutor:
         ik = self._ensure_ik()
         ik.sync_joint_state(self.physics.joint_state_msg())
         hold_pose = ik.get_end_effector_pose(arm)
+        current_width = float(plan.get("closed_gripper", 0.0))
         for raw_stage in plan.get("stages", []):
             stage = raw_stage if isinstance(raw_stage, dict) else {}
             if str(stage.get("kind")) != "gripper":
                 raise HTTPException(status_code=409, detail=f"Release failed: unsupported stage kind {stage.get('kind')}")
+            stage_width = float(stage.get("width", 0.0))
             yield from self._yield_drive_pose(
                 ik,
                 arm,
                 hold_pose,
-                float(stage.get("width", 0.0)),
-                steps=max(1, int(stage.get("steps", 6))),
+                stage_width,
+                steps=max(1, int(stage.get("steps", GRIPPER_STAGE_STEPS))),
+                start_gripper=current_width,
             )
+            current_width = stage_width
         self.physics.detach_body(target_body)
         return {"ok": True, "arm": arm, "target_body": target_body, "attachment": self.physics.get_attachment(target_body)}
 
@@ -156,6 +182,52 @@ class PickExecutor:
         if self.ik_controller is None:
             self.ik_controller = IKController(Path(self.bundle.robot_usd), Path(self.bundle.scene_usd))
         return self.ik_controller
+
+    def _yield_close_gripper(
+        self,
+        ik: IKController,
+        arm: str,
+        hold_pose: dict[str, tuple[float, ...]],
+        start_width: float,
+        target_width: float,
+        steps: int,
+        gripper_body: str,
+        target_body: str,
+    ) -> Generator[None, None, float]:
+        current_width = self._current_gripper_width(arm)
+        last_width = start_width if current_width is None else current_width
+        if self._bodies_in_contact(gripper_body, target_body):
+            return last_width
+        for index in range(max(steps, 1)):
+            alpha = float(index + 1) / float(max(steps, 1))
+            command_width = self._interpolate_gripper(start_width, target_width, alpha)
+            self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, command_width))
+            self.physics.step()
+            ik.sync_joint_state(self.physics.joint_state_msg())
+            current_width = self._current_gripper_width(arm)
+            last_width = command_width if current_width is None else current_width
+            yield
+            if self._bodies_in_contact(gripper_body, target_body):
+                return last_width
+        if self._gripper_width_error(arm, target_width) is None:
+            return target_width
+        for _ in range(GRIPPER_SETTLE_STEPS):
+            if self._bodies_in_contact(gripper_body, target_body):
+                current_width = self._current_gripper_width(arm)
+                return last_width if current_width is None else current_width
+            error = self._gripper_width_error(arm, target_width)
+            if error is None or error <= GRIPPER_WIDTH_TOLERANCE:
+                return target_width
+            self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, target_width))
+            self.physics.step()
+            ik.sync_joint_state(self.physics.joint_state_msg())
+            current_width = self._current_gripper_width(arm)
+            last_width = target_width if current_width is None else current_width
+            yield
+        error = self._gripper_width_error(arm, target_width)
+        if error is not None and error > GRIPPER_WIDTH_TOLERANCE:
+            raise HTTPException(status_code=409, detail=f"Pick failed: close_gripper width error {error:.3f} exceeds tolerance")
+        return target_width
 
     def _yield_drive_pose(
         self,
@@ -167,6 +239,7 @@ class PickExecutor:
         *,
         include_torso: bool = False,
         position_only: bool = False,
+        start_gripper: float | None = None,
     ) -> Generator[None, None, None]:
         result = self._drive_pose(
             ik,
@@ -176,6 +249,7 @@ class PickExecutor:
             steps=steps,
             include_torso=include_torso,
             position_only=position_only,
+            start_gripper=start_gripper,
         )
         if isinstance(result, Iterator):
             yield from result
@@ -190,6 +264,7 @@ class PickExecutor:
         *,
         include_torso: bool = False,
         position_only: bool = False,
+        start_gripper: float | None = None,
     ) -> Generator[None, None, None]:
         return self._drive_pose_iter(
             ik,
@@ -199,6 +274,7 @@ class PickExecutor:
             steps=steps,
             include_torso=include_torso,
             position_only=position_only,
+            start_gripper=start_gripper,
         )
 
     def _drive_pose_iter(
@@ -211,6 +287,7 @@ class PickExecutor:
         *,
         include_torso: bool = False,
         position_only: bool = False,
+        start_gripper: float | None = None,
     ) -> Generator[None, None, None]:
         start = self._current_pose_for_target(ik, arm, target)
         requested_steps = max(steps, 1)
@@ -218,33 +295,10 @@ class PickExecutor:
             dx = abs(float(target["position"][0]) - float(start["position"][0]))
             dy = abs(float(target["position"][1]) - float(start["position"][1]))
             position_error = self._distance(start["position"], target["position"])
-            required_progress = min(DRIVE_MIN_PROGRESS, position_error * 0.25)
             if dx <= POSITION_STAGE_SUBGOAL_TOLERANCE and dy <= POSITION_STAGE_SUBGOAL_TOLERANCE:
-                max_steps = max(DRIVE_SETTLE_STEPS, requested_steps, int(math.ceil(position_error / POSITION_STAGE_STEP_SCALE)))
-                best_error = position_error
-                total_steps = 0
-                for _ in range(max_steps):
-                    current = self._current_pose_for_target(ik, arm, target)
-                    if self._distance(current["position"], target["position"]) <= DRIVE_POSE_TOLERANCE:
-                        return
-                    self.physics.apply_joint_command(ik.solve_step(
-                        arm,
-                        target,
-                        gripper,
-                        include_torso=include_torso,
-                        position_only=True,
-                    ))
-                    self.physics.step()
-                    ik.sync_joint_state(self.physics.joint_state_msg())
-                    yield
-                    current = self._current_pose_for_target(ik, arm, target)
-                    current_error = self._distance(current["position"], target["position"])
-                    best_error = min(best_error, current_error)
-                    total_steps += 1
-                    if total_steps >= DRIVE_STAGNATION_STEPS and best_error >= position_error - required_progress:
-                        return
-                return
-            segments = max(requested_steps, int(math.ceil(position_error / POSITION_STAGE_SEGMENT_LENGTH)))
+                segments = requested_steps
+            else:
+                segments = max(requested_steps, int(math.ceil(position_error / POSITION_STAGE_SEGMENT_LENGTH)))
             subgoal_tolerance = min(
                 POSITION_STAGE_SUBGOAL_TOLERANCE,
                 max(position_error / float(segments), 1e-6) * 0.5,
@@ -284,7 +338,7 @@ class PickExecutor:
                         segment_steps >= DRIVE_STAGNATION_STEPS
                         and segment_best_error >= segment_initial_error - segment_required_progress
                     ):
-                        return
+                        break
             return
         initial_error = self._distance(start["position"], target["position"])
         required_progress = min(DRIVE_MIN_PROGRESS, initial_error * 0.25)
@@ -301,7 +355,7 @@ class PickExecutor:
             self.physics.apply_joint_command(ik.solve_step(
                 arm,
                 pose,
-                gripper,
+                self._interpolate_gripper(start_gripper, gripper, alpha),
                 include_torso=include_torso,
                 position_only=position_only,
             ))
@@ -360,6 +414,30 @@ class PickExecutor:
     def _normalize(self, quat: np.ndarray) -> np.ndarray:
         norm = np.linalg.norm(quat)
         return quat if norm <= 1e-9 else quat / norm
+
+    def _interpolate_gripper(self, start: float | None, target: float, alpha: float) -> float:
+        if start is None:
+            return target
+        return float((1.0 - alpha) * start + alpha * target)
+
+    def _gripper_width_error(self, arm: str, target: float) -> float | None:
+        current = self._current_gripper_width(arm)
+        return None if current is None else abs(current - target)
+
+    def _current_gripper_width(self, arm: str) -> float | None:
+        joint_state = self.physics.joint_state_msg()
+        values = dict(zip(joint_state.get("name") or [], joint_state.get("position") or []))
+        joint1, joint2 = get_arm_config(arm).gripper_joint_names
+        openings: list[float] = []
+        if joint1 in values:
+            openings.append(float(values[joint1]))
+        if joint2 in values:
+            openings.append(-float(values[joint2]))
+        return max(openings, default=0.0) if openings else None
+
+    def _bodies_in_contact(self, body_a: str, body_b: str) -> bool:
+        bodies_in_contact = getattr(self.physics, "bodies_in_contact", None)
+        return bool(callable(bodies_in_contact) and bodies_in_contact(body_a, body_b))
 
     def _close_width(self, plan: dict[str, object]) -> float:
         command = plan.get("close")

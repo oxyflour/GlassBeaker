@@ -33,6 +33,7 @@ class SessionCall:
     fn: Callable[["Session"], Any]
     future: asyncio.Future[Any]
     world_token: object | None = None
+    method: str | None = None
 
 
 class Session:
@@ -54,13 +55,18 @@ class Session:
         self.proc = threading.Thread(target=self.run, daemon=True)
         self.proc.start()
 
-    async def run_sync(self, fn: Callable[["Session"], Any], world_token: object | None = None):
+    async def run_sync(
+        self,
+        fn: Callable[["Session"], Any],
+        world_token: object | None = None,
+        method: str | None = None,
+    ):
         future = asyncio.get_running_loop().create_future()
-        self.calls.put_nowait(SessionCall(fn=fn, future=future, world_token=world_token))
+        self.calls.put_nowait(SessionCall(fn=fn, future=future, world_token=world_token, method=method))
         return await future
 
     async def call(self, method: str, *args):
-        return await self.run_sync(lambda current: current.call_once(method, args))
+        return await self.run_sync(lambda current: current.call_once(method, args), method=method)
 
     def schedule_on_owner_loop(self, coro) -> ConcurrentFuture[Any]:
         if self.loop.is_closed():
@@ -81,14 +87,19 @@ class Session:
         call = self._next_call()
         loop = call.future.get_loop()
         self._running_calls += 1
-        self.active = time.time()
+        started = time.time()
+        self.active = started
         try:
             ret = call.fn(self)
             loop.call_soon_threadsafe(self._set_future_result, call.future, ret)
         except Exception as err:
             loop.call_soon_threadsafe(self._set_future_exception, call.future, err)
         finally:
-            self.active = time.time()
+            finished = time.time()
+            elapsed = finished - started
+            if call.method is not None and elapsed > 0.5:
+                print(f"WARN: session call {call.method} took {elapsed:.3f}s ({self._running_calls} running calls)")
+            self.active = finished
             self._running_calls -= 1
 
     def proc_calls(self):

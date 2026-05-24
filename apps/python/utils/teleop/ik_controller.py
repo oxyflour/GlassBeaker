@@ -6,9 +6,10 @@ from pathlib import Path
 import mujoco  # type: ignore
 import numpy as np
 
-from .arm_config import get_arm_config
+from .arm_config import ArmConfig, load_arm_configs
 from utils.zapdos.bundle import ensure_render_bundle
 from utils.zapdos.physics.mujoco_tools import body_world_pose
+from utils.zapdos.robot_model import get_robot_model_key_from_usd
 
 TORSO_JOINT_NAMES = ("torso_joint1", "torso_joint2", "torso_joint3", "torso_joint4")
 
@@ -18,6 +19,7 @@ class IKController:
         self.bundle = ensure_render_bundle(robot_usd.resolve(), scene_usd.resolve())
         self.model = mujoco.MjModel.from_xml_path(str(self.bundle.mjcf))  # type: ignore
         self.data = mujoco.MjData(self.model)  # type: ignore
+        self._arm_configs = load_arm_configs(get_robot_model_key_from_usd(robot_usd))
         self._joint_ids = {}
         self._body_ids = {}
         self._finger_body_ids = {}
@@ -30,7 +32,7 @@ class IKController:
                 self._joint_limits[name] = (float(lower), float(upper))
                 self._torso_joint_names.append(name)
         for arm in ("left", "right"):
-            config = get_arm_config(arm)
+            config = self._arm_config(arm)
             self._joint_ids[arm] = tuple(
                 mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)  # type: ignore
                 for name in config.joint_names
@@ -51,7 +53,7 @@ class IKController:
         mujoco.mj_forward(self.model, self.data)  # type: ignore
 
     def arm_joint_names(self, arm: str) -> tuple[str, ...]:
-        return get_arm_config(arm).joint_names
+        return self._arm_config(arm).joint_names
 
     def joint_limits(self, joint_name: str) -> tuple[float, float]:
         return self._joint_limits[joint_name]
@@ -85,6 +87,7 @@ class IKController:
             for body_id in self._finger_body_ids[arm]
         ]
         center = np.mean(np.asarray(positions, dtype=float), axis=0)
+        center += self._quat_matrix(end_effector["rotation"]) @ np.asarray(self._arm_config(arm).target_offset, dtype=float)
         return {
             "position": tuple(float(value) for value in center),
             "rotation": end_effector["rotation"],
@@ -111,7 +114,7 @@ class IKController:
         include_torso: bool = False,
         position_only: bool = False,
     ) -> dict[str, list[float]]:
-        config = get_arm_config(arm)
+        config = self._arm_config(arm)
         joint_names = config.joint_names
         if include_torso:
             joint_names = (*self._torso_joint_names, *joint_names)
@@ -149,6 +152,12 @@ class IKController:
             "name": [*joint_names, *config.gripper_joint_names], # type: ignore
             "position": [*positions, grip, -grip],
         }
+
+    def _arm_config(self, arm: str) -> ArmConfig:
+        try:
+            return self._arm_configs[arm]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported arm: {arm}") from exc
 
     def _rotation_error(self, current: tuple[float, ...], target: tuple[float, ...]) -> np.ndarray:
         q_current = np.asarray(current, dtype=float)

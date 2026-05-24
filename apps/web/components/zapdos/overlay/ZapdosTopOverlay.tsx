@@ -86,8 +86,8 @@ export function ZapdosTopOverlay({
         { debugOpen ? <div className="absolute right-0 mt-3 flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-3">
           <AddBenchmarkTableButton onSceneRevision={ onSceneRevision } sess={ sess } />
           <ResetPoseButton onSceneRevision={ onSceneRevision } sess={ sess } />
-          <PickTheAppleButton sess={ sess } />
-          <PlaceTheAppleButton sess={ sess } />
+          <PickTheAppleButton selectedBody={ selectedBody } sess={ sess } />
+          <PlaceTheAppleButton selectedBody={ selectedBody } sess={ sess } />
         </div> : null }
       </div>
     </div>

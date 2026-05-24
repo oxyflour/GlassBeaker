@@ -58,6 +58,11 @@ class ZapdosRenderer:
             self.backend.reload_scene(bundle, timeout=timeout)
         self.set_bundle(bundle)
 
+    def update_pose(self, pose: dict[str, list[float]]) -> None:
+        update_pose = getattr(self.backend, "update_pose", None)
+        if callable(update_pose):
+            update_pose(pose)
+
     def close(self, stop_remote: bool = True) -> None:
         if stop_remote:
             self.backend.close()
@@ -81,6 +86,13 @@ class ZapdosRenderer:
         if callable(start):
             start()
 
+    def _probe_backend_ready(self, camera_name: str) -> bool:
+        if self.backend.ready:
+            return True
+        self._start_backend_if_supported()
+        self.backend.read(camera_name)
+        return self.backend.ready
+
     def should_publish_camera_images(self) -> bool:
         mode = os.getenv("ZAPDOS_PUBLISH_CAMERA_IMAGES", "").strip().lower()
         if mode in {"1", "true", "yes", "always"}:
@@ -94,6 +106,9 @@ class ZapdosRenderer:
 
     def image_messages(self) -> list[tuple[str, dict[str, Any]]]:
         messages: list[tuple[str, dict[str, Any]]] = []
+        if not self.backend.ready:
+            self._start_backend_if_supported()
+            return messages
         for camera in self.bundle.cameras:
             frame_state = self.backend.read(camera.name)
             if frame_state is None:
@@ -153,8 +168,7 @@ class ZapdosRenderer:
     async def render(self, camera_name: str) -> AsyncIterator[bytes]:
         last_frame_index = -1
         while self.is_active():
-            while not self.backend.ready:
-                self._start_backend_if_supported()
+            while not self._probe_backend_ready(camera_name):
                 yield mjpeg_chunk(self._placeholder_frame("Waiting"))
                 await asyncio.sleep(1)
             try:
@@ -181,8 +195,7 @@ class ZapdosRenderer:
             yield mjpeg_chunk(self._placeholder_frame("No Cameras"))
             return
         while self.is_active():
-            while not self.backend.ready:
-                self._start_backend_if_supported()
+            while not self._probe_backend_ready(camera_names[0]):
                 yield mjpeg_chunk(self._placeholder_frame("Waiting", len(camera_names)))
                 await asyncio.sleep(1)
             try:

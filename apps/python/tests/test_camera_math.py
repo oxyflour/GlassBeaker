@@ -9,6 +9,7 @@ from utils.camera_math import focal_length_from_fovy, fovy_from_focal_length
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RENDERER_ENTRY = REPO_ROOT / "apps" / "isaac" / "rl_renderer_entry.py"
+HEADLESS_EXPERIENCE = REPO_ROOT / "apps" / "isaac" / "rl_renderer_headless.kit"
 
 
 class CameraMathTest(unittest.TestCase):
@@ -40,6 +41,27 @@ class CameraMathTest(unittest.TestCase):
             "from utils.zapdos.renderer_ipc import request_path, response_path",
             source,
         )
+
+    def test_renderer_entry_owns_renderer_instead_of_importing_upstream(self):
+        source = RENDERER_ENTRY.read_text(encoding="utf-8")
+
+        self.assertIn("HEADLESS_EXPERIENCE", source)
+        self.assertIn("class RLRenderer", source)
+        self.assertIn("def main(", source)
+        self.assertNotIn("import geniesim.rl.renderer.rl_renderer", source)
+        self.assertNotIn("upstream.", source)
+        self.assertTrue(HEADLESS_EXPERIENCE.exists())
+        kit_source = HEADLESS_EXPERIENCE.read_text(encoding="utf-8")
+        self.assertIn('"omni.replicator.core"', kit_source)
+        self.assertIn("startup.disableWindowOnLoad = true", kit_source)
+        self.assertIn("settings.fabricDefaultStageFrameHistoryCount = 3", kit_source)
+        self.assertIn("rtx.dataWindow.fitOutputToDataWindow = true", kit_source)
+        self.assertIn("rtx.dataWindowNDC.'0' = 0.0", kit_source)
+        self.assertIn("rtx.dataWindowNDC.'1' = 0.0", kit_source)
+        self.assertIn("rtx.dataWindowNDC.'2' = 1.0", kit_source)
+        self.assertIn("rtx.dataWindowNDC.'3' = 1.0", kit_source)
+        self.assertNotIn('"isaacsim.exp.base"', kit_source)
+        self.assertNotIn('"omni.kit.menu.utils"', kit_source)
 
     def test_renderer_control_channel_import_does_not_require_mujoco(self):
         script = """

@@ -656,7 +656,7 @@ from utils.zapdos_overlay_scene import write_overlay_scene
             if body in self.editable_body_names:
                 self.set_body_pose(body, pose["pos"], pose["quat"])
 
-    def list_scene_bodies(self) -> dict[str, object]:
+    def list_placement_bodies(self) -> dict[str, object]:
         items = []
         for body in sorted(self.editable_body_names):
             body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)  # type: ignore
@@ -743,8 +743,8 @@ from utils.zapdos_overlay_scene import write_overlay_scene
 ```
 
 ```python
-        if method == "list_scene_bodies":
-            return self.list_scene_bodies()
+        if method == "list_placement_bodies":
+            return self.list_placement_bodies()
         if method == "add_asset_to_scene":
             return self.add_asset_to_scene(*args)
         if method == "remove_asset_from_scene":
@@ -798,8 +798,8 @@ test("createAddAssetToSceneRequest posts asset id motion and placement", async (
   );
 });
 
-test("listSceneBodies posts to the zapdos route", async () => {
-  const { createSceneToolRequest, listSceneBodies } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
+test("listPlacementBodies posts to the zapdos route", async () => {
+  const { createSceneToolRequest, listPlacementBodies } = await loadModule<ZapdosToolApiModule>("./zapdos-tool-api.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
@@ -811,9 +811,9 @@ test("listSceneBodies posts to the zapdos route", async () => {
   }) as typeof fetch;
 
   try {
-    const payload = await listSceneBodies("sess-1");
+    const payload = await listPlacementBodies("sess-1");
     assert.equal(payload.scene_revision, "rev-1");
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/list_scene_bodies");
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/list_placement_bodies");
     assert.deepEqual(calls[0]?.init, createSceneToolRequest([]));
   } finally {
     globalThis.fetch = originalFetch;
@@ -854,8 +854,8 @@ export function createAddAssetToSceneRequest(input: AddAssetToSceneInput): Reque
   return createSceneToolRequest([input.asset_id, input.motion, input.placement]);
 }
 
-export async function listSceneBodies(sess: string) {
-  const response = await fetch(`/python/zapdos/${sess}/call/list_scene_bodies`, createSceneToolRequest([]));
+export async function listPlacementBodies(sess: string) {
+  const response = await fetch(`/python/zapdos/${sess}/call/list_placement_bodies`, createSceneToolRequest([]));
   if (!response.ok) throw new Error(await response.text());
   return await response.json() as { items: unknown[]; scene_revision: string };
 }
@@ -878,7 +878,7 @@ export async function removeAssetFromScene(sess: string, instanceId: string) {
 export const ZAPDOS_ADDITIONAL_INSTRUCTIONS = [
   "You are editing the current Zapdos simulation scene.",
   "Use search_assets to find candidate asset ids before inserting new assets.",
-  "Use list_scene_bodies before on_top_of_body placement so you know the support body name.",
+  "Use list_placement_bodies before on_top_of_body placement so you know the support body name.",
   "Use add_asset_to_scene for session-local insertion only.",
   "Use remove_asset_from_scene when the user wants an inserted overlay asset gone.",
   "Prefer motion=static for furniture and supports; prefer motion=dynamic for manipulable objects.",
@@ -891,7 +891,7 @@ import { useCopilotAdditionalInstructions, useFrontendTool } from "@copilotkit/r
 
 import { SEARCH_ASSETS_DESCRIPTION, SEARCH_ASSETS_PARAMETERS_CPK } from "../genie-sim";
 import { postToolJson } from "../genie-sim/tool-client";
-import { addAssetToScene, listSceneBodies, removeAssetFromScene } from "./zapdos-tool-api";
+import { addAssetToScene, listPlacementBodies, removeAssetFromScene } from "./zapdos-tool-api";
 import { ZAPDOS_ADDITIONAL_INSTRUCTIONS } from "./zapdos-agent-instructions";
 
 export function useZapdosAgentTools(sess: string) {
@@ -911,11 +911,11 @@ export function useZapdosAgentTools(sess: string) {
   }, []);
 
   useFrontendTool({
-    name: "list_scene_bodies",
+    name: "list_placement_bodies",
     description: "List editable scene bodies with support metadata for placement.",
     followUp: true,
     parameters: [] as never[],
-    handler: async () => await listSceneBodies(sess),
+    handler: async () => await listPlacementBodies(sess),
   }, [sess]);
 
   useFrontendTool({
@@ -1182,4 +1182,4 @@ git commit -m "feat: add zapdos session scene overlay tools"
   - Every code step includes concrete function names or code blocks.
 - Type consistency:
   - Python uses `scene_revision`, `bundle_revision`, `overlay_body_name`, `resolve_asset_record`, `asset_local_bounds`, and `write_overlay_scene` consistently.
-  - Web uses `listSceneBodies`, `addAssetToScene`, `removeAssetFromScene`, `getZapdosSceneRevision`, `shouldReloadSceneRevision`, and `clearMissingSelection` consistently.
+  - Web uses `listPlacementBodies`, `addAssetToScene`, `removeAssetFromScene`, `getZapdosSceneRevision`, `shouldReloadSceneRevision`, and `clearMissingSelection` consistently.

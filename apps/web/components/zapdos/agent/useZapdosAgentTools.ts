@@ -2,24 +2,26 @@ import { useCopilotAdditionalInstructions } from "@copilotkit/react-core";
 
 import { SEARCH_ASSETS_DESCRIPTION } from "../../genie-sim";
 import { postToolJson } from "../../genie-sim/tool-client";
-import { ZAPDOS_SET_SCENE_ASSETS_EXAMPLE } from "./zapdos-agent-examples";
+import { ZAPDOS_ADD_ASSETS_TO_SCENE_EXAMPLE, ZAPDOS_SET_SCENE_ASSETS_EXAMPLE } from "./zapdos-agent-examples";
 import { ZAPDOS_ADDITIONAL_INSTRUCTIONS } from "./zapdos-agent-instructions";
 import {
-  summarizeRemoveAssetFromSceneResult,
+  summarizeAddAssetsToSceneResult,
+  summarizeRemoveAssetsFromSceneResult,
   summarizeSetSceneAssetsResult,
 } from "./zapdos-agent-tool-results";
 import {
-  listSceneBodiesToolArgsSchema,
-  removeAssetFromSceneToolArgsSchema,
+  addAssetsToSceneToolArgsSchema,
+  listPlacementBodiesToolArgsSchema,
+  removeAssetsFromSceneToolArgsSchema,
   searchAssetsToolArgsSchema,
   setSceneAssetsToolArgsSchema,
 } from "./zapdos-agent-tool-schemas";
 import {
-  listSceneObjectsToolArgsSchema,
+  listManipulationObjectsToolArgsSchema,
   pickObjectToolArgsSchema,
 } from "./zapdos-manipulation-tool-schemas";
-import { listSceneObjects, pickObject } from "./zapdos-manipulation-tool-api";
-import { listSceneBodies, removeAssetFromScene, setSceneAssets } from "./zapdos-tool-api";
+import { listManipulationObjects, pickObject } from "./zapdos-manipulation-tool-api";
+import { addAssetsToScene, listPlacementBodies, removeAssetsFromScene, setSceneAssets } from "./zapdos-tool-api";
 import { useTypedTool } from "../../../utils/agent/tool";
 
 export const SET_SCENE_ASSETS_DESCRIPTION = [
@@ -27,6 +29,13 @@ export const SET_SCENE_ASSETS_DESCRIPTION = [
   'Pass { assets: [{ asset_id, motion, placement }] } where placement uses floor_at_xy, on_top_of_body, or world_pose.',
   "Example:",
   ZAPDOS_SET_SCENE_ASSETS_EXAMPLE,
+].join("\n");
+
+export const ADD_ASSETS_TO_SCENE_DESCRIPTION = [
+  "Add assets to the session-local Zapdos overlay scene without replacing existing overlay assets.",
+  'Pass { assets: [{ asset_id, motion, placement }] } where placement uses floor_at_xy, on_top_of_body, or world_pose.',
+  "Example:",
+  ZAPDOS_ADD_ASSETS_TO_SCENE_EXAMPLE,
 ].join("\n");
 
 export function useZapdosAgentTools(sess: string) {
@@ -48,19 +57,19 @@ export function useZapdosAgentTools(sess: string) {
   }, []);
 
   useTypedTool({
-    name: "list_scene_bodies",
-    description: "List editable scene bodies with support metadata for placement.",
+    name: "list_placement_bodies",
+    description: "List editable body names and support metadata for scene placement.",
     followUp: true,
-    parameters: listSceneBodiesToolArgsSchema,
-    handler: async () => await listSceneBodies(sess),
+    parameters: listPlacementBodiesToolArgsSchema,
+    handler: async () => await listPlacementBodies(sess),
   }, [sess]);
 
   useTypedTool({
-    name: "list_scene_objects",
-    description: "List scene objects so you can resolve ambiguous natural-language pick targets and supports.",
+    name: "list_manipulation_objects",
+    description: "List semantic manipulation objects for resolving pick targets and supports.",
     followUp: true,
-    parameters: listSceneObjectsToolArgsSchema,
-    handler: async () => await listSceneObjects(sess),
+    parameters: listManipulationObjectsToolArgsSchema,
+    handler: async () => await listManipulationObjects(sess),
   }, [sess]);
 
   useTypedTool({
@@ -80,12 +89,20 @@ export function useZapdosAgentTools(sess: string) {
   }, [sess]);
 
   useTypedTool({
-    name: "remove_asset_from_scene",
-    description: "Remove a session-local overlay asset by instance id.",
+    name: "add_assets_to_scene",
+    description: ADD_ASSETS_TO_SCENE_DESCRIPTION,
     followUp: true,
-    parameters: removeAssetFromSceneToolArgsSchema,
-    handler: async ({ instance_id }) => {
-      return summarizeRemoveAssetFromSceneResult(await removeAssetFromScene(sess, instance_id));
+    parameters: addAssetsToSceneToolArgsSchema,
+    handler: async (args) => summarizeAddAssetsToSceneResult(await addAssetsToScene(sess, args)),
+  }, [sess]);
+
+  useTypedTool({
+    name: "remove_assets_from_scene",
+    description: "Remove session-local overlay assets by instance id.",
+    followUp: true,
+    parameters: removeAssetsFromSceneToolArgsSchema,
+    handler: async ({ instance_ids }) => {
+      return summarizeRemoveAssetsFromSceneResult(await removeAssetsFromScene(sess, instance_ids));
     },
   }, [sess]);
 }

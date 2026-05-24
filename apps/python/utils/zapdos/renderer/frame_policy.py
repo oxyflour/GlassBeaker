@@ -4,7 +4,7 @@ from collections.abc import Iterable
 
 
 def should_render_frame(subscribers: Iterable[object], frame_counter: int) -> bool:
-    if frame_counter <= 0:
+    if frame_counter < 3:
         return True
     return any(bool(getattr(subscriber, "_dirty", False)) for subscriber in subscribers)
 

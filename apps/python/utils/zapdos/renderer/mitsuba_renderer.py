@@ -55,7 +55,9 @@ class MitsubaRenderer:
         self._error: BaseException | None = None
         self._ready = False
         self._scene = None
+        self._scene_params = None
         self._scene_dict: dict[str, Any] | None = None
+        self._mesh_vertices: dict[str, np.ndarray] = {}
         self._snapshots: list[dict[str, Any]] = []
         self._mi = None
         self._pose: dict[str, list[float]] = {}
@@ -110,7 +112,10 @@ class MitsubaRenderer:
             self._frames.clear()
             self._ready = False
             self._frame_index = 0
+            self._scene = None
+            self._scene_params = None
             self._scene_dict = None
+            self._mesh_vertices = {}
             self._loaded_pose_version = -1
         self._load_scene()
 
@@ -201,9 +206,62 @@ class MitsubaRenderer:
             if scene_dict is None or pose_version == self._loaded_pose_version:
                 return
         posed_scene = self._scene_for_pose(scene_dict, pose)
-        self._scene = self._mi.load_dict(apply_mitsuba_transforms(posed_scene, self._mi))
+        if self._scene is None or self._scene_params is None:
+            self._load_full_pose_scene(posed_scene)
+        else:
+            self._update_scene_params(posed_scene)
         with self._lock:
             self._loaded_pose_version = pose_version
+
+    def _load_full_pose_scene(self, posed_scene: dict[str, Any]) -> None:
+        self._scene = self._mi.load_dict(apply_mitsuba_transforms(posed_scene, self._mi))
+        traverse = getattr(self._mi, "traverse", None)
+        self._scene_params = traverse(self._scene) if callable(traverse) else None
+        self._mesh_vertices = {}
+        if self._scene_params is None:
+            return
+        for key, value in posed_scene.items():
+            if not isinstance(value, dict) or value.get("type") != "ply":
+                continue
+            if not isinstance(value.get("_zapdos_body"), str):
+                continue
+            vertex_key = f"{key}.vertex_positions"
+            filename = value.get("filename")
+            if vertex_key in self._scene_params and isinstance(filename, str):
+                self._mesh_vertices[key] = _read_ply_vertices(Path(filename))
+
+    def _update_scene_params(self, posed_scene: dict[str, Any]) -> None:
+        params = self._scene_params
+        if params is None:
+            self._load_full_pose_scene(posed_scene)
+            return
+        changed = False
+        for key, value in posed_scene.items():
+            if not isinstance(value, dict):
+                continue
+            dynamic = isinstance(value.get("_zapdos_body"), str)
+            look_at = value.get("to_world_look_at")
+            transform_key = f"{key}.to_world"
+            if dynamic and look_at is not None and transform_key in params:
+                params[transform_key] = self._mi.ScalarTransform4f.look_at(
+                    origin=look_at["origin"],
+                    target=look_at["target"],
+                    up=look_at["up"],
+                )
+                changed = True
+            matrix = value.get("to_world_matrix")
+            vertices = self._mesh_vertices.get(key)
+            vertex_key = f"{key}.vertex_positions"
+            if dynamic and matrix is not None and vertices is not None and vertex_key in params:
+                transform = np.asarray(matrix, dtype=float).reshape(4, 4)
+                homogeneous = np.concatenate(
+                    [vertices, np.ones((vertices.shape[0], 1), dtype=float)],
+                    axis=1,
+                )
+                params[vertex_key] = (homogeneous @ transform.T)[:, :3].reshape(-1)
+                changed = True
+        if changed:
+            params.update()
 
     def _scene_for_pose(self, scene_dict: dict[str, Any], pose: dict[str, list[float]]) -> dict[str, Any]:
         scene = dict(scene_dict)
@@ -216,7 +274,7 @@ class MitsubaRenderer:
             if body_matrix is None:
                 continue
             entry = dict(value)
-            body_transform = np.asarray(body_matrix, dtype=float).reshape(4, 4)
+            body_transform = np.asarray(body_matrix, dtype=float).reshape(4, 4).T
             if local_matrix is not None:
                 entry["to_world_matrix"] = (
                     body_transform
@@ -258,3 +316,21 @@ class MitsubaRenderer:
         if error is None:
             return
         raise RuntimeError(f"{MITSUBA_HINT} Detail: {error}") from error
+
+
+def _read_ply_vertices(path: Path) -> np.ndarray:
+    vertex_count: int | None = None
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            parts = line.strip().split()
+            if len(parts) == 3 and parts[:2] == ["element", "vertex"]:
+                vertex_count = int(parts[2])
+            if parts == ["end_header"]:
+                break
+        if vertex_count is None:
+            raise RuntimeError(f"PLY missing vertex count: {path}")
+        vertices = [
+            [float(value) for value in file.readline().split()[:3]]
+            for _ in range(vertex_count)
+        ]
+    return np.asarray(vertices, dtype=float)

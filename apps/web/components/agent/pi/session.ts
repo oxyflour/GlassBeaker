@@ -33,11 +33,15 @@ export function usePiSession(options: SessionOptions) {
   const abortControllerRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
   const messagesRef = useRef<AgentMessage[]>([]);
+  const sessionIdRef = useRef<string | null>(null);
   const streamingMessageRef = useRef<AgentMessage | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [streamingMessage, setStreamingMessage] = useState<AgentMessage | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [pendingToolCalls, setPendingToolCalls] = useState<Set<string>>(new Set());
+  if (!sessionIdRef.current) {
+    sessionIdRef.current = crypto.randomUUID();
+  }
   useEffect(() => void (isStreamingRef.current = isStreaming), [isStreaming]);
   useEffect(() => void (messagesRef.current = messages), [messages]);
   useEffect(() => void (streamingMessageRef.current = streamingMessage), [streamingMessage]);
@@ -125,6 +129,7 @@ export function usePiSession(options: SessionOptions) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model,
+            sessionId: sessionIdRef.current,
             context: {
               frontendTools: options.frontendTools,
               messages: serializeMessagesForPi(nextMessages),

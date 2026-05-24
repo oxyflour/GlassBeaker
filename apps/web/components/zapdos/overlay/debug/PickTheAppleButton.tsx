@@ -2,22 +2,33 @@
 
 import { useState } from "react";
 
-import { pickTheApple } from "./pick-the-apple";
+import { pickSelectedObject } from "./pick-the-apple";
 
-export function PickTheAppleButton({ sess }: { sess: string }) {
+export function PickTheAppleButton({
+  selectedBody,
+  sess,
+}: {
+  selectedBody: string | null;
+  sess: string;
+}) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const targetLabel = selectedBody?.trim() || "none";
 
   async function handleClick() {
+    if (!selectedBody) {
+      setError("Select an object before picking");
+      return;
+    }
     setBusy(true);
     setMessage("");
     setError("");
     try {
-      const payload = await pickTheApple(sess);
-      setMessage(`Picked ${payload.target_body ?? "cube"}`);
+      const payload = await pickSelectedObject(sess, selectedBody);
+      setMessage(`Picked ${payload.target_body ?? selectedBody}`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Pick cube failed");
+      setError(cause instanceof Error ? cause.message : "Pick selected object failed");
     } finally {
       setBusy(false);
     }
@@ -26,10 +37,11 @@ export function PickTheAppleButton({ sess }: { sess: string }) {
   return <div className="rounded-md bg-black/60 px-3 py-2 text-white backdrop-blur-sm">
     <button
       className="rounded border border-white/20 bg-black/40 px-3 py-1 text-sm disabled:opacity-60"
-      disabled={ busy || !sess }
+      disabled={ busy || !sess || !selectedBody }
       onClick={ () => void handleClick() }>
-      { busy ? "Picking..." : "Pick the cube" }
+      { busy ? "Picking..." : "Pick selected object" }
     </button>
+    <div className="mt-2 max-w-80 truncate text-xs text-zinc-200">Target { targetLabel }</div>
     { message ? <div className="mt-2 max-w-80 text-xs text-emerald-200">{ message }</div> : null }
     { error ? <div className="mt-2 max-w-80 text-xs text-red-200">{ error }</div> : null }
   </div>;

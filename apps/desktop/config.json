@@ -1,11 +1,28 @@
 {
   "override": {
+    "target_offset": {
+      "r1pro": {
+        "left": [
+          0.0,
+          0.0,
+          -0.03
+        ],
+        "right": [
+          0.0,
+          0.0,
+          -0.03
+        ]
+      }
+    },
     "position": {
       "r1pro": {
         "left_arm_joint1":  0.4,
         "left_arm_joint4": -0.8,
         "right_arm_joint1":  0.4,
-        "right_arm_joint4": -0.8
+        "right_arm_joint4": -0.8,
+        "torso_joint1": 0.4,
+        "torso_joint2": -0.8,
+        "torso_joint3": 0.4
       }
     },
     "joint_drive": {

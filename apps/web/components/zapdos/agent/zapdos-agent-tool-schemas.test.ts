@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  listSceneBodiesToolArgsSchema,
-  removeAssetFromSceneToolArgsSchema,
+  addAssetsToSceneToolArgsSchema,
+  listPlacementBodiesToolArgsSchema,
+  removeAssetsFromSceneToolArgsSchema,
   searchAssetsToolArgsSchema,
   sceneAssetSchema,
   setSceneAssetsToolArgsSchema,
@@ -15,10 +16,10 @@ test("search_assets schema exposes query and top_k fields", () => {
   assert.equal(searchAssetsToolArgsSchema.safeParse({ top_k: 8 }).success, false);
 });
 
-test("list_scene_bodies schema only accepts an empty object", () => {
-  assert.deepEqual(Object.keys(listSceneBodiesToolArgsSchema.shape), []);
-  assert.equal(listSceneBodiesToolArgsSchema.safeParse({}).success, true);
-  assert.equal(listSceneBodiesToolArgsSchema.safeParse({ extra: true }).success, false);
+test("list_placement_bodies schema only accepts an empty object", () => {
+  assert.deepEqual(Object.keys(listPlacementBodiesToolArgsSchema.shape), []);
+  assert.equal(listPlacementBodiesToolArgsSchema.safeParse({}).success, true);
+  assert.equal(listPlacementBodiesToolArgsSchema.safeParse({ extra: true }).success, false);
 });
 
 test("set_scene_assets schema requires a non-empty assets array", () => {
@@ -37,6 +38,22 @@ test("set_scene_assets schema requires a non-empty assets array", () => {
 
   assert.equal(parsed.assets.length, 1);
   assert.throws(() => setSceneAssetsToolArgsSchema.parse({ assets: [] }), /assets/i);
+});
+
+test("add_assets_to_scene schema requires a non-empty assets array", () => {
+  const parsed = addAssetsToSceneToolArgsSchema.parse({
+    assets: [{
+      asset_id: "mug_000",
+      motion: "dynamic",
+      placement: {
+        kind: "floor_at_xy",
+        xy: [0.5, 0.25],
+      },
+    }],
+  });
+
+  assert.equal(parsed.assets.length, 1);
+  assert.throws(() => addAssetsToSceneToolArgsSchema.parse({ assets: [] }), /assets/i);
 });
 
 test("set_scene_assets schema keeps motion as an enum", () => {
@@ -127,10 +144,18 @@ test("set_scene_assets schema descriptions include a concrete payload shape", ()
   assert.match(assetDescription, /placement/i);
 });
 
-test("remove_asset_from_scene schema trims and requires a non-empty id", () => {
+test("add_assets_to_scene schema description uses the additive tool name", () => {
+  const assetsDescription = addAssetsToSceneToolArgsSchema.shape.assets.description ?? "";
+
+  assert.match(assetsDescription, /add_assets_to_scene/);
+  assert.doesNotMatch(assetsDescription, /set_scene_assets\(/);
+});
+
+test("remove_assets_from_scene schema trims and requires non-empty ids", () => {
   assert.deepEqual(
-    removeAssetFromSceneToolArgsSchema.parse({ instance_id: "  table_000_01  " }),
-    { instance_id: "table_000_01" }
+    removeAssetsFromSceneToolArgsSchema.parse({ instance_ids: ["  table_000_01  ", "mug_000_01"] }),
+    { instance_ids: ["table_000_01", "mug_000_01"] }
   );
-  assert.throws(() => removeAssetFromSceneToolArgsSchema.parse({ instance_id: "   " }), /instance_id/i);
+  assert.throws(() => removeAssetsFromSceneToolArgsSchema.parse({ instance_ids: [] }), /instance_ids/i);
+  assert.throws(() => removeAssetsFromSceneToolArgsSchema.parse({ instance_ids: ["   "] }), /instance_ids/i);
 });

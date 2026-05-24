@@ -4,7 +4,7 @@
 
 **Goal:** Replace the current support-footprint escape special case with a generic staged pick planner that routes the end effector around scene obstacles using body world AABBs before descending to the target.
 
-**Architecture:** Keep the external `pick_object` request unchanged. Extend `list_scene_bodies()` and the scene-object catalog so each editable body carries a world-space AABB, then have the planner build a staged route from the current end-effector pose to the target: optional `escape_xy`, `raise_to_transit`, `approach_xy`, `descend_to_pregrasp`, `descend_to_grasp`, `close_gripper`, and `retreat`. The executor consumes that ordered stage list and reports stage-specific failures instead of hard-coding `pre_grasp/grasp/lift`.
+**Architecture:** Keep the external `pick_object` request unchanged. Extend `list_placement_bodies()` and the manipulation-object catalog so each editable body carries a world-space AABB, then have the planner build a staged route from the current end-effector pose to the target: optional `escape_xy`, `raise_to_transit`, `approach_xy`, `descend_to_pregrasp`, `descend_to_grasp`, `close_gripper`, and `retreat`. The executor consumes that ordered stage list and reports stage-specific failures instead of hard-coding `pre_grasp/grasp/lift`.
 
 **Tech Stack:** Python 3.12, FastAPI session calls, MuJoCo, existing `utils.teleop.IKController`, `unittest`, `uv`
 
@@ -15,7 +15,7 @@
 - `apps/python/utils/zapdos/physics/mujoco_physics.py`
   Publish body-level world AABBs by aggregating MuJoCo geom bounds.
 - `apps/python/utils/zapdos/editor/zapdos_editor.py`
-  Include `world_aabb` in `list_scene_bodies()`.
+  Include `world_aabb` in `list_placement_bodies()`.
 - `apps/python/utils/zapdos/manipulation/types.py`
   Extend typed contracts with `WorldAabb`, `PlanningPose`, `PickStage`, and staged `PickPlan`.
 - `apps/python/utils/zapdos/manipulation/catalog.py`
@@ -27,7 +27,7 @@
 - `apps/python/utils/zapdos/manipulation/runtime.py`
   Pass `arm`, `scene_objects`, and the current end-effector pose into the planner.
 - `apps/python/tests/test_zapdos_import.py`
-  Cover `list_scene_bodies()` payload shape and runtime planner call shape.
+  Cover `list_placement_bodies()` payload shape and runtime planner call shape.
 - `apps/python/tests/test_zapdos_manipulation.py`
   Cover `world_aabb` preservation and staged planner routing.
 - `apps/python/tests/test_zapdos_pick_executor.py`
@@ -43,10 +43,10 @@
 - [ ] **Step 1: Write the failing editor payload test**
 
 ```python
-    def test_list_scene_bodies_includes_world_aabb_for_editable_bodies(self):
+    def test_list_placement_bodies_includes_world_aabb_for_editable_bodies(self):
         session = self.build_pose_edit_session()
 
-        payload = session.call_once("list_scene_bodies", ())
+        payload = session.call_once("list_placement_bodies", ())
 
         self.assertEqual(payload["items"][0]["body"], "Scene_Crate")
         self.assertEqual(payload["items"][0]["world_aabb"], {
@@ -57,7 +57,7 @@
 
 - [ ] **Step 2: Run the focused test to verify it fails**
 
-Run: `uv run --project apps/python python -m unittest apps.python.tests.test_zapdos_import.ZapdosImportTest.test_list_scene_bodies_includes_world_aabb_for_editable_bodies -v`
+Run: `uv run --project apps/python python -m unittest apps.python.tests.test_zapdos_import.ZapdosImportTest.test_list_placement_bodies_includes_world_aabb_for_editable_bodies -v`
 
 Expected: FAIL with `KeyError: 'world_aabb'`.
 
@@ -97,7 +97,7 @@ items.append(
 
 - [ ] **Step 4: Run the focused import tests**
 
-Run: `uv run --project apps/python python -m unittest apps.python.tests.test_zapdos_import.ZapdosImportTest.test_list_scene_bodies_includes_world_aabb_for_editable_bodies apps.python.tests.test_zapdos_import.ZapdosImportTest.test_list_scene_bodies_returns_top_level_robot_bounds -v`
+Run: `uv run --project apps/python python -m unittest apps.python.tests.test_zapdos_import.ZapdosImportTest.test_list_placement_bodies_includes_world_aabb_for_editable_bodies apps.python.tests.test_zapdos_import.ZapdosImportTest.test_list_placement_bodies_returns_top_level_robot_bounds -v`
 
 Expected: PASS.
 
@@ -133,7 +133,7 @@ git commit -m "feat: expose zapdos scene body aabbs"
             editor=SimpleNamespace(
                 scene_revision="rev-1",
                 overlay_state={},
-                list_scene_bodies=mock.Mock(return_value={"items": []}),
+                list_placement_bodies=mock.Mock(return_value={"items": []}),
             ),
             bundle=SimpleNamespace(scene_usd=Path("scene.usda"), robot_usd=Path("robot.usda")),
             physics=mock.Mock(name="physics"),
@@ -487,7 +487,7 @@ from utils.zapdos.bundle import DEFAULT_SCENE_USD
 
 async def main():
     session = await ZapdosSession.create("plan-smoke", DEFAULT_ROBOT_USD, DEFAULT_SCENE_USD)
-    print(session.call_once("list_scene_objects", ())["scene_revision"])
+    print(session.call_once("list_manipulation_objects", ())["scene_revision"])
     print(session.call_once("pick_object", ({"target_query": "apple", "support_query": "table"},)))
     session.destroy()
 

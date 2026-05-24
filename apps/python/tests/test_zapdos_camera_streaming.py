@@ -178,6 +178,48 @@ class ZapdosRendererTest(unittest.IsolatedAsyncioTestCase):
         np.testing.assert_array_equal(encoded[0][:, 2:4], frames[1])
         np.testing.assert_array_equal(encoded[0][:, 4:6], frames[2])
 
+    async def test_render_multi_camera_probes_read_to_bind_backend_before_waiting(self):
+        class BindingBackend:
+            def __init__(self) -> None:
+                self.ready = False
+                self.snapshot_cameras = mock.Mock(return_value=[])
+                self.frames = {
+                    "head_camera": np.full((2, 2, 3), 10, dtype=np.uint8),
+                    "left_wrist_camera": np.full((2, 2, 3), 20, dtype=np.uint8),
+                    "right_wrist_camera": np.full((2, 2, 3), 30, dtype=np.uint8),
+                }
+                self.read_calls: list[str] = []
+
+            def read(self, camera_name: str):
+                self.ready = True
+                self.read_calls.append(camera_name)
+                return 12, self.frames[camera_name]
+
+        backend = BindingBackend()
+        renderer = self.make_renderer(
+            bundle=SimpleNamespace(cameras=[
+                _camera("head_camera"),
+                _camera("left_wrist_camera"),
+                _camera("right_wrist_camera"),
+            ]),
+            backend=backend,
+        )
+        module = _renderer_module()
+        encoded: list[np.ndarray] = []
+
+        with mock.patch.object(renderer, "_encode_jpeg", side_effect=lambda frame: encoded.append(frame.copy()) or b"jpeg-strip"):
+            with mock.patch.object(module, "placeholder_jpeg", return_value=b"jpeg-waiting") as placeholder:
+                stream = renderer.render_multi_camera()
+                try:
+                    first = await anext(stream)
+                finally:
+                    await stream.aclose()
+
+        self.assertEqual(first, mjpeg_chunk(b"jpeg-strip"))
+        placeholder.assert_not_called()
+        self.assertEqual(backend.read_calls[0], "head_camera")
+        self.assertEqual(encoded[0].shape, (2, 6, 3))
+
     def test_image_messages_skip_duplicate_frame_indices_per_camera(self):
         first = np.full((2, 2, 3), 1, dtype=np.uint8)
         second = np.full((2, 2, 3), 2, dtype=np.uint8)
@@ -203,6 +245,24 @@ class ZapdosRendererTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([topic for topic, _ in second_batch], [image_topic("wrist_camera")])
         self.assertEqual(second_batch[0][1]["header"]["frame_id"], "wrist_camera_frame")
         self.assertEqual(second_batch[0][1]["data"], third.tobytes())
+
+    def test_image_messages_starts_backend_and_skips_reads_before_ready(self):
+        backend = SimpleNamespace(
+            ready=False,
+            start=mock.Mock(),
+            read=mock.Mock(return_value=None),
+            snapshot_cameras=mock.Mock(return_value=[]),
+        )
+        renderer = self.make_renderer(
+            bundle=SimpleNamespace(cameras=[_camera("head_camera")]),
+            backend=backend,
+        )
+
+        messages = renderer.image_messages()
+
+        self.assertEqual(messages, [])
+        backend.start.assert_called_once_with()
+        backend.read.assert_not_called()
 
     def test_should_publish_camera_images_uses_env_override_and_subscriptions(self):
         subscriptions = {image_topic("head_camera"): object()}

@@ -113,7 +113,9 @@ class IsaacRenderer:
         self.proc_pid: int | None = None
         self.proc = None
         self._running = False
-        self.shm_name = f"glassbeaker_{tag}_frames"
+        self._shm_prefix = f"glassbeaker_{tag}_frames"
+        self._spawn_generation = 0
+        self.shm_name = self._shm_prefix
         self.log_path = REPO_ROOT / "apps" / "python" / "tmp" / f"renderer_{tag}.log"
         self.control_dir = REPO_ROOT / "apps" / "python" / "tmp" / f"renderer_{tag}_ipc"
         self.frame_buffer = SharedFrameBuffer(self.shm_name, len(bundle.cameras), self.width, self.height)
@@ -255,14 +257,16 @@ class IsaacRenderer:
                     self.close()
             try:
                 self._bind_shm()
-                return self.status()
+                if self.frame_counter is not None and int(self.frame_counter[0]) > 0:
+                    return self.status()
             except FileNotFoundError:
-                await asyncio.sleep(5)
+                pass
+            await asyncio.sleep(1)
         try:
             raise TimeoutError(format_isaacsim_failure(
                 "IsaacSim did not become ready",
                 self.log_path,
-                f"renderer did not create shared memory '{self.shm_name}' in {timeout:.0f}s",
+                f"renderer did not produce an initial frame for shared memory '{self.shm_name}' in {timeout:.0f}s",
             ))
         finally:
             self.close()
@@ -318,16 +322,27 @@ class IsaacRenderer:
         return cameras
 
     def reload_scene(self, bundle: "RenderBundle", timeout: float = 30.0) -> None:
-        self._control_request({
-            "op": "reload_scene",
-            "scene_usd": str(bundle.render_scene_usda),
-            "cameras": [
-                {"name": camera.name, "prim": camera.prim}
-                for camera in bundle.cameras
-            ],
-        }, timeout)
+        del timeout
+        old_bundle = self.bundle
+        old_camera_index = self.camera_index
+        old_shm_name = self.shm_name
+        old_generation = self._spawn_generation
+        self.close()
+        self._spawn_generation += 1
+        self.shm_name = f"{self._shm_prefix}_r{self._spawn_generation}"
         self.bundle = bundle
         self.camera_index = camera_name_to_index(bundle.cameras)
+        self.frame_buffer = SharedFrameBuffer(self.shm_name, len(bundle.cameras), self.width, self.height)
+        try:
+            self._spawn()
+        except Exception:
+            self.close()
+            self.bundle = old_bundle
+            self.camera_index = old_camera_index
+            self.shm_name = old_shm_name
+            self._spawn_generation = old_generation
+            self.frame_buffer = SharedFrameBuffer(old_shm_name, len(old_bundle.cameras), self.width, self.height)
+            raise
 
     def close(self, stop_remote: bool = True) -> None:
         if self.proc is not None:

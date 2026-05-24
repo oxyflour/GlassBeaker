@@ -1,15 +1,18 @@
-import type { SetSceneAssetsToolArgs } from "./zapdos-agent-tool-schemas";
+import type { AddAssetsToSceneToolArgs, SetSceneAssetsToolArgs } from "./zapdos-agent-tool-schemas";
 import { publishZapdosSceneRevision } from "../scene/zapdos-runtime";
 import { streamJsonSse } from "../../../utils/sse";
 
 export type SetSceneAssetsInput = SetSceneAssetsToolArgs;
-export type SetSceneAssetsResult = {
+export type AddAssetsToSceneInput = AddAssetsToSceneToolArgs;
+export type SceneAssetsMutationResult = {
   ok: true;
   items: Array<{ asset_id: string; body: string; instance_id: string }>;
   scene_revision: string;
 };
+export type SetSceneAssetsResult = SceneAssetsMutationResult;
+export type AddAssetsToSceneResult = SceneAssetsMutationResult;
 export type Bounds3 = { min: number[]; max: number[] };
-export type ListSceneBodiesResult = {
+export type ListPlacementBodiesResult = {
   items: unknown[];
   robot_bounds: Bounds3 | null;
   scene_revision: string;
@@ -28,16 +31,20 @@ export function createSetSceneAssetsRequest(input: SetSceneAssetsInput): Request
   return createSceneToolRequest([input.assets]);
 }
 
+export function createAddAssetsToSceneRequest(input: AddAssetsToSceneInput): RequestInit {
+  return createSceneToolRequest([input.assets]);
+}
+
 export function createSceneTaskUrl(sess: string, task: string): string {
   return `/python/zapdos/${sess}/tasks/${task}`;
 }
 
-export async function listSceneBodies(sess: string) {
-  const response = await fetch(`/python/zapdos/${sess}/call/list_scene_bodies`, createSceneToolRequest([]));
+export async function listPlacementBodies(sess: string) {
+  const response = await fetch(`/python/zapdos/${sess}/call/list_placement_bodies`, createSceneToolRequest([]));
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return await response.json() as ListSceneBodiesResult;
+  return await response.json() as ListPlacementBodiesResult;
 }
 
 export async function runSceneTask<T>(
@@ -73,15 +80,28 @@ export async function setSceneAssets(
   );
 }
 
-export async function removeAssetFromScene(
+export async function addAssetsToScene(
   sess: string,
-  instanceId: string,
+  input: AddAssetsToSceneInput,
   options: SceneTaskOptions = {},
 ) {
-  return await runSceneTask<{ instance_id: string; scene_revision: string }>(
+  return await runSceneTask<AddAssetsToSceneResult>(
     sess,
-    "remove_asset_from_scene",
-    createSceneToolRequest([instanceId]),
+    "add_assets_to_scene",
+    createAddAssetsToSceneRequest(input),
+    options,
+  );
+}
+
+export async function removeAssetsFromScene(
+  sess: string,
+  instanceIds: string[],
+  options: SceneTaskOptions = {},
+) {
+  return await runSceneTask<{ instance_ids: string[]; scene_revision: string }>(
+    sess,
+    "remove_assets_from_scene",
+    createSceneToolRequest([instanceIds]),
     options,
   );
 }

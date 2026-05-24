@@ -3,17 +3,17 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 
 import {
-  listSceneObjectsToolArgsSchema,
+  listManipulationObjectsToolArgsSchema,
   pickObjectToolArgsSchema,
 } from "./zapdos-manipulation-tool-schemas";
 import { ZAPDOS_ADDITIONAL_INSTRUCTIONS } from "./zapdos-agent-instructions";
 
 type ZapdosManipulationToolApiModule = typeof import("./zapdos-manipulation-tool-api");
 
-test("list_scene_objects schema only accepts an empty object", () => {
-  assert.deepEqual(Object.keys(listSceneObjectsToolArgsSchema.shape), []);
-  assert.equal(listSceneObjectsToolArgsSchema.safeParse({}).success, true);
-  assert.equal(listSceneObjectsToolArgsSchema.safeParse({ extra: true }).success, false);
+test("list_manipulation_objects schema only accepts an empty object", () => {
+  assert.deepEqual(Object.keys(listManipulationObjectsToolArgsSchema.shape), []);
+  assert.equal(listManipulationObjectsToolArgsSchema.safeParse({}).success, true);
+  assert.equal(listManipulationObjectsToolArgsSchema.safeParse({ extra: true }).success, false);
 });
 
 test("pick_object schema accepts the target query, optional support query, and arm", () => {
@@ -56,8 +56,8 @@ test("createPickObjectRequest wraps the single JSON object arg in an args array"
   );
 });
 
-test("listSceneObjects posts to the zapdos route", async () => {
-  const { createManipulationToolRequest, listSceneObjects } = await loadModule<ZapdosManipulationToolApiModule>("./zapdos-manipulation-tool-api.ts");
+test("listManipulationObjects posts to the zapdos route", async () => {
+  const { createManipulationToolRequest, listManipulationObjects } = await loadModule<ZapdosManipulationToolApiModule>("./zapdos-manipulation-tool-api.ts");
   const calls: Array<{ input: unknown; init: unknown }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: unknown) => {
@@ -72,9 +72,9 @@ test("listSceneObjects posts to the zapdos route", async () => {
   }) as typeof fetch;
 
   try {
-    const payload = await listSceneObjects("sess-1");
+    const payload = await listManipulationObjects("sess-1");
     assert.equal(payload.scene_revision, "rev-1");
-    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/list_scene_objects");
+    assert.equal(calls[0]?.input, "/python/zapdos/sess-1/call/list_manipulation_objects");
     assert.deepEqual(calls[0]?.init, createManipulationToolRequest([]));
   } finally {
     globalThis.fetch = originalFetch;
@@ -114,12 +114,30 @@ test("pickObject posts to the zapdos route with the wrapped object arg", async (
 test("useZapdosAgentTools registers the manipulation tools and instructions mention ambiguity handling", async () => {
   const source = await readFile(new URL("./useZapdosAgentTools.ts", import.meta.url), "utf8");
 
-  assert.match(source, /name:\s*"list_scene_objects"/);
+  assert.match(source, /name:\s*"list_manipulation_objects"/);
   assert.match(source, /name:\s*"pick_object"/);
-  assert.match(source, /handler:\s*async\s*\(\)\s*=>\s*await listSceneObjects\(sess\)/);
+  assert.match(source, /handler:\s*async\s*\(\)\s*=>\s*await listManipulationObjects\(sess\)/);
   assert.match(source, /handler:\s*async\s*\(args\)\s*=>\s*await pickObject\(sess,\s*args\)/);
-  assert.match(ZAPDOS_ADDITIONAL_INSTRUCTIONS, /list_scene_objects before pick_object/i);
+  assert.match(ZAPDOS_ADDITIONAL_INSTRUCTIONS, /list_manipulation_objects before pick_object/i);
   assert.match(ZAPDOS_ADDITIONAL_INSTRUCTIONS, /pick_object directly for simple pick commands/i);
+});
+
+test("manipulation API and schema do not export the old scene object names", async () => {
+  const apiSource = await readFile(new URL("./zapdos-manipulation-tool-api.ts", import.meta.url), "utf8");
+  const schemaSource = await readFile(new URL("./zapdos-manipulation-tool-schemas.ts", import.meta.url), "utf8");
+
+  assert.doesNotMatch(apiSource, new RegExp("list" + "SceneObjects"));
+  assert.doesNotMatch(apiSource, new RegExp("List" + "SceneObjects"));
+  assert.doesNotMatch(schemaSource, new RegExp("list" + "SceneObjects"));
+});
+
+test("useZapdosAgentTools registers additive scene tools and plural removal", async () => {
+  const source = await readFile(new URL("./useZapdosAgentTools.ts", import.meta.url), "utf8");
+
+  assert.match(source, /name:\s*"set_scene_assets"/);
+  assert.match(source, /name:\s*"add_assets_to_scene"/);
+  assert.match(source, /name:\s*"remove_assets_from_scene"/);
+  assert.doesNotMatch(source, /name:\s*"remove_asset_from_scene"/);
 });
 
 async function loadModule<TModule>(specifier: string): Promise<TModule> {
