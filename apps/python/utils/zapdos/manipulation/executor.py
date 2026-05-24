@@ -66,97 +66,81 @@ class PickExecutor:
         ik.sync_joint_state(self.physics.joint_state_msg())
         target_body = str(plan["target_body"])
         open_width = float(plan.get("open_gripper", 0.04))
-        closed_width = 0.0
+        current_gripper_width = open_width
         pick_tolerance = float(plan.get("pick_tolerance", PICK_POSE_TOLERANCE))
         attach_tolerance = float(plan.get("attach_tolerance", TARGET_ATTACH_TOLERANCE))
-        attached = False
         stages = plan["stages"] if "stages" in plan else self._legacy_stages(plan)
         pick_pose: dict[str, tuple[float, ...]] | None = None
-        try:
-            for raw_stage in stages:
-                stage = raw_stage if isinstance(raw_stage, dict) else {}
-                stage_name = str(stage["name"])
-                stage_kind = str(stage["kind"])
-                if stage_kind == "move_pose":
-                    target = self._pose(stage["pose"])
-                    target_point = str(stage.get("target_point") or "end_effector")
-                    if target_point == "finger_center":
-                        target["target_point"] = target_point
-                    elif target_point != "end_effector":
-                        raise HTTPException(status_code=409, detail=f"Pick failed: unsupported target point {target_point} at {stage_name}")
-                    pick_pose = target if stage_name == "descend_to_pick" else pick_pose
-                    include_torso = bool(stage.get("include_torso", False))
-                    position_only = bool(stage.get("position_only", False))
-                    yield from self._yield_drive_pose(
-                        ik,
-                        arm,
-                        target,
-                        closed_width if attached else open_width,
-                        steps=max(1, int(stage.get("steps", 12))),
-                        include_torso=include_torso,
-                        position_only=position_only,
-                    )
-                    self._require_pose_reached(
-                        ik,
-                        arm,
-                        target,
-                        float(stage.get("tolerance", DRIVE_POSE_TOLERANCE)),
-                        stage_name,
-                    )
-                    continue
-                if stage_kind != "gripper":
-                    raise HTTPException(status_code=409, detail=f"Pick failed: unsupported stage kind {stage_kind} at {stage_name}")
-                stage_width = float(stage.get("width", 0.0))
-                stage_steps = max(1, int(stage.get("steps", GRIPPER_STAGE_STEPS)))
-                if stage_name != "close_gripper":
-                    hold_pose = ik.get_end_effector_pose(arm)
-                    current_width = closed_width if attached else open_width
-                    yield from self._yield_drive_pose(
-                        ik,
-                        arm,
-                        hold_pose,
-                        stage_width,
-                        steps=stage_steps,
-                        start_gripper=current_width,
-                    )
-                    if attached:
-                        closed_width = stage_width
-                    else:
-                        open_width = stage_width
-                    continue
-                if pick_pose is None:
-                    raise HTTPException(status_code=409, detail=f"Pick failed: missing descend_to_pick stage before {stage_name}")
-                hold_pose = self._current_pose_for_target(ik, arm, pick_pose)
-                if pick_pose.get("target_point") == "finger_center":
-                    hold_pose["target_point"] = "finger_center"  # type: ignore
-                gripper_body = str(plan.get("gripper_body") or get_arm_config(arm).end_effector_body)
-                closed_width = yield from self._yield_close_gripper(
+        for raw_stage in stages:
+            stage = raw_stage if isinstance(raw_stage, dict) else {}
+            stage_name = str(stage["name"])
+            stage_kind = str(stage["kind"])
+            if stage_kind == "move_pose":
+                target = self._pose(stage["pose"])
+                target_point = str(stage.get("target_point") or "end_effector")
+                if target_point == "finger_center":
+                    target["target_point"] = target_point
+                elif target_point != "end_effector":
+                    raise HTTPException(status_code=409, detail=f"Pick failed: unsupported target point {target_point} at {stage_name}")
+                pick_pose = target if stage_name == "descend_to_pick" else pick_pose
+                include_torso = bool(stage.get("include_torso", False))
+                position_only = bool(stage.get("position_only", False))
+                yield from self._yield_drive_pose(
+                    ik,
+                    arm,
+                    target,
+                    current_gripper_width,
+                    steps=max(1, int(stage.get("steps", 12))),
+                    include_torso=include_torso,
+                    position_only=position_only,
+                )
+                self._require_pose_reached(
+                    ik,
+                    arm,
+                    target,
+                    float(stage.get("tolerance", DRIVE_POSE_TOLERANCE)),
+                    stage_name,
+                )
+                continue
+            if stage_kind != "gripper":
+                raise HTTPException(status_code=409, detail=f"Pick failed: unsupported stage kind {stage_kind} at {stage_name}")
+            stage_width = float(stage.get("width", 0.0))
+            stage_steps = max(1, int(stage.get("steps", GRIPPER_STAGE_STEPS)))
+            if stage_name != "close_gripper":
+                hold_pose = ik.get_end_effector_pose(arm)
+                yield from self._yield_drive_pose(
                     ik,
                     arm,
                     hold_pose,
-                    open_width,
                     stage_width,
-                    stage_steps,
-                    gripper_body,
-                    target_body,
+                    steps=stage_steps,
+                    start_gripper=current_gripper_width,
                 )
-                self._require_pose_reached(ik, arm, pick_pose, pick_tolerance, stage_name)
-                self._require_target_near_gripper(ik, arm, target_body, attach_tolerance)
-                self.physics.attach_body(gripper_body, target_body)
-                attached = True
-        except Exception:
-            if attached:
-                self.physics.detach_body(target_body)
-            raise
+                current_gripper_width = stage_width
+                continue
+            if pick_pose is None:
+                raise HTTPException(status_code=409, detail=f"Pick failed: missing descend_to_pick stage before {stage_name}")
+            hold_pose = self._current_pose_for_target(ik, arm, pick_pose)
+            if pick_pose.get("target_point") == "finger_center":
+                hold_pose["target_point"] = "finger_center"  # type: ignore
+            gripper_body = str(plan.get("gripper_body") or get_arm_config(arm).end_effector_body)
+            current_gripper_width = yield from self._yield_close_gripper(
+                ik,
+                arm,
+                hold_pose,
+                current_gripper_width,
+                stage_width,
+                stage_steps,
+                gripper_body,
+                target_body,
+            )
+            self._require_pose_reached(ik, arm, pick_pose, pick_tolerance, stage_name)
+            self._require_target_near_gripper(ik, arm, target_body, attach_tolerance)
         return {"ok": True, "arm": arm, "target_body": target_body, "attachment": self.physics.get_attachment(target_body)}
 
     def _iter_execute_release(self, plan: dict[str, object]) -> Generator[None, None, dict[str, object]]:
         arm = str(plan.get("arm") or "left")
         target_body = str(plan["target_body"])
-        attachment = self.physics.get_attachment(target_body)
-        if attachment is None:
-            raise HTTPException(status_code=409, detail=f"Release failed: {target_body} is not attached")
-
         ik = self._ensure_ik()
         ik.sync_joint_state(self.physics.joint_state_msg())
         hold_pose = ik.get_end_effector_pose(arm)
@@ -175,7 +159,8 @@ class PickExecutor:
                 start_gripper=current_width,
             )
             current_width = stage_width
-        self.physics.detach_body(target_body)
+        if self.physics.get_attachment(target_body) is not None:
+            self.physics.detach_body(target_body)
         return {"ok": True, "arm": arm, "target_body": target_body, "attachment": self.physics.get_attachment(target_body)}
 
     def _ensure_ik(self) -> IKController:
@@ -194,35 +179,32 @@ class PickExecutor:
         gripper_body: str,
         target_body: str,
     ) -> Generator[None, None, float]:
-        current_width = self._current_gripper_width(arm)
-        last_width = start_width if current_width is None else current_width
         if self._bodies_in_contact(gripper_body, target_body):
-            return last_width
+            self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, target_width))
+            return target_width
         for index in range(max(steps, 1)):
             alpha = float(index + 1) / float(max(steps, 1))
             command_width = self._interpolate_gripper(start_width, target_width, alpha)
             self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, command_width))
             self.physics.step()
             ik.sync_joint_state(self.physics.joint_state_msg())
-            current_width = self._current_gripper_width(arm)
-            last_width = command_width if current_width is None else current_width
             yield
             if self._bodies_in_contact(gripper_body, target_body):
-                return last_width
+                if command_width != target_width:
+                    self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, target_width))
+                return target_width
         if self._gripper_width_error(arm, target_width) is None:
             return target_width
         for _ in range(GRIPPER_SETTLE_STEPS):
             if self._bodies_in_contact(gripper_body, target_body):
-                current_width = self._current_gripper_width(arm)
-                return last_width if current_width is None else current_width
+                self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, target_width))
+                return target_width
             error = self._gripper_width_error(arm, target_width)
             if error is None or error <= GRIPPER_WIDTH_TOLERANCE:
                 return target_width
             self.physics.apply_joint_command(ik.solve_step(arm, hold_pose, target_width))
             self.physics.step()
             ik.sync_joint_state(self.physics.joint_state_msg())
-            current_width = self._current_gripper_width(arm)
-            last_width = target_width if current_width is None else current_width
             yield
         error = self._gripper_width_error(arm, target_width)
         if error is not None and error > GRIPPER_WIDTH_TOLERANCE:

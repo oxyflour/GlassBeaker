@@ -102,6 +102,10 @@ class _ContactingGripperPhysics(_LaggingGripperPhysics):
         if self.joint1 in values:
             self.commanded_widths.append(float(values[self.joint1]))
 
+    def step(self) -> None:
+        super().step()
+        self.width = max(self.width, self.contact_width)
+
     def bodies_in_contact(self, body_a: str, body_b: str) -> bool:
         del body_a, body_b
         return self.width <= self.contact_width
@@ -426,7 +430,7 @@ class PickExecutorTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(ik.close_targets, [actual_descend_pose["position"], actual_descend_pose["position"]])
 
-    def test_execute_waits_for_close_gripper_joint_state_before_attach(self):
+    def test_execute_waits_for_close_gripper_joint_state_without_attaching_target(self):
         physics = _LaggingGripperPhysics("left", initial_width=0.04, close_rate=0.005)
         physics.aabbs["Scene_Crate"] = {
             "min": [-0.01, -0.01, 0.01],
@@ -454,10 +458,11 @@ class PickExecutorTest(unittest.TestCase):
         })
 
         self.assertTrue(result["ok"])
-        self.assertIsNotNone(physics.width_at_attach)
-        self.assertLessEqual(physics.width_at_attach, 0.002)
+        self.assertLessEqual(physics.width, 0.002)
+        self.assertEqual(physics.attached, [])
+        self.assertIsNone(result["attachment"])
 
-    def test_execute_stops_closing_gripper_when_target_contacts_fingers(self):
+    def test_execute_ramps_closed_gripper_ctrl_when_target_contacts_fingers(self):
         physics = _ContactingGripperPhysics("left", initial_width=0.04, close_rate=0.01, contact_width=0.02)
         physics.aabbs["Scene_Crate"] = {
             "min": [-0.01, -0.01, 0.01],
@@ -485,9 +490,55 @@ class PickExecutorTest(unittest.TestCase):
         })
 
         self.assertTrue(result["ok"])
-        self.assertIsNotNone(physics.width_at_attach)
-        self.assertGreaterEqual(physics.width_at_attach, 0.02)
-        self.assertGreaterEqual(min(physics.commanded_widths), 0.02)
+        self.assertGreaterEqual(physics.width, 0.02)
+        self.assertEqual(physics.attached, [])
+        self.assertIsNone(result["attachment"])
+        for actual, expected in zip(physics.commanded_widths[-4:], [0.03, 0.02, 0.01, 0.0]):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_execute_uses_closed_gripper_ctrl_for_retreat_after_contact(self):
+        physics = _ContactingGripperPhysics("left", initial_width=0.04, close_rate=0.01, contact_width=0.02)
+        physics.aabbs["Scene_Crate"] = {
+            "min": [-0.01, -0.01, 0.01],
+            "max": [0.01, 0.01, 0.03],
+        }
+        ik = _GripperCommandIK(_pose(0.0, 0.0, 0.02))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+        driven: list[tuple[tuple[float, ...], float]] = []
+
+        def drive(_ik_controller, _arm, target, gripper, steps=12, **_kwargs):
+            del _ik_controller, _arm, steps, _kwargs
+            driven.append((target["position"], gripper))
+            ik.pose = target
+
+        with mock.patch.object(executor, "_drive_pose", side_effect=drive):
+            result = executor.execute({
+                "arm": "left",
+                "target_body": "Scene_Crate",
+                "open_gripper": 0.04,
+                "pick_tolerance": 0.16,
+                "attach_tolerance": 0.11,
+                "stages": [
+                    {
+                        "name": "descend_to_pick",
+                        "kind": "move_pose",
+                        "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                        "steps": 1,
+                        "tolerance": 0.16,
+                    },
+                    {"name": "close_gripper", "kind": "gripper", "width": 0.0, "steps": 4},
+                    {
+                        "name": "retreat",
+                        "kind": "move_pose",
+                        "pose": {"position": [0.0, 0.0, 0.08], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                        "steps": 1,
+                        "tolerance": 0.16,
+                    },
+                ],
+            })
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(driven[-1], ((0.0, 0.0, 0.08), 0.0))
 
     def test_execute_rejects_close_gripper_when_joint_state_never_settles(self):
         physics = _LaggingGripperPhysics("left", initial_width=0.04, close_rate=0.0)
@@ -651,21 +702,26 @@ class PickExecutorTest(unittest.TestCase):
         self.assertEqual(physics.detached, ["Scene_Crate"])
         self.assertIsNone(result["attachment"])
 
-    def test_execute_release_rejects_target_that_is_not_attached(self):
-        executor = PickExecutor(_FakePhysics(), bundle=_bundle(), ik_controller=_MutableIK(_pose(0.0, 0.0, 0.08)))
+    def test_execute_release_opens_gripper_when_target_is_not_attached(self):
+        physics = _FakePhysics()
+        ik = _RecordingIK(_pose(0.0, 0.0, 0.08))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
 
-        with self.assertRaises(HTTPException) as err:
-            executor.execute({
-                "kind": "release",
-                "arm": "left",
-                "target_body": "Scene_Crate",
-                "stages": [
-                    {"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 18},
-                ],
-            })
+        result = executor.execute({
+            "kind": "release",
+            "arm": "left",
+            "target_body": "Scene_Crate",
+            "closed_gripper": 0.0,
+            "stages": [
+                {"name": "open_gripper", "kind": "gripper", "width": 0.05, "steps": 5},
+            ],
+        })
 
-        self.assertEqual(err.exception.status_code, 409)
-        self.assertIn("not attached", err.exception.detail)
+        self.assertTrue(result["ok"])
+        for actual, expected in zip(ik.gripper_openings[-5:], [0.01, 0.02, 0.03, 0.04, 0.05]):
+            self.assertAlmostEqual(actual, expected)
+        self.assertEqual(physics.detached, [])
+        self.assertIsNone(result["attachment"])
 
     def test_execute_rejects_unsupported_stage_kind(self):
         executor = PickExecutor(_FakePhysics(), bundle=_bundle(), ik_controller=_MutableIK(_pose(0.0, 0.0, 0.08)))
@@ -687,7 +743,7 @@ class PickExecutorTest(unittest.TestCase):
         self.assertEqual(err.exception.status_code, 409)
         self.assertEqual(physics.attached, [])
 
-    def test_execute_uses_body_world_aabb_center_for_attach_proximity(self):
+    def test_execute_uses_body_world_aabb_center_for_gripper_proximity(self):
         physics = _FakePhysics()
         physics.pose["Scene_Crate"] = _matrix_at(1.0, 1.0, 1.0)
         physics.aabbs["Scene_Crate"] = {
@@ -700,8 +756,9 @@ class PickExecutorTest(unittest.TestCase):
         result = executor.execute(_aabb_attach_plan())
 
         self.assertTrue(result["ok"])
-        self.assertEqual(physics.attached[-1], ("Root_r1_pro_with_gripper_right_gripper_link", "Scene_Crate"))
+        self.assertEqual(physics.attached, [])
         self.assertEqual(physics.detached, [])
+        self.assertIsNone(result["attachment"])
 
     def test_execute_detaches_when_lift_does_not_succeed(self):
         physics = _FakePhysics()
@@ -718,8 +775,8 @@ class PickExecutorTest(unittest.TestCase):
                 executor.execute(_staged_plan())
 
         self.assertEqual(err.exception.status_code, 409)
-        self.assertEqual(physics.attached[-1], ("Root_r1_pro_with_gripper_right_gripper_link", "Scene_Crate"))
-        self.assertEqual(physics.detached, ["Scene_Crate"])
+        self.assertEqual(physics.attached, [])
+        self.assertEqual(physics.detached, [])
 
     def test_execute_detaches_when_staged_retreat_misses_tight_tolerance(self):
         physics = _FakePhysics()
@@ -737,8 +794,8 @@ class PickExecutorTest(unittest.TestCase):
 
         self.assertEqual(err.exception.status_code, 409)
         self.assertIn("retreat", err.exception.detail)
-        self.assertEqual(physics.attached[-1], ("Root_r1_pro_with_gripper_right_gripper_link", "Scene_Crate"))
-        self.assertEqual(physics.detached, ["Scene_Crate"])
+        self.assertEqual(physics.attached, [])
+        self.assertEqual(physics.detached, [])
 
     def test_execute_detaches_when_any_stage_fails_after_attachment(self):
         physics = _FakePhysics()
@@ -750,8 +807,8 @@ class PickExecutorTest(unittest.TestCase):
 
         self.assertEqual(err.exception.status_code, 409)
         self.assertIn("unsupported stage kind", err.exception.detail)
-        self.assertEqual(physics.attached[-1], ("Root_r1_pro_with_gripper_right_gripper_link", "Scene_Crate"))
-        self.assertEqual(physics.detached, ["Scene_Crate"])
+        self.assertEqual(physics.attached, [])
+        self.assertEqual(physics.detached, [])
 
     def test_execute_respects_explicit_empty_stages_without_using_legacy_fields(self):
         physics = _FakePhysics()
@@ -769,7 +826,7 @@ class PickExecutorTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(physics.attached, [])
 
-    def test_execute_attaches_and_lifts_collisionless_target_in_mujoco_physics_loop(self):
+    def test_execute_does_not_attach_collisionless_target_in_mujoco_physics_loop(self):
         robot_usd = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
         with tempfile.TemporaryDirectory() as tmpdir:
             scene_path = Path(tmpdir) / "scene_pick.usda"
@@ -845,11 +902,11 @@ class PickExecutorTest(unittest.TestCase):
 
                 self.assertEqual(result["arm"], arm)
                 self.assertEqual(result["target_body"], target_body)
-                self.assertEqual(result["attachment"]["child_body"], target_body)
-                self.assertEqual(result["attachment"]["parent_body"], "Root_r1_pro_with_gripper_left_gripper_link")
+                self.assertIsNone(result["attachment"])
+                self.assertIsNone(physics.get_attachment(target_body))
                 self.assertGreater(gripper["position"][1], crate_pos[1] + 0.005)
                 body_xyz = tuple(float(pose[index]) for index in (12, 13, 14))
-                self.assertGreater(math.dist(body_xyz, crate_pos), 0.005)
+                self.assertLess(math.dist(body_xyz, crate_pos), 0.005)
             finally:
                 physics.close()
 

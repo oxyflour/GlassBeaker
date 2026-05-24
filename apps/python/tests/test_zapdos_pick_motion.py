@@ -80,7 +80,7 @@ class _StaticIK:
 
 
 class ZapdosPickMotionTest(unittest.TestCase):
-    def test_execute_accepts_attach_when_gripper_reaches_target_aabb_surface(self):
+    def test_execute_accepts_gripper_near_target_aabb_surface_without_attachment(self):
         physics = _SurfacePhysics()
         ik = _StaticIK({
             "position": (0.405, 0.125, 0.911),
@@ -106,9 +106,10 @@ class ZapdosPickMotionTest(unittest.TestCase):
         })
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["attachment"]["child_body"], "Scene_apple_1")
+        self.assertIsNone(result["attachment"])
+        self.assertEqual(physics.attached, [])
 
-    def test_execute_arm_only_surface_plan_attaches_and_retreats_in_mujoco_loop(self):
+    def test_execute_arm_only_surface_plan_closes_and_retreats_without_attachment(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scene_path = Path(tmpdir) / "scene_pick.usda"
             stage = Usd.Stage.CreateNew(str(scene_path))
@@ -167,12 +168,11 @@ class ZapdosPickMotionTest(unittest.TestCase):
 
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["arm"], arm)
-                self.assertEqual(result["attachment"]["child_body"], target_body)
-                self.assertEqual(result["attachment"]["parent_body"], get_arm_config(arm).end_effector_body)
-                self.assertGreater(reached["position"][0], start["position"][0] + 0.4)
+                self.assertIsNone(result["attachment"])
+                self.assertIsNone(physics.get_attachment(target_body))
                 self.assertGreater(reached["position"][1], 0.0)
                 self.assertLess(math.dist(reached["position"], (0.4, 0.18, 0.92)), 0.08)
-                self.assertGreater(math.dist(after_xyz, before_xyz), 0.05)
+                self.assertLess(math.dist(after_xyz, before_xyz), 0.005)
             finally:
                 physics.close()
 

@@ -115,8 +115,6 @@ class ManipulationRuntime:
         grounded = self._ground_target(request, objects)
         target = grounded["target"]
         target_body = target["body"]
-        if self.session.physics.get_attachment(target_body) is None:
-            raise HTTPException(status_code=409, detail=f"Place {unattached_label} requires {target_body} to be attached")
         self._sync_executor_state()
         return self._start_operation(self.executor.iter_execute({
             "kind": "release",

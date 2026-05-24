@@ -1952,12 +1952,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "world_aabb": {"min": [0.1, -0.3, 0.7], "max": [0.9, 0.3, 0.8]},
         }
         physics = mock.Mock()
-        physics.get_attachment.return_value = {
-            "parent_body": "Root_r1_pro_with_gripper_left_gripper_link",
-            "child_body": "Scene_benchmark_building_blocks_006_1",
-            "relative_position": [0.0, 0.0, 0.0],
-            "relative_quat": [1.0, 0.0, 0.0, 0.0],
-        }
+        physics.get_attachment.return_value = None
         session, scheduled, reservations = self._build_manipulation_session(
             scene_revision="rev-2",
             physics=physics,
@@ -1983,7 +1978,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"ok": True, "op_id": "op-1"})
         grounder.assert_called_once_with(catalog_loader.return_value, target_query="cube", support_query="benchmark table")
-        physics.get_attachment.assert_called_once_with("Scene_benchmark_building_blocks_006_1")
+        physics.get_attachment.assert_not_called()
         executor.iter_execute.assert_called_once_with({
             "kind": "release",
             "arm": "left",
@@ -2007,12 +2002,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
             "motion": "dynamic",
         }
         physics = mock.Mock()
-        physics.get_attachment.return_value = {
-            "parent_body": "Root_r1_pro_with_gripper_left_gripper_link",
-            "child_body": "Scene_Crate",
-            "relative_position": [0.0, 0.0, 0.0],
-            "relative_quat": [1.0, 0.0, 0.0, 0.0],
-        }
+        physics.get_attachment.return_value = None
         session, scheduled, reservations = self._build_manipulation_session(
             scene_revision="rev-3",
             physics=physics,
@@ -2036,7 +2026,7 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"ok": True, "op_id": "op-1"})
         grounder.assert_called_once_with(catalog_loader.return_value, target_query="Scene_Crate", support_query=None)
-        physics.get_attachment.assert_called_once_with("Scene_Crate")
+        physics.get_attachment.assert_not_called()
         executor.iter_execute.assert_called_once_with({
             "kind": "release",
             "arm": "left",
