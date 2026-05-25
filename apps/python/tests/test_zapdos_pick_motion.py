@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fastapi import HTTPException
 from pxr import Usd, UsdGeom, UsdPhysics
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -109,7 +110,7 @@ class ZapdosPickMotionTest(unittest.TestCase):
         self.assertIsNone(result["attachment"])
         self.assertEqual(physics.attached, [])
 
-    def test_execute_arm_only_surface_plan_closes_and_retreats_without_attachment(self):
+    def test_execute_arm_only_surface_plan_rejects_missing_grasp_contact(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             scene_path = Path(tmpdir) / "scene_pick.usda"
             stage = Usd.Stage.CreateNew(str(scene_path))
@@ -137,41 +138,36 @@ class ZapdosPickMotionTest(unittest.TestCase):
                 target_pose_before = physics.get_pose()[target_body]
                 before_xyz = tuple(float(target_pose_before[index]) for index in (12, 13, 14))
 
-                result = executor.execute({
-                    "arm": arm,
-                    "target_body": target_body,
-                    "pick_tolerance": 0.16,
-                    "attach_tolerance": 0.11,
-                    "stages": [
-                        {
-                            "name": "descend_to_pick",
-                            "kind": "move_pose",
-                            "pose": {"position": [0.48, 0.06, 0.82], "quat_wxyz": list(start["rotation"])},
-                            "position_only": True,
-                            "tolerance": 0.16,
-                        },
-                        {"name": "close_gripper", "kind": "gripper", "width": 0.0},
-                        {
-                            "name": "retreat",
-                            "kind": "move_pose",
-                            "pose": {"position": [0.4, 0.18, 0.92], "quat_wxyz": list(start["rotation"])},
-                            "position_only": True,
-                            "tolerance": 0.08,
-                        },
-                    ],
-                })
-
-                ik.sync_joint_state(physics.joint_state_msg())
-                reached = ik.get_end_effector_pose(arm)
+                with self.assertRaises(HTTPException) as err:
+                    executor.execute({
+                        "arm": arm,
+                        "target_body": target_body,
+                        "pick_tolerance": 0.16,
+                        "attach_tolerance": 0.11,
+                        "stages": [
+                            {
+                                "name": "descend_to_pick",
+                                "kind": "move_pose",
+                                "pose": {"position": [0.48, 0.06, 0.82], "quat_wxyz": list(start["rotation"])},
+                                "position_only": True,
+                                "tolerance": 0.16,
+                            },
+                            {"name": "close_gripper", "kind": "gripper", "width": 0.0},
+                            {
+                                "name": "retreat",
+                                "kind": "move_pose",
+                                "pose": {"position": [0.4, 0.18, 0.92], "quat_wxyz": list(start["rotation"])},
+                                "position_only": True,
+                                "tolerance": 0.08,
+                            },
+                        ],
+                    })
                 target_pose_after = physics.get_pose()[target_body]
                 after_xyz = tuple(float(target_pose_after[index]) for index in (12, 13, 14))
 
-                self.assertTrue(result["ok"])
-                self.assertEqual(result["arm"], arm)
-                self.assertIsNone(result["attachment"])
+                self.assertEqual(getattr(err.exception, "status_code", None), 409)
+                self.assertIn("both fingers", getattr(err.exception, "detail", ""))
                 self.assertIsNone(physics.get_attachment(target_body))
-                self.assertGreater(reached["position"][1], 0.0)
-                self.assertLess(math.dist(reached["position"], (0.4, 0.18, 0.92)), 0.08)
                 self.assertLess(math.dist(after_xyz, before_xyz), 0.005)
             finally:
                 physics.close()

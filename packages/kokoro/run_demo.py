@@ -63,12 +63,12 @@ def _remainder(value, period):
 
 
 def wave(x, y):
-    phase = (2.0 * math.pi / 250e-6) * (x + 0.01 * y)
+    phase = (2.0 * math.pi / 500e-6) * (x + 0.01 * y)
     return 2e-6 * (0.5 + 0.5 * _sin(phase))
 
 
 def block(x, y):
-    period_m = 500e-6
+    period_m = 1000e-6
     gap_m = 80e-6
     block_width_m = 40e-6
     slope_width_m = 80e-6
@@ -205,8 +205,8 @@ def main() -> None:
     parser.add_argument("--video", action="store_true")
     parser.add_argument("--video-frames", type=int, default=DEFAULT_VIDEO_FRAMES)
     parser.add_argument("--video-fps", type=int, default=DEFAULT_VIDEO_FPS)
-    parser.add_argument("--orbit-radius", type=float, default=0.1)
-    parser.add_argument("--camera-height", type=float, default=0.10)
+    parser.add_argument("--orbit-radius", type=float, default=0.05)
+    parser.add_argument("--camera-height", type=float, default=0.05)
     parser.add_argument("--variant", default="cuda_ad_rgb")
     args = parser.parse_args()
 

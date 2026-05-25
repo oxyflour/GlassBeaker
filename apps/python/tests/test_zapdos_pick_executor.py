@@ -107,6 +107,30 @@ class _ContactingGripperPhysics(_LaggingGripperPhysics):
         return self.width <= self.contact_width
 
 
+class _SingleFingerContactPhysics(_ContactingGripperPhysics):
+    def __init__(self, arm: str, *, initial_width: float, close_rate: float, contact_width: float) -> None:
+        super().__init__(arm, initial_width=initial_width, close_rate=close_rate, contact_width=contact_width)
+        config = get_arm_config(arm)
+        self.gripper_body = config.end_effector_body
+        self.contact_finger_body = config.gripper_finger_body_names[0]
+
+    def bodies_in_contact(self, body_a: str, body_b: str) -> bool:
+        del body_b
+        if self.width > self.contact_width:
+            return False
+        return body_a in {self.gripper_body, self.contact_finger_body}
+
+
+class _ToggleFingerContactPhysics(_ContactingGripperPhysics):
+    def __init__(self, arm: str, *, initial_width: float, close_rate: float, contact_width: float) -> None:
+        super().__init__(arm, initial_width=initial_width, close_rate=close_rate, contact_width=contact_width)
+        self.contact_enabled = True
+
+    def bodies_in_contact(self, body_a: str, body_b: str) -> bool:
+        del body_a, body_b
+        return self.contact_enabled and self.width <= self.contact_width
+
+
 class _StaticIK:
     def __init__(self, pose: dict[str, tuple[float, ...]]) -> None:
         self.pose = pose
@@ -535,6 +559,91 @@ class PickExecutorTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(driven[-1], ((0.0, 0.0, 0.08), 0.0))
 
+    def test_execute_rejects_close_gripper_when_only_one_finger_contacts_target(self):
+        physics = _SingleFingerContactPhysics("left", initial_width=0.04, close_rate=0.01, contact_width=0.02)
+        physics.aabbs["Scene_Crate"] = {
+            "min": [-0.01, -0.01, 0.01],
+            "max": [0.01, 0.01, 0.03],
+        }
+        ik = _GripperCommandIK(_pose(0.0, 0.0, 0.02))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+
+        with self.assertRaises(HTTPException) as err:
+            executor.execute({
+                "arm": "left",
+                "target_body": "Scene_Crate",
+                "open_gripper": 0.04,
+                "pick_tolerance": 0.16,
+                "attach_tolerance": 0.11,
+                "stages": [
+                    {
+                        "name": "descend_to_pick",
+                        "kind": "move_pose",
+                        "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                        "steps": 1,
+                        "tolerance": 0.16,
+                    },
+                    {"name": "close_gripper", "kind": "gripper", "width": 0.0, "steps": 4},
+                    {
+                        "name": "retreat",
+                        "kind": "move_pose",
+                        "pose": {"position": [0.0, 0.0, 0.08], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                        "steps": 1,
+                        "tolerance": 0.16,
+                    },
+                ],
+            })
+
+        self.assertEqual(err.exception.status_code, 409)
+        self.assertIn("close_gripper", err.exception.detail)
+        self.assertIn("both fingers", err.exception.detail)
+
+    def test_execute_rejects_retreat_when_closed_gripper_loses_target_contact(self):
+        physics = _ToggleFingerContactPhysics("left", initial_width=0.04, close_rate=0.01, contact_width=0.02)
+        physics.aabbs["Scene_Crate"] = {
+            "min": [-0.01, -0.01, 0.01],
+            "max": [0.01, 0.01, 0.03],
+        }
+        ik = _GripperCommandIK(_pose(0.0, 0.0, 0.02))
+        executor = PickExecutor(physics, bundle=_bundle(), ik_controller=ik)
+
+        def drive(_ik_controller, _arm, target, gripper, steps=12, **_kwargs):
+            del _ik_controller, _arm, gripper, steps, _kwargs
+            ik.pose = target
+            if target["position"] == (0.0, 0.0, 0.08):
+                physics.contact_enabled = False
+
+        with mock.patch.object(executor, "_drive_pose", side_effect=drive):
+            with self.assertRaises(HTTPException) as err:
+                executor.execute({
+                    "arm": "left",
+                    "target_body": "Scene_Crate",
+                    "open_gripper": 0.04,
+                    "pick_tolerance": 0.16,
+                    "attach_tolerance": 0.11,
+                    "stages": [
+                        {
+                            "name": "descend_to_pick",
+                            "kind": "move_pose",
+                            "pose": {"position": [0.0, 0.0, 0.02], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                            "steps": 1,
+                            "tolerance": 0.16,
+                        },
+                        {"name": "close_gripper", "kind": "gripper", "width": 0.0, "steps": 4},
+                        {
+                            "name": "retreat",
+                            "kind": "move_pose",
+                            "pose": {"position": [0.0, 0.0, 0.08], "quat_wxyz": [1.0, 0.0, 0.0, 0.0]},
+                            "steps": 1,
+                            "tolerance": 0.16,
+                        },
+                    ],
+                })
+
+        self.assertEqual(err.exception.status_code, 409)
+        self.assertIn("retreat", err.exception.detail)
+        self.assertIn("both fingers", err.exception.detail)
+
     def test_execute_rejects_close_gripper_when_joint_state_never_settles(self):
         physics = _LaggingGripperPhysics("left", initial_width=0.04, close_rate=0.0)
         physics.aabbs["Scene_Crate"] = {
@@ -821,7 +930,7 @@ class PickExecutorTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(physics.attached, [])
 
-    def test_execute_does_not_attach_collisionless_target_in_mujoco_physics_loop(self):
+    def test_execute_rejects_collisionless_target_in_mujoco_physics_loop(self):
         robot_usd = REPO_ROOT / "deps" / "galaxea" / "object" / "r1pro" / "r1pro.usda"
         with tempfile.TemporaryDirectory() as tmpdir:
             scene_path = Path(tmpdir) / "scene_pick.usda"
@@ -890,16 +999,14 @@ class PickExecutorTest(unittest.TestCase):
                     ],
                 }
 
-                result = executor.execute(plan)
-                ik.sync_joint_state(physics.joint_state_msg())
-                gripper = ik.get_end_effector_pose(arm)
+                with self.assertRaises(HTTPException) as err:
+                    executor.execute(plan)
                 pose = physics.get_pose()[target_body]
 
-                self.assertEqual(result["arm"], arm)
-                self.assertEqual(result["target_body"], target_body)
-                self.assertIsNone(result["attachment"])
+                self.assertEqual(err.exception.status_code, 409)
+                self.assertIn("close_gripper", err.exception.detail)
+                self.assertIn("both fingers", err.exception.detail)
                 self.assertIsNone(physics.get_attachment(target_body))
-                self.assertGreater(gripper["position"][1], crate_pos[1] + 0.005)
                 body_xyz = tuple(float(pose[index]) for index in (12, 13, 14))
                 self.assertLess(math.dist(body_xyz, crate_pos), 0.005)
             finally:

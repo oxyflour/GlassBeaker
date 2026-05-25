@@ -71,6 +71,7 @@ class PickExecutor:
         attach_tolerance = float(plan.get("attach_tolerance", TARGET_ATTACH_TOLERANCE))
         stages = plan["stages"] if "stages" in plan else self._legacy_stages(plan)
         pick_pose: dict[str, tuple[float, ...]] | None = None
+        grasp_contact_required = False
         for raw_stage in stages:
             stage = raw_stage if isinstance(raw_stage, dict) else {}
             stage_name = str(stage["name"])
@@ -101,6 +102,8 @@ class PickExecutor:
                     float(stage.get("tolerance", DRIVE_POSE_TOLERANCE)),
                     stage_name,
                 )
+                if grasp_contact_required:
+                    self._require_bilateral_gripper_contact(arm, target_body, stage_name)
                 continue
             if stage_kind != "gripper":
                 raise HTTPException(status_code=409, detail=f"Pick failed: unsupported stage kind {stage_kind} at {stage_name}")
@@ -136,6 +139,8 @@ class PickExecutor:
             )
             self._require_pose_reached(ik, arm, pick_pose, pick_tolerance, stage_name)
             self._require_target_near_gripper(ik, arm, target_body, attach_tolerance)
+            self._require_bilateral_gripper_contact(arm, target_body, stage_name)
+            grasp_contact_required = True
         return {"ok": True, "arm": arm, "target_body": target_body, "attachment": self.physics.get_attachment(target_body)}
 
     def _iter_execute_release(self, plan: dict[str, object]) -> Generator[None, None, dict[str, object]]:
@@ -414,6 +419,18 @@ class PickExecutor:
     def _bodies_in_contact(self, body_a: str, body_b: str) -> bool:
         bodies_in_contact = getattr(self.physics, "bodies_in_contact", None)
         return bool(callable(bodies_in_contact) and bodies_in_contact(body_a, body_b))
+
+    def _require_bilateral_gripper_contact(self, arm: str, target_body: str, stage: str) -> None:
+        bodies_in_contact = getattr(self.physics, "bodies_in_contact", None)
+        if not callable(bodies_in_contact):
+            return
+        missing = [
+            finger_body
+            for finger_body in get_arm_config(arm).gripper_finger_body_names
+            if not bool(bodies_in_contact(finger_body, target_body))
+        ]
+        if missing:
+            raise HTTPException(status_code=409, detail=f"Pick failed: {stage} target is not held by both fingers")
 
     def _close_width(self, plan: dict[str, object]) -> float:
         command = plan.get("close")
