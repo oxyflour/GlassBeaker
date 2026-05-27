@@ -188,6 +188,59 @@ class RLRendererEntryTest(unittest.TestCase):
         )
         self.assertEqual(int(renderer.frame_counter[0]), 100)
 
+    def test_render_callback_publishes_configured_image_after_copying_frame(self):
+        entry = load_renderer_entry()
+        entry.Sdf = SimpleNamespace(ChangeBlock=ChangeBlock)
+        published: list[object] = []
+
+        class ImageMsg:
+            def __init__(self):
+                self.header = SimpleNamespace(stamp=None, frame_id="")
+                self.height = 0
+                self.width = 0
+                self.encoding = ""
+                self.is_bigendian = 0
+                self.step = 0
+                self.data = b""
+
+        entry.ImageMsg = ImageMsg
+        renderer = entry.RLRenderer.__new__(entry.RLRenderer)
+        frame = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
+        renderer.args = SimpleNamespace(cam_height=2, cam_width=3)
+        renderer.num_envs = 1
+        renderer._num_cams = 1
+        renderer._camera_list = [{"name": "head_camera", "prim": "/camera"}]
+        renderer.env_subscribers = [SimpleNamespace(_dirty=False, apply_tf=lambda: None)]
+        renderer.frame_counter = np.array([0], dtype=np.uint32)
+        renderer.shm_array = np.zeros((1, 1, 2, 3, 3), dtype=np.uint8)
+        renderer.cam_annotators_all = [[
+            SimpleNamespace(
+                annotator=SimpleNamespace(get_data=lambda: frame),
+                render_product=None,
+            )
+        ]]
+        renderer._ros_publish_node = SimpleNamespace(
+            get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: "stamp"))
+        )
+        renderer._ros_image_specs_by_camera = {
+            0: [SimpleNamespace(topic="/cameras/head_camera/image", camera_name="head_camera")]
+        }
+        renderer._ros_image_publishers = {
+            "/cameras/head_camera/image": SimpleNamespace(publish=published.append)
+        }
+
+        renderer._render_callback(0.0)
+
+        self.assertEqual(len(published), 1)
+        msg = published[0]
+        self.assertEqual(msg.header.stamp, "stamp")
+        self.assertEqual(msg.header.frame_id, "head_camera")
+        self.assertEqual(msg.height, 2)
+        self.assertEqual(msg.width, 3)
+        self.assertEqual(msg.encoding, "rgb8")
+        self.assertEqual(msg.step, 9)
+        self.assertEqual(msg.data, frame.tobytes())
+
 
 if __name__ == "__main__":
     unittest.main()

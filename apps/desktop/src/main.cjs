@@ -76,6 +76,11 @@ function resolvePythonRuntime(label = '') {
             command: 'pixi',
             args: ['run', '--no-install', 'python', '-u', 'app.py'],
             cwd: path.join(root, label)
+        } : label === 'hermes' ? {
+            label,
+            command: 'uv',
+            args: ['run', '--no-sync', 'hermes', 'gateway'],
+            cwd: path.join(root, label)
         } : {
             label,
             command: 'uv',
@@ -97,22 +102,45 @@ function resolvePythonRuntime(label = '') {
     return { label, command, args: [], cwd }
 }
 
+/**
+ * 
+ * @param { string } label 
+ * @param { Record<string, string> } env 
+ * @param { import('child_process').SpawnOptions } opts 
+ */
+function startPythonModule(label, env, opts = {}) {
+    const pyRuntime = resolvePythonRuntime(label)
+    watchProc(pyRuntime.label, spawn(pyRuntime.command, pyRuntime.args, {
+        env: { ...process.env, ...env },
+        cwd: pyRuntime.cwd,
+        stdio: 'pipe',
+        ...opts,
+    }))
+    return pyRuntime
+}
+
 async function startServer(nextJsPort = 13000, pythonPort = 13001) {
     const isaacRuntime = `http://127.0.0.1:${nextJsPort}/api/isaac`
-
-    const pyRuntime = resolvePythonRuntime('python')
-    watchProc(pyRuntime.label, spawn(pyRuntime.command, pyRuntime.args, {
-        env: { ...process.env, LISTEN_PORT: `${pythonPort}`, NO_PROXY: '*', ISAAC_API_URL: isaacRuntime },
-        cwd: pyRuntime.cwd,
-        stdio: 'pipe'
-    }))
-
-    const rosRuntime = resolvePythonRuntime('ros')
-    watchProc(rosRuntime.label, spawn(rosRuntime.command, rosRuntime.args, {
-        env: { ...process.env, WS_ADDR: `ws://127.0.0.1:${pythonPort}/api/ros/ws`, NO_PROXY: '*' },
-        cwd: rosRuntime.cwd,
-        stdio: 'pipe'
-    }))
+    startPythonModule('python', {
+        NO_PROXY: '*',
+        LISTEN_PORT: `${pythonPort}`,
+        ISAAC_API_URL: isaacRuntime,
+    }) 
+    startPythonModule('ros', {
+        NO_PROXY: '*',
+        WS_ADDR: `ws://127.0.0.1:${pythonPort}/api/ros/ws`,
+    })
+    startPythonModule('hermes', {
+        NO_PROXY: '*',
+        API_SERVER_ENABLED: 'true',
+        API_SERVER_HOST: '127.0.0.1',
+        API_SERVER_PORT: '8642',
+        API_SERVER_KEY: 'sk-1234',
+        GATEWAY_ALLOW_ALL_USERS: 'true',
+    }, {
+        detached: false,
+        stdio: 'inherit'
+    })
 
     const apiRuntime = await assertUrl(`http://127.0.0.1:${pythonPort}/runtime`)
     console.log(`[main] RUNTIME: ${apiRuntime}`)

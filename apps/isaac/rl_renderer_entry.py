@@ -31,6 +31,7 @@ from utils.zapdos.renderer.isaac_renderer_reload import (
     reset_subscriber_caches,
     validate_camera_topology,
 )
+from utils.zapdos.ros.publish_config import configured_image_publish_specs
 
 simulation_app: Any = None
 rep: Any = None
@@ -47,6 +48,8 @@ UsdLux: Any = None
 UsdShade: Any = None
 rclpy: Any = None
 QOS_BE: Any = None
+RosNode: Any = None
+ImageMsg: Any = None
 EnvTFSubscriber: Any = None
 
 
@@ -191,7 +194,7 @@ def launch_simulation_app(args: argparse.Namespace):
 def load_isaac_runtime() -> None:
     global rep, GridCloner, World, is_prim_path_valid, add_reference_to_stage
     global get_current_stage, Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade
-    global rclpy, QOS_BE, EnvTFSubscriber
+    global rclpy, QOS_BE, RosNode, ImageMsg, EnvTFSubscriber
 
     import omni.replicator.core as _rep
     from omni.isaac.cloner import GridCloner as _GridCloner
@@ -208,6 +211,7 @@ def load_isaac_runtime() -> None:
     import rclpy as _rclpy
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import Image as _ImageMsg
     from tf2_msgs.msg import TFMessage
 
     rep = _rep
@@ -228,6 +232,8 @@ def load_isaac_runtime() -> None:
         history=QoSHistoryPolicy.KEEP_LAST,
         depth=1,
     )
+    RosNode = Node
+    ImageMsg = _ImageMsg
     EnvTFSubscriber = _build_env_tf_subscriber_class(Node, TFMessage)
 
 
@@ -317,6 +323,9 @@ class RLRenderer:
         self.env_subscribers: list[Any] = []
         self.cam_annotators_main: list[Any] = []
         self.cam_annotators_wrist: list[Any] = []
+        self._ros_publish_node = None
+        self._ros_image_publishers: dict[str, Any] = {}
+        self._ros_image_specs_by_camera: dict[int, list[Any]] = {}
         self.shm = None
         self.shm_array = None
         if getattr(args, "ros_domain_id", None) is not None:
@@ -338,6 +347,7 @@ class RLRenderer:
         print(f"[RLRenderer] body_name_map built: {len(body_name_map)} prims indexed under env_0")
         self._camera_list = self._parse_camera_list()
         self._num_cams = len(self._camera_list)
+        self._setup_ros_image_publishers()
         self.cam_annotators_all = [[] for _ in range(self._num_cams)]
         for index, env_path in enumerate(env_paths):
             for camera_index, camera in enumerate(self._camera_list):
@@ -351,6 +361,8 @@ class RLRenderer:
         self._ros_executor = rclpy.executors.SingleThreadedExecutor()
         for sub in self.env_subscribers:
             self._ros_executor.add_node(sub)
+        if self._ros_publish_node is not None:
+            self._ros_executor.add_node(self._ros_publish_node)
 
         height, width = self.args.cam_height, self.args.cam_width
         shm_bytes = _shm_total_bytes(self.num_envs, height, width, num_cams=self._num_cams)
@@ -381,6 +393,23 @@ class RLRenderer:
         if self.args.wrist_cam_prim:
             cameras.append({"name": "wrist", "prim": self.args.wrist_cam_prim})
         return cameras
+
+    def _setup_ros_image_publishers(self) -> None:
+        camera_indices = {str(camera["name"]): index for index, camera in enumerate(self._camera_list)}
+        specs = configured_image_publish_specs(camera_indices.keys())
+        if not specs:
+            return
+        self._ros_publish_node = RosNode("geniesim_renderer_publish")
+        for spec in specs:
+            camera_index = camera_indices.get(spec.camera_name)
+            if camera_index is None:
+                continue
+            self._ros_image_specs_by_camera.setdefault(camera_index, []).append(spec)
+            self._ros_image_publishers[spec.topic] = self._ros_publish_node.create_publisher(
+                ImageMsg,
+                spec.topic,
+                QOS_BE,
+            )
 
     def _create_default_viz_camera(self, env_path: str, cam_pos: list[float], cam_target: list[float]) -> str:
         camera_path = env_path + "/default_viz_camera"
@@ -676,6 +705,34 @@ class RLRenderer:
         res_path.write_text(json.dumps(payload), encoding="utf-8")
         req_path.unlink(missing_ok=True)
 
+    def _publish_image_frame(self, env_index: int, camera_index: int, frame: np.ndarray) -> None:
+        if env_index != 0:
+            return
+        specs = getattr(self, "_ros_image_specs_by_camera", {}).get(camera_index, [])
+        if not specs:
+            return
+        publish_node = getattr(self, "_ros_publish_node", None)
+        if publish_node is None:
+            return
+        frame = np.ascontiguousarray(frame, dtype=np.uint8)
+        height, width = int(frame.shape[0]), int(frame.shape[1])
+        payload = frame.tobytes()
+        stamp = publish_node.get_clock().now().to_msg()
+        for spec in specs:
+            publisher = getattr(self, "_ros_image_publishers", {}).get(spec.topic)
+            if publisher is None:
+                continue
+            msg = ImageMsg()
+            msg.header.stamp = stamp
+            msg.header.frame_id = spec.camera_name
+            msg.height = height
+            msg.width = width
+            msg.encoding = "rgb8"
+            msg.is_bigendian = 0
+            msg.step = width * 3
+            msg.data = payload
+            publisher.publish(msg)
+
     def _render_callback(self, step_size: float) -> None:
         del step_size
         force_render = os.environ.get("GB_RENDERER_FORCE_RENDER") == "1"
@@ -702,18 +759,20 @@ class RLRenderer:
                     size = getattr(data, "size", None)
                     data_sum = int(data.sum()) if size else 0
                     print(f"[RLRenderer] annotator env={env_index} camera={camera_index} shape={shape} size={size} sum={data_sum}", flush=True)
+                rgb_frame = None
                 if data.shape == (height, width, 4):
-                    self.shm_array[env_index, camera_index, :, :, :] = data[:, :, :3]
-                    copied_frame = True
+                    rgb_frame = data[:, :, :3]
                 elif data.shape == (height, width, 3):
-                    self.shm_array[env_index, camera_index, :, :, :] = data
-                    copied_frame = True
+                    rgb_frame = data
                 elif data.size == height * width * 4:
-                    self.shm_array[env_index, camera_index, :, :, :] = data.reshape(height, width, 4)[:, :, :3]
-                    copied_frame = True
+                    rgb_frame = data.reshape(height, width, 4)[:, :, :3]
                 elif data.size == height * width * 3:
-                    self.shm_array[env_index, camera_index, :, :, :] = data.reshape(height, width, 3)
-                    copied_frame = True
+                    rgb_frame = data.reshape(height, width, 3)
+                if rgb_frame is None:
+                    continue
+                self.shm_array[env_index, camera_index, :, :, :] = rgb_frame
+                self._publish_image_frame(env_index, camera_index, rgb_frame)
+                copied_frame = True
         if copied_frame:
             self.frame_counter[0] = (int(self.frame_counter[0]) + 1) % (2**32)
 
@@ -728,6 +787,9 @@ class RLRenderer:
         self._ros_executor.shutdown(timeout_sec=2.0)
         for sub in self.env_subscribers:
             sub.destroy_node()
+        publish_node = getattr(self, "_ros_publish_node", None)
+        if publish_node is not None:
+            publish_node.destroy_node()
         rclpy.shutdown()
         if self.shm:
             self.shm.close()

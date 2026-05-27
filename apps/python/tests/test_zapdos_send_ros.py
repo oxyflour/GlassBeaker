@@ -65,6 +65,7 @@ class ZapdosSendRosTest(unittest.IsolatedAsyncioTestCase):
         )
         session.bundle = SimpleNamespace(cameras=[SimpleNamespace(name="head_camera")])
         session.command_subscribed = False
+        session.ros_joint_subscribe_specs = []
         session.on_message = mock.Mock()
         session.is_active = lambda: active["value"]
         self.sleep_patch = mock.patch.object(session_module.asyncio, "sleep", side_effect=fake_sleep)
@@ -126,6 +127,25 @@ class ZapdosSendRosTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
         session.renderer.image_messages.assert_called_once_with()
+
+    async def test_send_ros_subscribes_configured_joint_command_topics(self):
+        session = self.make_session()
+        session.ros_joint_subscribe_specs = [
+            SimpleNamespace(topic="/target/left_arm/joint_states", type_name=session_module.JOINT_STATE_TYPE),
+            SimpleNamespace(topic="/target/left_gripper/joint_states", type_name=session_module.JOINT_STATE_TYPE),
+        ]
+        bridge = _BridgeStub()
+
+        with self.sleep_patch:
+            with mock.patch.object(session_module, "bridge", bridge):
+                with mock.patch.object(session_module, "tf_message", return_value={"transforms": []}):
+                    await session.send_ros()
+
+        self.assertEqual(bridge.subscribe_calls, [
+            (session_module.JOINT_COMMAND_TOPIC, session_module.JOINT_STATE_TYPE),
+            ("/target/left_arm/joint_states", session_module.JOINT_STATE_TYPE),
+            ("/target/left_gripper/joint_states", session_module.JOINT_STATE_TYPE),
+        ])
 
     async def test_send_ros_suppresses_traceback_for_bridge_disconnect(self):
         session = self.make_session()

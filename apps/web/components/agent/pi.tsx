@@ -26,6 +26,22 @@ const PROVIDER = {
     baseUrl,
     type: 'openai-completions',
     models: [{
+        id: 'hermes',
+        name: 'Hermes',
+        api: 'openai-completions',
+        provider: 'moonshot',
+        baseUrl: 'http://localhost:8642/v1',
+        reasoning: false,
+        input: ['text'],
+        contextWindow: 131072,
+        maxTokens: 32000,
+        cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+        }
+    }, {
         id: 'kimi-k2.5',
         name: 'Kimi K2.5',
         api: 'openai-completions',

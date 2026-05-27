@@ -11,6 +11,7 @@ from pxr import Usd
 
 from utils.camera_override import apply_camera_overrides
 from utils.user_config import read_user_config
+from utils.zapdos.gripper_collision_override import apply_gripper_collision_overrides, load_gripper_collision_overrides
 from utils.zapdos.joint_drive_override import load_joint_drive_overrides
 from utils.zapdos.physics.mujoco_tools import compile_urdf_to_mjcf, merge_mjcf_files
 
@@ -30,7 +31,7 @@ from .usd_to_mjcf_adapter import USDToMJCFConverter
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 TMP_ROOT = REPO_ROOT / "apps" / "python" / "tmp" / "rl_bundles"
-BUNDLE_VERSION = 7
+BUNDLE_VERSION = 8
 _STAGE_CACHE: dict[Path, tuple[tuple[int, int], Usd.Stage]] = {}
 BUNDLE_DEPENDENCY_FILES = (
     Path(__file__).resolve(),
@@ -41,6 +42,7 @@ BUNDLE_DEPENDENCY_FILES = (
     Path(__file__).with_name("scene_catalog.py").resolve(),
     Path(__file__).with_name("usd_to_mjcf_adapter.py").resolve(),
     REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "joint_drive_override.py",
+    REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "gripper_collision_override.py",
     REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "robot_model.py",
     REPO_ROOT / "apps" / "python" / "utils" / "zapdos" / "usd_to_mjcf.py",
 )
@@ -206,6 +208,7 @@ def _build_sim_scene_mjcf(
     force_body_paths: set[str],
 ) -> None:
     joint_drive_overrides = load_joint_drive_overrides(descriptor.visual_usd)
+    gripper_collision_overrides = load_gripper_collision_overrides(descriptor.visual_usd)
     if descriptor.physics_input.suffix.lower() == ".urdf":
         robot_xml = mjcf.with_name("robot.xml")
         scene_xml = mjcf.with_name("scene.xml")
@@ -220,6 +223,7 @@ def _build_sim_scene_mjcf(
             stage=sim_stage,
         ).convert()
         merge_mjcf_files(robot_xml, scene_xml, mjcf)
+        apply_gripper_collision_overrides(mjcf, gripper_collision_overrides)
         return
     sim_stage = build_sim_scene(descriptor.physics_input, scene_usd, sim_scene_usda, up_axis, meters_per_unit, fallback_scene_usd)
     USDToMJCFConverter(
@@ -230,6 +234,7 @@ def _build_sim_scene_mjcf(
         joint_drive_overrides=joint_drive_overrides,
         stage=sim_stage,
     ).convert()
+    apply_gripper_collision_overrides(mjcf, gripper_collision_overrides)
 
 
 def _robot_body_names(model, source_map: dict[str, list[str]]) -> list[str]:

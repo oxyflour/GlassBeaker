@@ -17,6 +17,12 @@ from utils.zapdos.physics.mujoco_physics import ZapdosPhysics
 from utils.zapdos.renderer import ZapdosRenderer
 from utils.zapdos.renderer.isaac_renderer import IsaacRenderer, tf_message
 from utils.zapdos.renderer.mitsuba_renderer import MitsubaRenderer
+from utils.zapdos.ros.publish_config import (
+    configured_joint_state_publish_specs,
+    configured_joint_state_subscribe_specs,
+    joint_command_from_subscribe_msg,
+    joint_state_publish_messages,
+)
 from utils.zapdos.ros.topics import IMAGE_TYPE, JOINT_COMMAND_TOPIC, JOINT_STATES_TOPIC, JOINT_STATE_TYPE, TF_RENDER_TOPIC, TF_RENDER_TYPE
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -37,6 +43,12 @@ class ZapdosSession(Session):
         self.command_subscribed = False
         self.physics = self._create_physics(bundle)
         self.renderer = self._create_renderer(bundle)
+        self.ros_joint_publish_specs = configured_joint_state_publish_specs()
+        self.ros_joint_subscribe_specs = configured_joint_state_subscribe_specs()
+        self.ros_joint_subscribe_by_topic = {
+            spec.topic: spec for spec in self.ros_joint_subscribe_specs
+        }
+        self._ros_joint_publish_future = None
         self.editor = ZapdosEditor(
             self,
             repo_root=REPO_ROOT,
@@ -119,6 +131,8 @@ class ZapdosSession(Session):
             try:
                 if not self.command_subscribed and bridge.conns:
                     await bridge.subscribe(JOINT_COMMAND_TOPIC, JOINT_STATE_TYPE, self.on_message)
+                    for spec in getattr(self, "ros_joint_subscribe_specs", []):
+                        await bridge.subscribe(spec.topic, spec.type_name, self.on_message)
                     self.command_subscribed = True
                 if bridge.conns:
                     await bridge.call("publish", [JOINT_STATES_TOPIC, JOINT_STATE_TYPE, self.physics.joint_state_msg()])
@@ -142,9 +156,31 @@ class ZapdosSession(Session):
                 break
         return latest
 
+    async def _publish_ros_messages(self, messages: list[tuple[str, str, dict]]) -> None:
+        try:
+            for topic, type_name, payload in messages:
+                await bridge.call("publish", [topic, type_name, payload])
+        except BridgeUnavailable:
+            pass
+        except Exception:
+            traceback.print_exc()
+
+    def _publish_configured_joint_states_after_step(self) -> None:
+        specs = getattr(self, "ros_joint_publish_specs", [])
+        if not specs or not bridge.conns:
+            return
+        future = getattr(self, "_ros_joint_publish_future", None)
+        if future is not None and not future.done():
+            return
+        messages = joint_state_publish_messages(self.physics.joint_state_msg(), specs)
+        if not messages:
+            return
+        self._ros_joint_publish_future = self.schedule_on_owner_loop(self._publish_ros_messages(messages))
+
     def step_once(self):
         self.physics.apply_joint_command(self._latest_joint_command())
         self.physics.step()
+        self._publish_configured_joint_states_after_step()
         update_pose = getattr(getattr(self, "renderer", None), "update_pose", None)
         if callable(update_pose):
             update_pose(self.physics.get_pose())
@@ -158,6 +194,17 @@ class ZapdosSession(Session):
                 except queue.Empty:
                     break
             self.command_msgs.put_nowait(msg)
+            return
+        spec = getattr(self, "ros_joint_subscribe_by_topic", {}).get(topic)
+        if spec is not None:
+            command = joint_command_from_subscribe_msg(msg, spec)
+            if command["name"]:
+                while self.command_msgs.full():
+                    try:
+                        self.command_msgs.get_nowait()
+                    except queue.Empty:
+                        break
+                self.command_msgs.put_nowait(command)
             return
         if not self.msgs.full():
             self.msgs.put_nowait({"topic": topic, "msg": msg})

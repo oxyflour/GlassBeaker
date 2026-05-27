@@ -29,6 +29,7 @@ from utils.zapdos.editor.rebuild_types import PreparedOverlayRebuild
 from utils.zapdos.editor.state import default_overlay_state
 import utils.zapdos.editor.zapdos_editor as EDITOR_SESSION_MODULE
 from utils.zapdos.physics.mujoco_physics import MujocoPhysics as ZapdosPhysics
+import utils.zapdos.ros.publish_config as ROS_CONFIG_MODULE
 from utils.session import Session
 import utils.zapdos.zapdos_session as SESSION_MODULE
 from utils.zapdos.bundle import ensure_render_bundle
@@ -2890,6 +2891,145 @@ class ZapdosImportTest(unittest.IsolatedAsyncioTestCase):
         session.physics.apply_joint_command.assert_called_once_with({"topic": "joint", "positions": [0.2]})
         session.physics.step.assert_called_once_with()
         base_step.assert_called_once_with()
+
+    def test_step_once_schedules_configured_joint_state_publish_after_physics_step(self):
+        events: list[str] = []
+        scheduled: list[object] = []
+        bridge_calls: list[tuple[str, list[object]]] = []
+
+        async def bridge_call(method: str, args: list[object]):
+            bridge_calls.append((method, args))
+
+        def schedule(coro):
+            events.append("schedule")
+            scheduled.append(coro)
+            future = ConcurrentFuture()
+            future.set_result(None)
+            return future
+
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.editor = SimpleNamespace()
+        session.physics = mock.Mock(
+            apply_joint_command=mock.Mock(side_effect=lambda msg: events.append("apply")),
+            step=mock.Mock(side_effect=lambda: events.append("step")),
+            joint_state_msg=mock.Mock(side_effect=lambda: events.append("joint_state") or {
+                "name": ["left_arm_joint1", "left_arm_joint2", "right_arm_joint1"],
+                "position": [0.1, 0.2, 1.1],
+                "velocity": [0.01, 0.02, 0.11],
+                "effort": [1.0, 2.0, 11.0],
+            }),
+        )
+        session.renderer = SimpleNamespace()
+        session.command_msgs = queue.Queue()
+        session.ros_joint_publish_specs = [
+            SimpleNamespace(
+                topic="/hdas/left_arm/joint_states",
+                type_name="sensor_msgs/msg/JointState",
+                joints=("left_arm_joint1", "left_arm_joint2"),
+            )
+        ]
+        session._ros_joint_publish_future = None
+        session.schedule_on_owner_loop = mock.Mock(side_effect=schedule)
+        bridge = SimpleNamespace(conns={object()}, call=bridge_call)
+
+        with mock.patch.object(SESSION_MODULE, "bridge", bridge):
+            with mock.patch.object(Session, "step_once", return_value={"ok": True}):
+                MODULE.ZapdosSession.step_once(session)
+            self.assertEqual(events, ["apply", "step", "joint_state", "schedule"])
+            self.assertEqual(len(scheduled), 1)
+            asyncio.run(scheduled[0])
+
+        self.assertEqual(len(bridge_calls), 1)
+        method, args = bridge_calls[0]
+        self.assertEqual(method, "publish")
+        self.assertEqual(args[0], "/hdas/left_arm/joint_states")
+        self.assertEqual(args[1], "sensor_msgs/msg/JointState")
+        self.assertEqual(args[2], {
+            "name": ["left_arm_joint1", "left_arm_joint2"],
+            "position": [0.1, 0.2],
+            "velocity": [0.01, 0.02],
+            "effort": [1.0, 2.0],
+        })
+
+    def test_joint_state_publish_config_applies_scale_to_feedback_values(self):
+        specs = ROS_CONFIG_MODULE.joint_state_publish_specs({
+            "ros": {
+                "publish": {
+                    "/feedback/left_arm/joint_states": {
+                        "type": "sensor_msgs/msg/JointState",
+                        "joints": [
+                            {"name": "left_arm_joint1", "scale": 2.0},
+                            {"name": "left_arm_joint2", "scale": -1.0},
+                        ],
+                    }
+                }
+            }
+        })
+        joint_state = {
+            "name": ["left_arm_joint1", "left_arm_joint2", "right_arm_joint1"],
+            "position": [0.1, 0.2, 1.1],
+            "velocity": [0.01, 0.02, 0.11],
+            "effort": [1.0, 2.0, 11.0],
+        }
+
+        messages = ROS_CONFIG_MODULE.joint_state_publish_messages(joint_state, specs)
+
+        self.assertEqual(messages, [(
+            "/feedback/left_arm/joint_states",
+            SESSION_MODULE.JOINT_STATE_TYPE,
+            {
+                "name": ["left_arm_joint1", "left_arm_joint2"],
+                "position": [0.2, -0.2],
+                "velocity": [0.02, -0.02],
+                "effort": [2.0, -2.0],
+            },
+        )])
+
+    def test_joint_state_subscribe_config_maps_input_positions_to_scaled_joint_commands(self):
+        specs = ROS_CONFIG_MODULE.joint_state_subscribe_specs({
+            "ros": {
+                "subscribe": {
+                    "/target/left_gripper/joint_states": {
+                        "type": "sensor_msgs/msg/JointState",
+                        "joints": [[
+                            {"name": "left_gripper_finger1", "scale": 1.0},
+                            {"name": "left_gripper_finger2", "scale": -1.0},
+                        ]],
+                    }
+                }
+            }
+        })
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0].type_name, SESSION_MODULE.JOINT_STATE_TYPE)
+        command = ROS_CONFIG_MODULE.joint_command_from_subscribe_msg({"position": [0.04]}, specs[0])
+
+        self.assertEqual(command, {
+            "name": ["left_gripper_finger1", "left_gripper_finger2"],
+            "position": [0.04, -0.04],
+        })
+
+    def test_on_message_enqueues_configured_subscribe_joint_command(self):
+        spec = ROS_CONFIG_MODULE.JointStateSubscribeSpec(
+            topic="/target/left_gripper/joint_states",
+            type_name=SESSION_MODULE.JOINT_STATE_TYPE,
+            joints=((
+                ROS_CONFIG_MODULE.JointCommandTarget("left_gripper_finger1", 1.0),
+                ROS_CONFIG_MODULE.JointCommandTarget("left_gripper_finger2", -1.0),
+            ),),
+        )
+        session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)
+        session.command_msgs = queue.Queue(maxsize=8)
+        session.ros_joint_subscribe_by_topic = {spec.topic: spec}
+        session.msgs = queue.Queue(maxsize=8)
+
+        MODULE.ZapdosSession.on_message(session, spec.topic, {"position": [0.04]})
+
+        self.assertEqual(session.command_msgs.get_nowait(), {
+            "name": ["left_gripper_finger1", "left_gripper_finger2"],
+            "position": [0.04, -0.04],
+        })
+        self.assertTrue(session.msgs.empty())
 
     def test_step_once_updates_renderer_pose_when_supported(self):
         session = MODULE.ZapdosSession.__new__(MODULE.ZapdosSession)

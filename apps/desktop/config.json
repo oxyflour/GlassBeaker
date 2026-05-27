@@ -14,6 +14,66 @@
         ]
       }
     },
+    "gripper_collision": {
+      "r1pro": {
+        "left": {
+          "finger1": {
+            "type": "box",
+            "pos": [
+              0.0,
+              -0.035,
+              -0.03
+            ],
+            "size": [
+              0.012,
+              0.004,
+              0.02
+            ]
+          },
+          "finger2": {
+            "type": "box",
+            "pos": [
+              0.0,
+              0.035,
+              -0.03
+            ],
+            "size": [
+              0.012,
+              0.004,
+              0.02
+            ]
+          }
+        },
+        "right": {
+          "finger1": {
+            "type": "box",
+            "pos": [
+              0.0,
+              -0.035,
+              -0.03
+            ],
+            "size": [
+              0.012,
+              0.004,
+              0.02
+            ]
+          },
+          "finger2": {
+            "type": "box",
+            "pos": [
+              0.0,
+              0.035,
+              -0.03
+            ],
+            "size": [
+              0.012,
+              0.004,
+              0.02
+            ]
+          }
+        }
+      }
+    },
     "position": {
       "r1pro": {
         "left_arm_joint1":  0.4,
@@ -183,6 +243,69 @@
           ],
           "vertical_aperture": 24.0
         }
+      }
+    }
+  },
+  "ros": {
+    "subscribe": {
+      "/target/left_arm/joint_states": {
+        "type": "sensor_msgs/msg/JointState",
+        "joints": [
+          [{ "name": "left_arm_joint1", "scale": 1.0 }],
+          [{ "name": "left_arm_joint2", "scale": 1.0 }],
+          [{ "name": "left_arm_joint3", "scale": 1.0 }],
+          [{ "name": "left_arm_joint4", "scale": 1.0 }],
+          [{ "name": "left_arm_joint5", "scale": 1.0 }],
+          [{ "name": "left_arm_joint6", "scale": 1.0 }],
+          [{ "name": "left_arm_joint7", "scale": 1.0 }]
+        ]
+      },
+      "/target/left_gripper/joint_states": {
+        "type": "sensor_msgs/msg/JointState",
+        "joints": [
+          [{ "name": "left_gripper_finger1", "scale":  1.0 }, { "name": "left_gripper_finger2", "scale": -1.0 }]
+        ]
+      }
+    },
+    "publish": {
+      "/cameras/left_wrist_camera/image": {
+        "type": "sensor_msgs/msg/Image",
+        "format": "jpeg",
+        "quality": 80
+      },
+      "/cameras/right_wrist_camera/image": {
+        "type": "sensor_msgs/msg/Image",
+        "format": "jpeg",
+        "quality": 80
+      },
+      "/cameras/head_camera/image": {
+        "type": "sensor_msgs/msg/Image",
+        "format": "jpeg",
+        "quality": 80
+      },
+      "/feedback/left_arm/joint_states": {
+        "type": "sensor_msgs/msg/JointState",
+        "joints": [
+          { "name": "left_arm_joint1", "scale": 1.0 },
+          { "name": "left_arm_joint2", "scale": 1.0 },
+          { "name": "left_arm_joint3", "scale": 1.0 },
+          { "name": "left_arm_joint4", "scale": 1.0 },
+          { "name": "left_arm_joint5", "scale": 1.0 },
+          { "name": "left_arm_joint6", "scale": 1.0 },
+          { "name": "left_arm_joint7", "scale": 1.0 }
+        ]
+      },
+      "/feedback/right_arm/joint_states": {
+        "type": "sensor_msgs/msg/JointState",
+        "joints": [
+          { "name": "right_arm_joint1", "scale": 1.0 },
+          { "name": "right_arm_joint2", "scale": 1.0 },
+          { "name": "right_arm_joint3", "scale": 1.0 },
+          { "name": "right_arm_joint4", "scale": 1.0 },
+          { "name": "right_arm_joint5", "scale": 1.0 },
+          { "name": "right_arm_joint6", "scale": 1.0 },
+          { "name": "right_arm_joint7", "scale": 1.0 }
+        ]
       }
     }
   }

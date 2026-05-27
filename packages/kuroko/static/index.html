@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MI Gradient Viewer</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="/static/app.js" defer></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; color: #222; }
+    .row { display: flex; gap: 20px; align-items: flex-start; }
+    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 16px; background: #fafafa; }
+    #controls { width: 360px; }
+    #plot { flex: 1; min-width: 700px; height: 720px; }
+    label { display: block; margin-top: 10px; font-weight: 600; }
+    input, select, button { width: 100%; padding: 8px; margin-top: 6px; box-sizing: border-box; }
+    button { cursor: pointer; }
+    .small { font-size: 12px; color: #666; }
+    pre { white-space: pre-wrap; background: #fff; border: 1px solid #eee; padding: 10px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>FFS 方向图 / MI 梯度可视化</h1>
+  <p class="small">上传一个或多个 CST .ffs（每个 RX 端口一个文件）和一个 channel JSON。支持简单 snapshots/path 格式，以及 Sionna CDL JSON（cluster-level 近似）。</p>
+
+  <div class="row">
+    <div id="controls" class="panel">
+      <label>上传 FFS 文件（可多选）</label>
+      <input id="ffsFiles" type="file" multiple accept=".ffs,.txt" />
+
+      <label>上传 Channel JSON</label>
+      <input id="channelFile" type="file" accept=".json" />
+
+      <button id="uploadBtn">上传并显示方向图</button>
+
+      <hr />
+
+      <label>端口</label>
+      <select id="portSelect"></select>
+
+      <label>显示模式</label>
+      <select id="viewMode">
+        <option value="gain">方向图增益 (dB)</option>
+        <option value="gradient">|dMI/dgain| 梯度着色</option>
+        <option value="gradlog">|dMI/dlog(gain)| 梯度着色</option>
+      </select>
+
+      <label>SNR (dB)</label>
+      <input id="snrDb" type="number" value="10" step="0.1" />
+
+      <label>CDL 随机 realizations 数</label>
+      <input id="numSnapshots" type="number" value="200" step="1" />
+      <div class="small">如果 channel JSON 是 snapshots/path 格式，这个值会被忽略。</div>
+
+      <button id="refreshBtn">刷新当前方向图</button>
+      <button id="gradBtn">计算 MI 梯度并着色</button>
+
+      <label>MI 分布统计</label>
+      <pre id="statsBox">尚未计算</pre>
+    </div>
+
+    <div id="plot" class="panel"></div>
+  </div>
+</body>
+</html>
