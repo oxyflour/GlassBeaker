@@ -9,6 +9,7 @@ apps/desktop/release
 apps/python/.venv
 apps/python/build
 apps/python/dist
+packages/kuroko/uploads
 __pycache__/
 
 tmp/
