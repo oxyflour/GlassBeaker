@@ -21,6 +21,10 @@ const nextConfig = {
           destination: "https://api.moonshot.cn/:path*",
         },
         {
+          source: "/cors/hermes/:path*",
+          destination: "http://localhost:13002/:path*",
+        },
+        {
           source: "/python/:path*",
           destination: `${process.env.API_REWRITE || "http://localhost:13001/"}api/:path*`,
         },

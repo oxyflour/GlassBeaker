@@ -18,47 +18,7 @@ import { usePiSession } from "./pi/session";
 import { usePiStorage } from "./pi/storage";
 import { usePiToolCallCollapse } from "./pi/tool-call-collapse";
 import { classNames } from "./pi/utils";
-
-const baseUrl = 'http://localhost:13000/cors/moonshot/v1'
-const PROVIDER = {
-    id: 'moonshot',
-    name: 'moonshot',
-    baseUrl,
-    type: 'openai-completions',
-    models: [{
-        id: 'hermes',
-        name: 'Hermes',
-        api: 'openai-completions',
-        provider: 'moonshot',
-        baseUrl: 'http://localhost:8642/v1',
-        reasoning: false,
-        input: ['text'],
-        contextWindow: 131072,
-        maxTokens: 32000,
-        cost: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-        }
-    }, {
-        id: 'kimi-k2.5',
-        name: 'Kimi K2.5',
-        api: 'openai-completions',
-        provider: 'moonshot',
-        baseUrl,
-        reasoning: false,
-        input: ['text'],
-        contextWindow: 131072,
-        maxTokens: 32000,
-        cost: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-        }
-    }]
-} satisfies CustomProvider
+import { PROVIDER } from "./pi-provider";
 
 type DivProps = DetailedHTMLProps<HTMLAttributes<HTMLDivElement>, HTMLDivElement>;
 type PiProps = DivProps & {

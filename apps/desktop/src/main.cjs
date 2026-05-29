@@ -79,7 +79,7 @@ function resolvePythonRuntime(label = '') {
         } : label === 'hermes' ? {
             label,
             command: 'uv',
-            args: ['run', '--no-sync', 'hermes', 'gateway'],
+            args: ['run', '--no-sync', 'python', '-u', 'app.py'],
             cwd: path.join(root, label)
         } : {
             label,
@@ -134,12 +134,9 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
         NO_PROXY: '*',
         API_SERVER_ENABLED: 'true',
         API_SERVER_HOST: '127.0.0.1',
-        API_SERVER_PORT: '8642',
+        API_SERVER_PORT: '13002',
         API_SERVER_KEY: 'sk-1234',
         GATEWAY_ALLOW_ALL_USERS: 'true',
-    }, {
-        detached: false,
-        stdio: 'inherit'
     })
 
     const apiRuntime = await assertUrl(`http://127.0.0.1:${pythonPort}/runtime`)

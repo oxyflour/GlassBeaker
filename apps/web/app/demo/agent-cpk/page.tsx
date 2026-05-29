@@ -1,63 +1,44 @@
 "use client";
 
-import { useCopilotAdditionalInstructions, useCopilotReadable } from "@copilotkit/react-core";
+import { useCopilotAdditionalInstructions } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-core/v2";
+import { Group, Panel, Separator } from "react-resizable-panels";
 
 import {
-  AgentPreview,
-  PREVIEW_ADDITIONAL_INSTRUCTIONS,
-  PREVIEW_CODE_PARAMETERS_CPK,
-  PREVIEW_LIBRARY_CATALOG_PROMPT,
-  PREVIEW_PROPS_PARAMETERS_CPK,
-  PREVIEW_SET_APP_CODE_DESCRIPTION,
-  PREVIEW_SET_APP_PROPS_DESCRIPTION,
-  getPreviewLibraryReadableCatalog,
-  useAgentPreviewState,
-} from "../../../components/preview";
-import { Group, Panel, Separator } from "react-resizable-panels";
-import { useTool } from "../../../utils/agent/tool";
+  IframeUrlPreview,
+  useIframeUrlPreviewState,
+} from "../../../components/agent/iframe-url-preview";
+import {
+  IFRAME_URL_ADDITIONAL_INSTRUCTIONS,
+  SET_IFRAME_URL_DESCRIPTION,
+  SET_IFRAME_URL_SCHEMA,
+  SET_IFRAME_URL_TOOL_NAME,
+} from "../../../components/agent/iframe-url-tool";
+import { useTypedTool } from "../../../utils/agent/tool";
 
 export default function HomePage() {
-  const preview = useAgentPreviewState();
+  const preview = useIframeUrlPreviewState();
 
-  useCopilotAdditionalInstructions({ instructions: [PREVIEW_ADDITIONAL_INSTRUCTIONS, PREVIEW_LIBRARY_CATALOG_PROMPT].join("\n\n") }, []);
+  useCopilotAdditionalInstructions({ instructions: IFRAME_URL_ADDITIONAL_INSTRUCTIONS }, []);
 
-  useCopilotReadable({
-    description: "Current entry component properties that the assistant can revise or keep stable while changing props.",
-    value: preview.props,
-  }, [preview.props]);
-  useCopilotReadable({
-    description: "Whitelisted repo preview components that can be imported directly instead of copying source into files.",
-    value: getPreviewLibraryReadableCatalog(),
-  }, []);
-
-  useTool({
-    name: "set_app_code",
-    description: PREVIEW_SET_APP_CODE_DESCRIPTION,
+  useTypedTool({
+    name: SET_IFRAME_URL_TOOL_NAME,
+    description: SET_IFRAME_URL_DESCRIPTION,
     followUp: true,
-    parameters: PREVIEW_CODE_PARAMETERS_CPK,
-    handler: ({ entry, props, files }) => preview.setAppCode({ entry, props, files }),
-    render: ({ status }) => (status === "inProgress" ? <div className="tool-badge">Building preview...</div> : <div className="tool-badge">Preview updated</div>),
-  }, [preview.setAppCode]);
-
-  useTool({
-    name: "set_app_props",
-    description: PREVIEW_SET_APP_PROPS_DESCRIPTION,
-    followUp: true,
-    parameters: PREVIEW_PROPS_PARAMETERS_CPK,
-    handler: ({ props }) => preview.setAppProps(props),
-    render: ({ status }) => (status === "inProgress" ? <div className="tool-badge">Updating props...</div> : <div className="tool-badge">Props updated</div>),
-  }, [preview.setAppProps]);
+    parameters: SET_IFRAME_URL_SCHEMA,
+    handler: preview.setIframeUrl,
+    render: ({ status }) => (status === "inProgress" ? <div className="tool-badge">Opening URL...</div> : <div className="tool-badge">URL opened</div>),
+  }, [preview.setIframeUrl]);
 
   return <Group>
     <Panel>
       <CopilotChat className="copilotkit-fix" />
     </Panel>
     {
-        preview.hasApp && <>
+        preview.url && <>
             <Separator />
             <Panel>
-                <AgentPreview files={ preview.files } props={ preview.props } />
+                <IframeUrlPreview url={ preview.url } />
             </Panel>
         </>
     }

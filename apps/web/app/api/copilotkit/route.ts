@@ -3,7 +3,7 @@ import { BuiltInAgent } from "@copilotkit/runtime/v2";
 import type { NextRequest } from "next/server";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 
-import { PREVIEW_ADDITIONAL_INSTRUCTIONS, PREVIEW_LIBRARY_CATALOG_PROMPT } from "../../../components/preview/instructions";
+import { IFRAME_URL_ADDITIONAL_INSTRUCTIONS } from "../../../components/agent/iframe-url-tool";
 
 import { AbstractAgent } from "@copilotkit/react-core/v2";
 import { LangGraphHttpAgent } from "@copilotkit/runtime/langgraph";
@@ -18,10 +18,8 @@ const createModel = createOpenAICompatible({
 const builtin = new BuiltInAgent({
   model: createModel(process.env.COPILOTKIT_MODEL?.trim() || "gpt-5.2"),
   prompt: [
-    "Write React apps for users.",
-    PREVIEW_ADDITIONAL_INSTRUCTIONS,
-    PREVIEW_LIBRARY_CATALOG_PROMPT,
-    "When the UI needs styling, include plain `.css` files in the frontend tool `files` payload and import them from the component tree.",
+    "Control the live iframe by opening browser URLs for users.",
+    IFRAME_URL_ADDITIONAL_INSTRUCTIONS,
   ].join("\n\n")
 });
 
