@@ -2,11 +2,17 @@
 const path = require("node:path"),
     { spawn } = require('child_process'),
     { app, BrowserWindow, utilityProcess } = require("electron/main"),
-    { existsSync, readFileSync } = require('fs'),
+    { existsSync, mkdirSync, readFileSync, writeFileSync } = require('fs'),
     env = existsSync('.env') ? readFileSync('.env', 'utf8') : ''
 
 for (const line of env.split('\n')) {
-    const [key, val] = line.trim().split('=').map(item => item.trim())
+    const separator = line.indexOf('='),
+        key = separator >= 0 ? line.slice(0, separator).trim() : '',
+        rawVal = separator >= 0 ? line.slice(separator + 1).trim() : '',
+        quote = rawVal[0],
+        val = (quote === '"' || quote === "'") && rawVal.endsWith(quote)
+            ? rawVal.slice(1, -1)
+            : rawVal
     if (key && !key.startsWith('#')) {
         console.log(`[main] updated env ${key}`)
         process.env[key] = val
@@ -69,6 +75,69 @@ async function assertUrl(url, retry = 30){
 }
 
 const root = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "..", "..")
+const messagingEnvPrefixes = [
+    "TELEGRAM_",
+    "DISCORD_",
+    "WHATSAPP_",
+    "SLACK_",
+    "SIGNAL_",
+    "EMAIL_",
+    "SMS_",
+    "MATTERMOST_",
+    "MATRIX_",
+    "DINGTALK_",
+    "FEISHU_",
+    "WECOM_",
+    "WEIXIN_",
+    "BLUEBUBBLES_",
+    "QQ_",
+    "YUANBAO_",
+    "WEBHOOK_",
+    "MSGRAPH_WEBHOOK_",
+    "HOMEASSISTANT_",
+]
+
+function yamlString(value) {
+    return JSON.stringify(`${value || ''}`)
+}
+
+function dotenvLine(key, value) {
+    const sanitized = `${value || ''}`.replace(/\r?\n/g, '')
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+    return `${key}="${sanitized}"`
+}
+
+function syncHermesProfile(hermesHome) {
+    const openaiBaseUrl = (process.env.OPENAI_BASE_URL || '').trim(),
+        model = (process.env.COPILOTKIT_MODEL || process.env.OPENAI_MODEL || '').trim()
+
+    if (!openaiBaseUrl || !model) {
+        return false
+    }
+
+    mkdirSync(hermesHome, { recursive: true })
+    writeFileSync(path.join(hermesHome, "config.yaml"), [
+        "model:",
+        "  provider: custom",
+        `  default: ${yamlString(model)}`,
+        `  base_url: ${yamlString(openaiBaseUrl)}`,
+        "  api_mode: chat_completions",
+        "",
+    ].join('\n'), 'utf8')
+
+    writeFileSync(path.join(hermesHome, ".env"), [
+        ["OPENAI_API_KEY", process.env.OPENAI_API_KEY],
+        ["OPENAI_BASE_URL", openaiBaseUrl],
+        ["COPILOTKIT_MODEL", model],
+    ].filter(([, value]) => `${value || ''}`.trim())
+        .map(([key, value]) => dotenvLine(key, value))
+        .join('\n') + '\n', 'utf8')
+
+    console.log(`[main] synced Hermes profile at ${hermesHome}`)
+    return true
+}
+
 function resolvePythonRuntime(label = '') {
     if (!app.isPackaged) {
         return label === 'ros' ? {
@@ -109,18 +178,32 @@ function resolvePythonRuntime(label = '') {
  * @param { import('child_process').SpawnOptions } opts 
  */
 function startPythonModule(label, env, opts = {}) {
-    const pyRuntime = resolvePythonRuntime(label)
+    const pyRuntime = resolvePythonRuntime(label),
+        { env: baseEnv = process.env, ...spawnOpts } = opts
     watchProc(pyRuntime.label, spawn(pyRuntime.command, pyRuntime.args, {
-        env: { ...process.env, ...env },
+        env: { ...baseEnv, ...env },
         cwd: pyRuntime.cwd,
         stdio: 'pipe',
-        ...opts,
+        ...spawnOpts,
     }))
     return pyRuntime
 }
 
 async function startServer(nextJsPort = 13000, pythonPort = 13001) {
-    const isaacRuntime = `http://127.0.0.1:${nextJsPort}/api/isaac`
+    const isaacRuntime = `http://127.0.0.1:${nextJsPort}/api/isaac`,
+        hermesHome = process.env.GLASSBEAKER_HERMES_HOME
+            || path.join(app.getPath("home"), ".glass-beaker", "hermes"),
+        hermesPort = process.env.GLASSBEAKER_HERMES_PORT || '13002',
+        hermesEnv = { ...process.env }
+
+    const hermesUsesCustomEndpoint = syncHermesProfile(hermesHome)
+
+    for (const key of Object.keys(hermesEnv)) {
+        if (messagingEnvPrefixes.some(prefix => key.startsWith(prefix))) {
+            delete hermesEnv[key]
+        }
+    }
+
     startPythonModule('python', {
         NO_PROXY: '*',
         LISTEN_PORT: `${pythonPort}`,
@@ -132,13 +215,15 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
     })
     startPythonModule('hermes', {
         NO_PROXY: '*',
+        HERMES_HOME: hermesHome,
+        ...(hermesUsesCustomEndpoint ? { HERMES_INFERENCE_PROVIDER: 'custom' } : {}),
         API_SERVER_ENABLED: 'true',
         API_SERVER_HOST: '127.0.0.1',
-        API_SERVER_PORT: '13002',
+        API_SERVER_PORT: `${hermesPort}`,
         API_SERVER_KEY: 'sk-1234',
         API_SERVER_CORS_ORIGINS: `http://localhost:${nextJsPort},http://127.0.0.1:${nextJsPort}`,
         GATEWAY_ALLOW_ALL_USERS: 'true',
-    })
+    }, { env: hermesEnv })
 
     const apiRuntime = await assertUrl(`http://127.0.0.1:${pythonPort}/runtime`)
     console.log(`[main] RUNTIME: ${apiRuntime}`)
@@ -146,7 +231,7 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
     const nextjs = utilityProcess.fork(path.join(root, 'web/node_modules/next/dist/bin/next'), [
         '-p', `${nextJsPort}`
     ], {
-        env: { ...process.env, API_REWRITE: `http://127.0.0.1:${pythonPort}/`, API_RUNTIME: apiRuntime },
+        env: { ...process.env, API_REWRITE: `http://127.0.0.1:${pythonPort}/`, API_RUNTIME: apiRuntime, GLASSBEAKER_HERMES_PORT: `${hermesPort}` },
         cwd: path.join(root, 'web'),
         stdio: "pipe"
     });

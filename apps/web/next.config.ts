@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 
 const configDir = path.dirname(fileURLToPath(import.meta.url));
+const hermesPort = process.env.GLASSBEAKER_HERMES_PORT || "13002";
 
 const nextConfig = {
   output: "standalone",
@@ -22,7 +23,7 @@ const nextConfig = {
         },
         {
           source: "/cors/hermes/:path*",
-          destination: "http://localhost:13002/:path*",
+          destination: `http://localhost:${hermesPort}/:path*`,
         },
         {
           source: "/python/:path*",
