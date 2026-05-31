@@ -36,7 +36,10 @@ export function usePiModelState(options: ModelStateOptions) {
       return;
     }
 
-    ModelSelector.open(currentModel, setCurrentModel, options.provider ? [options.provider.id] : undefined);
+    const allowedProviders = options.provider?.models?.length
+      ? Array.from(new Set(options.provider.models.map((model) => model.provider)))
+      : options.provider ? [options.provider.id] : undefined;
+    ModelSelector.open(currentModel, setCurrentModel, allowedProviders);
   }
 
   return {

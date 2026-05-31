@@ -10,15 +10,14 @@ import {
   defaultConvertToLlm,
   ApiKeyPromptDialog,
   CustomProvidersStore,
-  CustomProvider,
   ModelSelector,
 } from '@mariozechner/pi-web-ui';
 
 import './app.css';
 import { DetailedHTMLProps, HTMLAttributes, useEffect, useRef } from 'react';
-import { PROVIDER } from './pi-provider';
+import { PROVIDER, type GlassCustomProvider } from './pi-provider';
 
-function setupStorage(options: { provider?: CustomProvider, settings?: Record<string, any> }) {
+function setupStorage(options: { provider?: GlassCustomProvider, settings?: Record<string, any> }) {
     const settings = new SettingsStore();
     const providerKeys = new ProviderKeysStore();
     const sessions = new SessionsStore();
@@ -49,6 +48,9 @@ function setupStorage(options: { provider?: CustomProvider, settings?: Record<st
 
     if (options.provider) {
         customProvider.set(options.provider)
+        for (const [providerId, apiKey] of Object.entries(options.provider.apiKeys || {})) {
+            providerKeys.set(providerId, apiKey)
+        }
     }
 
     const storage = new AppStorage(settings, providerKeys, sessions, customProvider, backend);
@@ -58,20 +60,33 @@ function setupStorage(options: { provider?: CustomProvider, settings?: Record<st
 }
 
 type DivProps = DetailedHTMLProps<HTMLAttributes<HTMLDivElement>, HTMLDivElement>
-
-export default function PiWeb(props: DivProps & {
+type PiWebProps = DivProps & {
     settings?: Record<string, any>
-    provider?: CustomProvider
+    provider?: GlassCustomProvider
     systemPrompt?: string
     thinkingLevel?: ThinkingLevel
-}) {
+    params?: unknown
+    searchParams?: unknown
+}
+
+export default function PiWeb(props: PiWebProps) {
+    const {
+        className,
+        params: _params,
+        provider = PROVIDER,
+        searchParams: _searchParams,
+        settings,
+        style,
+        systemPrompt,
+        thinkingLevel,
+        ...divProps
+    } = props
     const div = useRef<null | HTMLDivElement>(null)
     useEffect(() => {
         if (!div.current) {
             return () => { }
         }
 
-        const { settings, provider = PROVIDER, systemPrompt, thinkingLevel } = props
         setupStorage({ settings, provider })
         const agent = new Agent({
             initialState: {
@@ -85,8 +100,11 @@ export default function PiWeb(props: DivProps & {
         });
 
         const chatPanel = new ChatPanel()
+        const allowedProviders = provider?.models?.length
+            ? Array.from(new Set(provider.models.map(model => model.provider)))
+            : provider ? [provider.id] : undefined
         chatPanel.setAgent(agent, {
-            onModelSelect: () => ModelSelector.open(agent.state.model, model => agent.setModel(model), ['moonshot']),
+            onModelSelect: () => ModelSelector.open(agent.state.model, model => agent.setModel(model), allowedProviders),
             onApiKeyRequired: provider => ApiKeyPromptDialog.prompt(provider),
         })
 
@@ -96,6 +114,15 @@ export default function PiWeb(props: DivProps & {
             agent.abort()
         }
     }, [])
-    return <div ref={ div } { ...props }></div>
+    return (
+        <div
+            ref={ div }
+            className={ [
+                'fixed inset-x-0 bottom-0 flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground',
+                className,
+            ].filter(Boolean).join(' ') }
+            style={ style }
+            { ...divProps }
+        ></div>
+    )
 }
-

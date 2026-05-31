@@ -15,7 +15,7 @@ test("createAddBenchmarkTableRequest posts the benchmark table shortcut payload"
         motion: "static",
         placement: {
           kind: "floor_at_xy",
-          xy: [0.5, 0],
+          xy: [0.45, 0],
           z_offset: 0,
           yaw: 0,
         },
@@ -25,7 +25,7 @@ test("createAddBenchmarkTableRequest posts the benchmark table shortcut payload"
         placement: {
           kind: "on_top_of_body",
           body: "Scene_benchmark_table_000_01",
-          xy: [0.34, 0.24],
+          xy: [0.20, 0.24],
           gap: 0,
           yaw: 0,
         },

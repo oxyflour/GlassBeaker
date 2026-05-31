@@ -1,6 +1,5 @@
 import {
   AppStorage,
-  type CustomProvider,
   CustomProvidersStore,
   IndexedDBStorageBackend,
   ProviderKeysStore,
@@ -10,8 +9,10 @@ import {
 } from "@mariozechner/pi-web-ui";
 import { useEffect, useRef } from "react";
 
+import type { GlassCustomProvider } from "../pi-provider";
+
 type StorageOptions = {
-  provider?: CustomProvider;
+  provider?: GlassCustomProvider;
   settings?: Record<string, any>;
 };
 
@@ -43,6 +44,9 @@ function setupStorage(options: StorageOptions) {
 
   if (options.provider) {
     customProvider.set(options.provider);
+    for (const [providerId, apiKey] of Object.entries(options.provider.apiKeys || {})) {
+      providerKeys.set(providerId, apiKey);
+    }
   }
 
   const storage = new AppStorage(settings, providerKeys, sessions, customProvider, backend);

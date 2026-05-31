@@ -1,15 +1,22 @@
-import { CustomProvider } from "@mariozechner/pi-web-ui"
+import type { CustomProvider } from "@mariozechner/pi-web-ui"
+
+export type GlassCustomProvider = CustomProvider & {
+    apiKeys?: Record<string, string>
+}
 
 export const PROVIDER = {
     id: 'moonshot',
     name: 'moonshot',
     baseUrl: 'http://localhost:13000/cors/moonshot/v1',
     type: 'openai-completions',
+    apiKeys: {
+        hermes: 'sk-1234',
+    },
     models: [{
         id: 'hermes',
         name: 'Hermes',
         api: 'openai-completions',
-        provider: 'moonshot',
+        provider: 'hermes',
         baseUrl: 'http://localhost:13000/cors/hermes/v1',
         reasoning: true,
         input: ['text'],
@@ -38,4 +45,4 @@ export const PROVIDER = {
             cacheWrite: 0,
         }
     }]
-} satisfies CustomProvider
+} satisfies GlassCustomProvider

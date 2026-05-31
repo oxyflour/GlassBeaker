@@ -3,7 +3,6 @@
 import "@mariozechner/pi-web-ui";
 
 import type {
-  CustomProvider,
   ThinkingLevel,
 } from "@mariozechner/pi-web-ui";
 import type { DetailedHTMLProps, HTMLAttributes } from "react";
@@ -18,11 +17,11 @@ import { usePiSession } from "./pi/session";
 import { usePiStorage } from "./pi/storage";
 import { usePiToolCallCollapse } from "./pi/tool-call-collapse";
 import { classNames } from "./pi/utils";
-import { PROVIDER } from "./pi-provider";
+import { PROVIDER, type GlassCustomProvider } from "./pi-provider";
 
 type DivProps = DetailedHTMLProps<HTMLAttributes<HTMLDivElement>, HTMLDivElement>;
 type PiProps = DivProps & {
-  provider?: CustomProvider;
+  provider?: GlassCustomProvider;
   settings?: Record<string, any>;
   systemPrompt?: string;
   thinkingLevel?: ThinkingLevel;

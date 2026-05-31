@@ -136,6 +136,7 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
         API_SERVER_HOST: '127.0.0.1',
         API_SERVER_PORT: '13002',
         API_SERVER_KEY: 'sk-1234',
+        API_SERVER_CORS_ORIGINS: `http://localhost:${nextJsPort},http://127.0.0.1:${nextJsPort}`,
         GATEWAY_ALLOW_ALL_USERS: 'true',
     })
 
