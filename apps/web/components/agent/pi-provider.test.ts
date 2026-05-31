@@ -61,3 +61,24 @@ test("desktop does not inherit messaging platform credentials into embedded Herm
   assert.match(source, /SLACK_/);
   assert.match(source, /delete hermesEnv\[key\]/);
 });
+
+test("desktop starts Next before waiting for the Python runtime", async () => {
+  const source = await readFile(new URL("../../../desktop/src/main.cjs", import.meta.url), "utf8");
+  const nextForkIndex = source.indexOf("utilityProcess.fork");
+  const runtimeWaitIndex = source.indexOf("assertUrl(`http://127.0.0.1:${pythonPort}/runtime`)");
+
+  assert.notEqual(nextForkIndex, -1);
+  assert.notEqual(runtimeWaitIndex, -1);
+  assert.ok(nextForkIndex < runtimeWaitIndex);
+  assert.match(source, /Promise\.all\(\[/);
+  assert.doesNotMatch(source, /API_RUNTIME:\s*apiRuntime/);
+});
+
+test("CopilotKit route loads the Python runtime after Next has started", async () => {
+  const source = await readFile(new URL("../../app/api/copilotkit/route.ts", import.meta.url), "utf8");
+
+  assert.match(source, /async function getRuntime/);
+  assert.match(source, /fetch\(new URL\(["']runtime["'],/);
+  assert.match(source, /status:\s*503/);
+  assert.doesNotMatch(source, /JSON\.parse\(process\.env\.API_RUNTIME/);
+});

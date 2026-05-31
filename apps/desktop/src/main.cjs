@@ -225,21 +225,26 @@ async function startServer(nextJsPort = 13000, pythonPort = 13001) {
         GATEWAY_ALLOW_ALL_USERS: 'true',
     }, { env: hermesEnv })
 
-    const apiRuntime = await assertUrl(`http://127.0.0.1:${pythonPort}/runtime`)
-    console.log(`[main] RUNTIME: ${apiRuntime}`)
-
-    const nextjs = utilityProcess.fork(path.join(root, 'web/node_modules/next/dist/bin/next'), [
+    const url = `http://localhost:${nextJsPort}`,
+        nextjs = utilityProcess.fork(path.join(root, 'web/node_modules/next/dist/bin/next'), [
         '-p', `${nextJsPort}`
     ], {
-        env: { ...process.env, API_REWRITE: `http://127.0.0.1:${pythonPort}/`, API_RUNTIME: apiRuntime, GLASSBEAKER_HERMES_PORT: `${hermesPort}` },
+        env: {
+            ...process.env,
+            API_REWRITE: `http://127.0.0.1:${pythonPort}/`,
+            GLASSBEAKER_HERMES_PORT: `${hermesPort}`,
+        },
         cwd: path.join(root, 'web'),
         stdio: "pipe"
-    });
+    })
     // @ts-ignore
     watchProc('nextjs', nextjs)
 
-    const url = `http://localhost:${nextJsPort}`
-    await assertUrl(url)
+    const [apiRuntime] = await Promise.all([
+        assertUrl(`http://127.0.0.1:${pythonPort}/runtime`),
+        assertUrl(url),
+    ])
+    console.log(`[main] RUNTIME: ${apiRuntime}`)
     return url
 }
 

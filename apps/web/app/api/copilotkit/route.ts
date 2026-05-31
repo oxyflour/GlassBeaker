@@ -23,14 +23,43 @@ const builtin = new BuiltInAgent({
   ].join("\n\n")
 });
 
-const agents = { } as Record<string, AbstractAgent>
-for (const { path, name } of JSON.parse(process.env.API_RUNTIME || '{}').agents || []) {
-  agents[name] = new LangGraphHttpAgent({ url: `${process.env.API_REWRITE}${path.slice(1)}` })
-}
-agents.default = Object.values(agents)[0]
-agents.builtin = builtin
+type PythonRuntime = {
+  agents?: Array<{ path?: string; name?: string }>;
+};
 
-const runtime = new CopilotRuntime({ agents });
+let runtimePromise: Promise<CopilotRuntime> | null = null;
+
+async function fetchPythonRuntime(): Promise<PythonRuntime> {
+  const response = await fetch(new URL("runtime", process.env.API_REWRITE || "http://localhost:13001/"));
+  if (!response.ok) {
+    throw new Error(`Python runtime returned ${response.status}: ${await response.text()}`);
+  }
+  return await response.json() as PythonRuntime;
+}
+
+function createRuntime(apiRuntime: PythonRuntime): CopilotRuntime {
+  const agents = {} as Record<string, AbstractAgent>;
+  for (const { path, name } of apiRuntime.agents || []) {
+    if (path && name) {
+      agents[name] = new LangGraphHttpAgent({
+        url: new URL(path, process.env.API_REWRITE || "http://localhost:13001/").toString(),
+      });
+    }
+  }
+  agents.default = Object.values(agents)[0] || builtin;
+  agents.builtin = builtin;
+  return new CopilotRuntime({ agents });
+}
+
+async function getRuntime(): Promise<CopilotRuntime> {
+  runtimePromise ??= fetchPythonRuntime()
+    .then(createRuntime)
+    .catch((error) => {
+      runtimePromise = null;
+      throw error;
+    });
+  return await runtimePromise;
+}
 
 export const POST = async (request: NextRequest) => {
   if (!process.env.OPENAI_API_KEY?.trim()) {
@@ -39,6 +68,17 @@ export const POST = async (request: NextRequest) => {
         error: "Missing OPENAI_API_KEY. Add it to apps/web/.env.local before using CopilotKit."
       },
       { status: 500 }
+    );
+  }
+
+  let runtime: CopilotRuntime;
+  try {
+    runtime = await getRuntime();
+  } catch (error) {
+    console.warn("Python runtime is not ready", error);
+    return Response.json(
+      { error: "Python runtime is not ready" },
+      { status: 503 }
     );
   }
 

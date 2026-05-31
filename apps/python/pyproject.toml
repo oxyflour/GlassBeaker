@@ -27,6 +27,7 @@ dependencies = [
   "trimesh>=4.11.5",
   "pyspacemouse>=2.0.0",
   "websockets>=16.0",
+  "shapely>=2.1.2",
 ]
 
 [tool.uv.sources]

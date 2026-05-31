@@ -10,7 +10,7 @@
 - DO NOT write tests for unnecessary feature changes
 
 # Coding styles
-- Try to limit content of each file in 200 lines
+- Try to limit content of each file in 200 lines，except for documents or plans
 - Try to limit public member of each class in 10
 - Avoid single-use wrappers and helpers. Keep simple control flow inline unless extraction removes real complexity or creates a reusable pure contract.
 
