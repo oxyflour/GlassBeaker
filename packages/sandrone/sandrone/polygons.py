@@ -7,6 +7,7 @@ from .types import CopperPolygon, Point, Scenario
 SMOOTH_RADIUS = 0.15
 COPPER_INSET = 0.48
 MIN_COPPER_GAP = 0.48
+MIN_OUTPUT_COPPER_AREA = 10.0
 SIMPLIFY_TOLERANCE = 0.55
 
 
@@ -35,7 +36,7 @@ def build_copper_polygons(
 
     polygons: list[CopperPolygon] = []
     for geom in geoms:
-        if geom.is_empty or not isinstance(geom, Polygon):
+        if geom.is_empty or not isinstance(geom, Polygon) or geom.area < MIN_OUTPUT_COPPER_AREA:
             continue
         polygons.append(
             CopperPolygon(

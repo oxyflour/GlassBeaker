@@ -6,16 +6,27 @@ from shapely.geometry import Point as GeometryPoint, Polygon
 from shapely.ops import unary_union
 
 from .polygons import MIN_COPPER_GAP, build_copper_polygons
-from .types import Layout, Point, Scenario, ValidationReport
+from .types import (
+    CopperPolygon,
+    LayerPlan,
+    Layout,
+    Point,
+    PowerGroup,
+    Scenario,
+    ValidationReport,
+)
 
 
 DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 CELL_GROWTH_CLEARANCE = 0
 
 
-def generate_power_copper_shapes(scenario: Scenario) -> Layout:
+def generate_power_copper_shapes(scenario: Scenario, plan: LayerPlan | None = None) -> Layout:
+    plan = _default_layer_plan(scenario) if plan is None else plan
+    _validate_layer_plan(scenario, plan)
+
     layer_maps: dict[str, dict[Point, str]] = {}
-    group_cells: dict[str, set[Point]] = defaultdict(set)
+    group_cells: dict[str, dict[str, set[Point]]] = defaultdict(lambda: defaultdict(set))
 
     for layer in scenario.layers:
         blocked = set(scenario.keepouts.get(layer, frozenset()))
@@ -23,8 +34,13 @@ def generate_power_copper_shapes(scenario: Scenario) -> Layout:
         anchors: dict[str, Point] = {}
         heap: list[tuple[int, str, Point]] = []
 
-        for group in (item for item in scenario.groups if item.layer == layer):
-            seed = _connected_seed([pin.point for pin in group.pins], scenario, blocked, group.group_id)
+        for group in _groups_for_layer(scenario, plan, layer):
+            seed = _connected_seed(
+                [pin.point for pin in group.pins],
+                scenario,
+                blocked,
+                group.group_id,
+            )
             anchors[group.group_id] = _centroid(seed)
             for cell in seed:
                 if cell in blocked:
@@ -54,22 +70,76 @@ def generate_power_copper_shapes(scenario: Scenario) -> Layout:
 
         layer_maps[layer] = owner
         for cell, group_id in owner.items():
-            group_cells[group_id].add(cell)
+            group_cells[group_id][layer].add(cell)
 
-    final_cells = {group.group_id: frozenset(group_cells[group.group_id]) for group in scenario.groups}
+    final_cells = {
+        group.group_id: {
+            layer: frozenset(cells)
+            for layer, cells in group_cells[group.group_id].items()
+        }
+        for group in scenario.groups
+    }
     return Layout(
         layers=layer_maps,
         group_cells=final_cells,
-        group_polygons={
-            group.group_id: build_copper_polygons(
-                group.group_id,
-                group.layer,
-                final_cells[group.group_id],
-                scenario,
-            )
-            for group in scenario.groups
-        },
+        group_polygons=_build_group_polygons(scenario, final_cells),
     )
+
+
+def _default_layer_plan(scenario: Scenario) -> LayerPlan:
+    return LayerPlan(
+        {
+            group.group_id: (scenario.layers[index % len(scenario.layers)],)
+            for index, group in enumerate(scenario.groups)
+        }
+    )
+
+
+def _validate_layer_plan(scenario: Scenario, plan: LayerPlan) -> None:
+    group_ids = {group.group_id for group in scenario.groups}
+    planned_group_ids = set(plan.group_layers)
+    missing = group_ids - planned_group_ids
+    unknown = planned_group_ids - group_ids
+    if missing:
+        raise ValueError(f"Layer plan is missing groups: {', '.join(sorted(missing))}")
+    if unknown:
+        raise ValueError(f"Layer plan has unknown groups: {', '.join(sorted(unknown))}")
+
+    layer_ids = set(scenario.layers)
+    for group_id, layers in plan.group_layers.items():
+        if not layers:
+            raise ValueError(f"Layer plan gives {group_id} no layers")
+        if len(layers) != len(set(layers)):
+            raise ValueError(f"Layer plan repeats a layer for {group_id}")
+        unknown_layers = set(layers) - layer_ids
+        if unknown_layers:
+            raise ValueError(
+                f"Layer plan gives {group_id} unknown layers: "
+                f"{', '.join(sorted(unknown_layers))}"
+            )
+
+
+def _groups_for_layer(scenario: Scenario, plan: LayerPlan, layer: str) -> list[PowerGroup]:
+    return [
+        group
+        for group in scenario.groups
+        if layer in plan.group_layers[group.group_id]
+    ]
+
+
+def _build_group_polygons(
+    scenario: Scenario,
+    final_cells: dict[str, dict[str, frozenset[Point]]],
+) -> dict[str, tuple[CopperPolygon, ...]]:
+    polygons: dict[str, tuple[CopperPolygon, ...]] = {}
+    for group in scenario.groups:
+        group_polygons = []
+        for layer, cells in final_cells[group.group_id].items():
+            group_polygons.extend(
+                build_copper_polygons(group.group_id, layer, cells, scenario)
+            )
+        polygons[group.group_id] = tuple(group_polygons)
+    return polygons
 
 
 def validate_layout(scenario: Scenario, layout: Layout) -> ValidationReport:
@@ -83,28 +153,44 @@ def validate_layout(scenario: Scenario, layout: Layout) -> ValidationReport:
                 errors.append(f"{group_id} violates clearance on {layer} at {cell}")
 
     for group in scenario.groups:
-        cells = layout.group_cells.get(group.group_id, frozenset())
-        if not cells:
+        cells_by_layer = layout.group_cells.get(group.group_id, {})
+        if not cells_by_layer:
             errors.append(f"{group.group_id} has no copper cells")
             continue
-        if not _is_connected(cells):
-            errors.append(f"{group.group_id} copper is fragmented")
-        for pin in group.pins:
-            if pin.point not in cells:
-                errors.append(f"{group.group_id} does not cover {pin.pin_id} at {pin.point}")
-        for cell in cells:
-            if _touches_foreign_via(scenario, cell, group.group_id):
-                errors.append(f"{group.group_id} touches a foreign via column at {cell}")
+        for layer, cells in cells_by_layer.items():
+            if not _is_connected(cells):
+                errors.append(f"{group.group_id} copper is fragmented on {layer}")
+            for pin in group.pins:
+                if pin.point not in cells:
+                    errors.append(
+                        f"{group.group_id} does not cover {pin.pin_id} on {layer} at {pin.point}"
+                    )
+            for cell in cells:
+                if _touches_foreign_via(scenario, cell, group.group_id):
+                    errors.append(f"{group.group_id} touches a foreign via column on {layer} at {cell}")
+        if len(cells_by_layer) > 1 and not _has_common_pin_bridge(group, cells_by_layer):
+            errors.append(f"{group.group_id} has no common pin via connecting assigned layers")
+
         polygons = layout.group_polygons.get(group.group_id, tuple())
         if not polygons:
             errors.append(f"{group.group_id} has no output polygon")
             continue
-        if len(polygons) > 1:
-            errors.append(f"{group.group_id} polygon output is fragmented")
-        shape = unary_union([Polygon(polygon.exterior, polygon.holes) for polygon in polygons])
-        for pin in group.pins:
-            if not shape.covers(GeometryPoint(pin.x, pin.y)):
-                errors.append(f"{group.group_id} polygon misses {pin.pin_id} at {pin.point}")
+        polygons_by_layer: dict[str, list[Polygon]] = defaultdict(list)
+        for polygon in polygons:
+            polygons_by_layer[polygon.layer].append(Polygon(polygon.exterior, polygon.holes))
+        for layer in cells_by_layer:
+            layer_polygons_for_group = polygons_by_layer.get(layer, [])
+            if not layer_polygons_for_group:
+                errors.append(f"{group.group_id} has no output polygon on {layer}")
+                continue
+            if len(layer_polygons_for_group) > 1:
+                errors.append(f"{group.group_id} polygon output is fragmented on {layer}")
+            shape = unary_union(layer_polygons_for_group)
+            for pin in group.pins:
+                if not shape.covers(GeometryPoint(pin.x, pin.y)):
+                    errors.append(
+                        f"{group.group_id} polygon misses {pin.pin_id} on {layer} at {pin.point}"
+                    )
 
     layer_polygons: dict[str, list[tuple[str, Polygon]]] = defaultdict(list)
     for group_id, polygons in layout.group_polygons.items():
@@ -122,6 +208,13 @@ def validate_layout(scenario: Scenario, layout: Layout) -> ValidationReport:
                 )
 
     return ValidationReport(errors)
+
+
+def _has_common_pin_bridge(group: PowerGroup, cells_by_layer: dict[str, frozenset[Point]]) -> bool:
+    return any(
+        all(pin.point in cells for cells in cells_by_layer.values())
+        for pin in group.pins
+    )
 
 
 def _connected_seed(points: list[Point], scenario: Scenario, blocked: set[Point], group_id: str) -> set[Point]:

@@ -26,14 +26,13 @@ def save_layer_contact_sheet(scenario: Scenario, layout: Layout, path: Path) -> 
 
     for ax, layer in zip(axes_flat, scenario.layers):
         ax.set_facecolor("#f7f7f7")
-        for group in scenario.groups:
-            if group.layer != layer:
-                continue
-            for polygon in layout.group_polygons.get(group.group_id, tuple()):
-                ax.add_patch(_polygon_patch(polygon, colors[group.group_id]))
+        for group_id, polygons in layout.group_polygons.items():
+            for polygon in polygons:
+                if polygon.layer == layer:
+                    ax.add_patch(_polygon_patch(polygon, colors[group_id]))
         _draw_keepouts(ax, scenario, layer)
         _draw_pins(ax, scenario, colors)
-        ax.set_title(_layer_title(scenario, layer), fontsize=10)
+        ax.set_title(_layer_title(scenario, layout, layer), fontsize=10)
         ax.set_xlim(-0.5, scenario.width - 0.5)
         ax.set_ylim(scenario.height - 0.5, -0.5)
         ax.set_xticks([])
@@ -43,7 +42,7 @@ def save_layer_contact_sheet(scenario: Scenario, layout: Layout, path: Path) -> 
         ax.axis("off")
 
     fig.suptitle(
-        f"{scenario.name}: 30 groups, 100 pins, {len(scenario.layers)} intermediate copper layers",
+        f"{scenario.name}: 30 groups, {len(scenario.pins)} pins, {len(scenario.layers)} intermediate copper layers",
         fontsize=15,
     )
     fig.legend(
@@ -122,8 +121,14 @@ def _ring_path(ring: tuple[tuple[float, float], ...]) -> PlotPath:
     return PlotPath(ring, codes)
 
 
-def _layer_title(scenario: Scenario, layer: str) -> str:
-    groups = [group for group in scenario.groups if group.layer == layer]
+def _layer_title(scenario: Scenario, layout: Layout, layer: str) -> str:
+    group_ids = {
+        polygon.group_id
+        for polygons in layout.group_polygons.values()
+        for polygon in polygons
+        if polygon.layer == layer
+    }
+    groups = [group for group in scenario.groups if group.group_id in group_ids]
     return f"{layer}: " + ", ".join(f"{group.marker}={group.group_id}" for group in groups)
 
 

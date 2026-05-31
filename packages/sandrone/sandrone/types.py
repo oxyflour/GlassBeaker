@@ -24,8 +24,12 @@ class Pin:
 class PowerGroup:
     group_id: str
     marker: str
-    layer: str
     pins: tuple[Pin, ...]
+
+
+@dataclass(frozen=True)
+class LayerPlan:
+    group_layers: dict[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -56,7 +60,7 @@ class Scenario:
 @dataclass(frozen=True)
 class Layout:
     layers: dict[str, dict[Point, str]]
-    group_cells: dict[str, frozenset[Point]]
+    group_cells: dict[str, dict[str, frozenset[Point]]]
     group_polygons: dict[str, tuple["CopperPolygon", ...]]
 
 

@@ -77,29 +77,37 @@ def _make_shape(
 
 
 def _random_polygon(rng: Random, width: int, height: int):
-    cx = rng.randint(18, width - 18)
-    cy = rng.randint(12, height - 12)
-    half_w = rng.randint(4, 10)
-    half_h = rng.randint(3, 8)
-    skew = rng.randint(-3, 3)
-    return Polygon(
-        (
-            (cx - half_w, cy - half_h),
-            (cx + half_w, cy - half_h + skew),
-            (cx + half_w - skew, cy + half_h),
-            (cx - half_w - skew, cy + half_h - skew),
-        )
-    )
+    x1 = rng.randint(12, width - 28)
+    y1 = rng.randint(10, height - 20)
+    x2 = x1 + rng.randint(8, 18)
+    y2 = y1 + rng.randint(6, 16)
+    if rng.random() < 0.55:
+        return box(x1, y1, x2, y2)
+
+    chamfer = min(rng.randint(2, 5), (x2 - x1) // 2, (y2 - y1) // 2)
+    corner = rng.choice(("top-left", "top-right", "bottom-right", "bottom-left"))
+    if corner == "top-left":
+        points = [(x1 + chamfer, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1 + chamfer)]
+    elif corner == "top-right":
+        points = [(x1, y1), (x2 - chamfer, y1), (x2, y1 + chamfer), (x2, y2), (x1, y2)]
+    elif corner == "bottom-right":
+        points = [(x1, y1), (x2, y1), (x2, y2 - chamfer), (x2 - chamfer, y2), (x1, y2)]
+    else:
+        points = [(x1, y1), (x2, y1), (x2, y2), (x1 + chamfer, y2), (x1, y2 - chamfer)]
+    return Polygon(points)
 
 
 def _random_wire(rng: Random, width: int, height: int):
     x1 = rng.randint(8, width - 34)
     y1 = rng.randint(8, height - 8)
-    x2 = min(width - 8, x1 + rng.randint(18, 38))
-    y2 = max(8, min(height - 8, y1 + rng.randint(-16, 16)))
-    x3 = max(8, min(width - 8, x2 + rng.randint(-8, 24)))
-    y3 = max(8, min(height - 8, y2 + rng.randint(-16, 16)))
-    return LineString(((x1, y1), (x2, y2), (x3, y3))).buffer(
+    direction = rng.choice(((1, 0), (0, 1), (1, 1), (1, -1)))
+    length = rng.randint(18, 42)
+    x2 = x1 + direction[0] * length
+    y2 = y1 + direction[1] * length
+    if not (8 <= x2 <= width - 8 and 8 <= y2 <= height - 8):
+        x2 = min(width - 8, x1 + length)
+        y2 = y1
+    return LineString(((x1, y1), (x2, y2))).buffer(
         rng.uniform(0.8, 1.5),
         cap_style=2,
         join_style=2,

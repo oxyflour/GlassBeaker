@@ -5,12 +5,13 @@ from .types import Layout, Pin, Point, Scenario
 
 def render_layer(scenario: Scenario, layout: Layout, layer: str, all_pins: bool = True) -> str:
     owner = layout.layers[layer]
+    group_ids = _group_ids_on_layer(layout, layer)
     pins = scenario.pins if all_pins else tuple(
-        pin for group in scenario.groups if group.layer == layer for pin in group.pins
+        pin for pin in scenario.pins if pin.group_id in group_ids
     )
     pin_points = {pin.point for pin in pins}
     markers = {group.group_id: group.marker for group in scenario.groups}
-    groups = [group for group in scenario.groups if group.layer == layer]
+    groups = [group for group in scenario.groups if group.group_id in group_ids]
     legend = " ".join(f"{group.marker}={group.group_id}" for group in groups)
     lines = [f"Layer {layer}  {legend}"]
 
@@ -47,6 +48,15 @@ def render_scenario(scenario: Scenario, layout: Layout) -> str:
         report_lines.append(render_layer(scenario, layout, layer))
         report_lines.append("")
     return "\n".join(report_lines)
+
+
+def _group_ids_on_layer(layout: Layout, layer: str) -> set[str]:
+    return {
+        polygon.group_id
+        for polygons in layout.group_polygons.values()
+        for polygon in polygons
+        if polygon.layer == layer
+    }
 
 
 def _pin_catalog(pins: list[Pin]) -> str:

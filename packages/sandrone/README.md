@@ -24,6 +24,28 @@ maintain clearance between different groups
 
 ---
 
+## Run 3-Layer Agent Test
+
+Run the LLM-backed 3-layer balanced case with the settings from `apps/desktop/.env`:
+
+```powershell
+uv run --project apps/python python packages/sandrone/run_3layer_agent_test.py --pins 200 --planner llm --rounds 1 --candidates 1 --out packages/sandrone/out/llm-agent-3layer.png
+```
+
+Run the same script without an LLM call:
+
+```powershell
+uv run --project apps/python python packages/sandrone/run_3layer_agent_test.py --pins 200 --planner heuristic --rounds 1 --candidates 1
+```
+
+Run the 10-layer balanced case:
+
+```powershell
+uv run --project apps/python python packages/sandrone/run_3layer_agent_test.py --layers 10 --pins 200 --planner llm --rounds 1 --candidates 1 --out packages/sandrone/out/llm-agent-10layer.png
+```
+
+---
+
 ## Correct Mental Model
 
 Treat each group as a power net.
