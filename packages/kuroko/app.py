@@ -172,6 +172,16 @@ def validate_polarization_mode(polarization_mode: str) -> str:
     return polarization_mode
 
 
+def terminal_yaw_from_form(terminal_pose_mode: str, terminal_pose_angle_deg: float | None) -> float | None:
+    if terminal_pose_mode not in TERMINAL_POSE_MODES:
+        raise HTTPException(400, "Invalid terminal pose mode")
+    if terminal_pose_mode != "fixed_angle":
+        return None
+    if terminal_pose_angle_deg is None or not math.isfinite(terminal_pose_angle_deg):
+        raise HTTPException(400, "Terminal pose angle is required")
+    return float(terminal_pose_angle_deg)
+
+
 def local_gain_linear(pattern: FarFieldPattern, polarization_mode: str = "cross") -> np.ndarray:
     if polarization_mode == "vertical":
         return np.abs(pattern.etheta)
@@ -180,9 +190,14 @@ def local_gain_linear(pattern: FarFieldPattern, polarization_mode: str = "cross"
     return np.sqrt(np.abs(pattern.etheta) ** 2 + np.abs(pattern.ephi) ** 2)
 
 
-def gain_heatmap_payload(pattern: FarFieldPattern, port_index: int, polarization_mode: str) -> dict[str, Any]:
+def gain_heatmap_payload(
+    pattern: FarFieldPattern,
+    port_index: int,
+    polarization_mode: str,
+    channel_clusters: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     gain_db = 20.0 * np.log10(np.maximum(local_gain_linear(pattern, polarization_mode), 1e-12))
-    return {
+    payload = {
         "mode": "gain_db",
         "port_index": port_index,
         "polarization_mode": polarization_mode,
@@ -190,6 +205,9 @@ def gain_heatmap_payload(pattern: FarFieldPattern, port_index: int, polarization
         "phi": pattern.phi_unique.tolist(),
         "z": heatmap_from_samples(pattern, gain_db),
     }
+    if channel_clusters:
+        payload["channel_clusters"] = channel_clusters
+    return payload
 
 
 def heatmap_from_samples(pattern: FarFieldPattern, values: np.ndarray) -> list[list[float | None]]:
@@ -330,6 +348,47 @@ def build_realizations(patterns: list[FarFieldPattern], channel_data: dict[str, 
 
     rng = np.random.default_rng(12345)
     return [build_cdl_snapshot_data(patterns, channel_data, rng) for _ in range(num_snapshots)]
+
+
+def channel_cluster_points(channel_data: dict[str, Any], terminal_yaw_deg: float | None) -> list[dict[str, Any]]:
+    if terminal_yaw_deg is None:
+        return []
+    yaw = float(terminal_yaw_deg)
+    mode = parse_channel_model(channel_data)
+    points: list[dict[str, Any]] = []
+
+    if mode == "snapshots":
+        snapshots = channel_data.get("snapshots", [channel_data])
+        for snapshot_index, snapshot in enumerate(snapshots):
+            for path_index, path in enumerate(snapshot.get("paths", [])):
+                theta = float(path.get("aoa_theta_deg", path.get("theta_deg")))
+                phi = float(path.get("aoa_phi_deg", path.get("phi_deg")))
+                energy = float(abs(path_gain(path)) ** 2)
+                label = f"snapshot {snapshot_index} path {path_index}" if len(snapshots) > 1 else f"path {path_index}"
+                points.append({
+                    "theta": theta,
+                    "phi": phi % 360.0,
+                    "local_phi": (phi - yaw) % 360.0,
+                    "energy": energy,
+                    "label": label,
+                })
+        return points
+
+    aoa = np.asarray(channel_data["aoa"], dtype=float)
+    zoa = np.asarray(channel_data["zoa"], dtype=float)
+    powers = np.asarray(channel_data["powers"], dtype=float)
+    if np.min(powers) < 0 or np.max(powers) > 2.0:
+        powers = _db_to_linear_power(powers)
+    powers = powers / max(np.sum(powers), 1e-15)
+    for cluster_index, (phi, theta, energy) in enumerate(zip(aoa.tolist(), zoa.tolist(), powers.tolist())):
+        points.append({
+            "theta": float(theta),
+            "phi": float(phi) % 360.0,
+            "local_phi": (float(phi) - yaw) % 360.0,
+            "energy": float(energy),
+            "label": f"cluster {cluster_index}",
+        })
+    return points
 
 
 def horizontal_rotation_angles(pattern: FarFieldPattern) -> np.ndarray:
@@ -497,8 +556,11 @@ async def upload(
     ffs_files: list[UploadFile] = File(...),
     channel_file: UploadFile = File(...),
     polarization_mode: str = Form("cross"),
+    terminal_pose_mode: str = Form("horizontal_scan"),
+    terminal_pose_angle_deg: float | None = Form(None),
 ):
     polarization_mode = validate_polarization_mode(polarization_mode)
+    terminal_yaw_deg = terminal_yaw_from_form(terminal_pose_mode, terminal_pose_angle_deg)
     if not ffs_files:
         raise HTTPException(400, "Please upload at least one .ffs file")
     if not channel_file.filename.lower().endswith(".json"):
@@ -534,8 +596,9 @@ async def upload(
         "channel_name": channel_file.filename,
     }
 
+    clusters = channel_cluster_points(channel_json, terminal_yaw_deg)
     initial_heatmaps = [
-        gain_heatmap_payload(pat, port_index, polarization_mode)
+        gain_heatmap_payload(pat, port_index, polarization_mode, clusters)
         for port_index, pat in enumerate(patterns)
     ]
     return {
@@ -550,15 +613,23 @@ async def upload(
 
 
 @app.get("/api/heatmap/{session_id}")
-def get_gain_heatmap(session_id: str, port_index: int = 0, polarization_mode: str = "cross"):
+def get_gain_heatmap(
+    session_id: str,
+    port_index: int = 0,
+    polarization_mode: str = "cross",
+    terminal_pose_mode: str = "horizontal_scan",
+    terminal_pose_angle_deg: float | None = None,
+):
     polarization_mode = validate_polarization_mode(polarization_mode)
+    terminal_yaw_deg = terminal_yaw_from_form(terminal_pose_mode, terminal_pose_angle_deg)
     if session_id not in SESSIONS:
         raise HTTPException(404, "Session not found")
     sess = SESSIONS[session_id]
     patterns: list[FarFieldPattern] = sess["patterns"]
     if port_index < 0 or port_index >= len(patterns):
         raise HTTPException(400, "Invalid port index")
-    return gain_heatmap_payload(patterns[port_index], port_index, polarization_mode)
+    clusters = channel_cluster_points(sess["channel"], terminal_yaw_deg)
+    return gain_heatmap_payload(patterns[port_index], port_index, polarization_mode, clusters)
 
 
 @app.post("/api/gradient/{session_id}")
@@ -572,13 +643,7 @@ def gradient(
     terminal_pose_angle_deg: float | None = Form(None),
 ):
     polarization_mode = validate_polarization_mode(polarization_mode)
-    if terminal_pose_mode not in TERMINAL_POSE_MODES:
-        raise HTTPException(400, "Invalid terminal pose mode")
-    terminal_yaw_deg = None
-    if terminal_pose_mode == "fixed_angle":
-        if terminal_pose_angle_deg is None or not math.isfinite(terminal_pose_angle_deg):
-            raise HTTPException(400, "Terminal pose angle is required")
-        terminal_yaw_deg = terminal_pose_angle_deg
+    terminal_yaw_deg = terminal_yaw_from_form(terminal_pose_mode, terminal_pose_angle_deg)
 
     if session_id not in SESSIONS:
         raise HTTPException(404, "Session not found")
@@ -601,6 +666,7 @@ def gradient(
         terminal_yaw_deg=terminal_yaw_deg,
     )
     pat = patterns[port_index]
+    clusters = channel_cluster_points(sess["channel"], terminal_yaw_deg)
 
     return {
         "mode": "gradient_abs_dmi_dgain",
@@ -618,6 +684,7 @@ def gradient(
         "grad_log_abs": heatmap_from_samples(pat, result["grad_log_abs"]),
         "mi_max": heatmap_from_samples(pat, result["mi_max"]),
         "mi_min": heatmap_from_samples(pat, result["mi_min"]),
+        "channel_clusters": clusters,
         "mi_values": result["mi_values"].tolist(),
         "stats": summary_stats(result["mi_values"]),
     }

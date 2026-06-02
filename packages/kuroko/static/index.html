@@ -12,8 +12,10 @@
     .panel { border: 1px solid #ddd; border-radius: 8px; background: #fafafa; box-sizing: border-box; }
     #controls { flex: 0 0 360px; }
     #results { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(620px, 1fr) 360px; gap: 20px; }
-    #patternGrid { min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px; }
+    #patternGrid { min-width: 0; display: grid; grid-template-columns: 1fr; gap: 20px; }
+    .patternPair { min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px; }
     .patternPlot { min-width: 0; height: 420px; }
+    .patternPlot2d { height: 360px; }
     .emptyPlot { min-height: 160px; color: #666; }
     #miHistogram { min-width: 0; height: 420px; }
     @media (max-width: 1500px) {
@@ -65,7 +67,7 @@
         <option value="horizontal">水平极化</option>
       </select>
 
-      <label>显示模式</label>
+      <label>着色指标</label>
       <select id="viewMode">
         <option value="gain">方向图增益 (dB)</option>
         <option value="gradient">|dMI/dgain| 梯度着色</option>

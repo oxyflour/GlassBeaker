@@ -12,6 +12,14 @@ function getTerminalPose() {
   return { mode, angleDeg: angleInput.value };
 }
 
+function validateTerminalPose(terminalPose) {
+  if (terminalPose.mode === "fixed_angle" && terminalPose.angleDeg.trim() === "") {
+    alert("请输入终端固定角度");
+    return false;
+  }
+  return true;
+}
+
 function updateTerminalPoseAngleState() {
   const isFixedAngle = document.getElementById("terminalPoseMode").value === "fixed_angle";
   document.getElementById("terminalPoseAngle").disabled = !isFixedAngle;
@@ -88,8 +96,8 @@ function buildSurface(payload, colorField) {
   return { x, y, z, surfacecolor, customdata };
 }
 
-function plotElementId(portIndex) {
-  return `plot-port-${portIndex}`;
+function plotElementId(portIndex, view) {
+  return `plot-port-${portIndex}-${view}`;
 }
 
 function clearPatternGrid(message = "方向图尚未上传") {
@@ -103,10 +111,20 @@ function ensurePatternPanels(payloads) {
   grid.innerHTML = "";
   payloads.forEach((payload, idx) => {
     const portIndex = payload.port_index ?? idx;
-    const plot = document.createElement("div");
-    plot.id = plotElementId(portIndex);
-    plot.className = "panel patternPlot";
-    grid.appendChild(plot);
+    const pair = document.createElement("div");
+    pair.className = "patternPair";
+
+    const plot3d = document.createElement("div");
+    plot3d.id = plotElementId(portIndex, "3d");
+    plot3d.className = "panel patternPlot patternPlot3d";
+    pair.appendChild(plot3d);
+
+    const plot2d = document.createElement("div");
+    plot2d.id = plotElementId(portIndex, "2d");
+    plot2d.className = "panel patternPlot patternPlot2d";
+    pair.appendChild(plot2d);
+
+    grid.appendChild(pair);
   });
 }
 
@@ -120,7 +138,9 @@ function renderPatternSet(payloads, title, colorField = "z") {
   visiblePayloads.forEach((payload, idx) => {
     const portIndex = payload.port_index ?? idx;
     const portName = portNames[portIndex] || `port ${portIndex}`;
-    renderPattern3d(payload, `${portIndex}: ${portName} - ${title}`, colorField, plotElementId(portIndex), title);
+    const baseTitle = `${portIndex}: ${portName} - ${title}`;
+    renderPattern3d(payload, `${baseTitle} (3D)`, colorField, plotElementId(portIndex, "3d"), title);
+    renderPattern2d(payload, `${baseTitle} (2D 展开)`, colorField, plotElementId(portIndex, "2d"), title);
   });
 }
 
@@ -170,13 +190,96 @@ function renderPattern3d(payload, title, colorField = "z", targetId = "plot", co
   Plotly.newPlot(targetId, [trace], layout, { responsive: true, displaylogo: false });
 }
 
+function renderPattern2d(payload, title, colorField = "z", targetId = "plot2d", colorTitle = title) {
+  const theta = payload.theta || [];
+  const phi = payload.phi || [];
+  const colorGrid = payload[colorField] || payload.z;
+  const gainGrid = payload.gain_db || payload.z;
+  const colorRange = finiteRange(colorGrid);
+  const hovertext = (colorGrid || []).map((row, ti) => row.map((_, pi) => {
+    const gainDb = gridValue(gainGrid, ti, pi);
+    const color = gridValue(colorGrid, ti, pi);
+    const gainText = Number.isFinite(gainDb) ? Number.parseFloat(gainDb.toPrecision(3)).toString() : "NaN";
+    const colorText = Number.isFinite(color) ? Number.parseFloat(color.toPrecision(4)).toString() : "NaN";
+    return (
+      `phi=${Number(phi[pi] ?? NaN).toFixed(1)}°<br>` +
+      `theta=${Number(theta[ti] ?? NaN).toFixed(1)}°<br>` +
+      `gain=${gainText} dB<br>` +
+      `${colorTitle}=${colorText}`
+    );
+  }));
+  const trace = {
+    type: "heatmap",
+    x: phi,
+    y: theta,
+    z: colorGrid,
+    text: hovertext,
+    colorscale: "Turbo",
+    zmin: colorRange.min,
+    zmax: colorRange.max,
+    colorbar: { title: colorTitle },
+    hovertemplate: "%{text}<extra></extra>",
+  };
+  const traces = [trace];
+  const clusters = (payload.channel_clusters || []).filter((point) => (
+    Number.isFinite(point?.local_phi) && Number.isFinite(point?.theta)
+  ));
+  if (clusters.length) {
+    const energies = clusters.map((point) => Number.isFinite(point.energy) ? Math.max(point.energy, 0) : 0);
+    const energyRange = {
+      min: Math.min(...energies),
+      max: Math.max(...energies),
+    };
+    const markerSizes = energies.map((energy) => {
+      const normalized = energyRange.max > energyRange.min
+        ? (energy - energyRange.min) / (energyRange.max - energyRange.min)
+        : 0.5;
+      const radius = 5 + 13 * Math.sqrt(Math.max(normalized, 0));
+      return 2 * radius;
+    });
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      name: "Channel clusters",
+      x: clusters.map((point) => point.local_phi),
+      y: clusters.map((point) => point.theta),
+      text: clusters.map((point) => {
+        const phiText = Number.isFinite(point.phi) ? point.phi.toFixed(1) : "NaN";
+        return (
+          `${point.label || "cluster"}<br>` +
+          `channel phi=${phiText}°<br>` +
+          `local phi=${point.local_phi.toFixed(1)}°<br>` +
+          `theta=${point.theta.toFixed(1)}°<br>` +
+          `energy=${Number.isFinite(point.energy) ? point.energy.toPrecision(4) : "NaN"}`
+        );
+      }),
+      marker: {
+        color: "rgba(17, 24, 39, 0.45)",
+        line: { color: "rgba(255, 255, 255, 0.9)", width: 1 },
+        size: markerSizes,
+        symbol: "circle",
+      },
+      hovertemplate: "%{text}<extra></extra>",
+    });
+  }
+  const layout = {
+    title,
+    margin: { t: 40, r: 10, b: 52, l: 60 },
+    xaxis: { title: "Phi (deg)", range: [0, 360], zeroline: false },
+    yaxis: { title: "Theta (deg)", autorange: "reversed", zeroline: false },
+  };
+  Plotly.newPlot(targetId, traces, layout, { responsive: true, displaylogo: false });
+}
+
 function renderMiHistogram(miValues) {
+  const histogram = document.getElementById("miHistogram");
   const values = (miValues || []).filter((value) => Number.isFinite(value));
   if (!values.length) {
     Plotly.purge("miHistogram");
-    document.getElementById("miHistogram").textContent = "MI 直方图尚未计算";
+    histogram.textContent = "MI 直方图尚未计算";
     return;
   }
+  histogram.textContent = "";
   const trace = {
     type: "histogram",
     x: values,
@@ -200,11 +303,17 @@ async function uploadFiles() {
     alert("请先选择 FFS 文件和 channel JSON");
     return;
   }
+  const terminalPose = getTerminalPose();
+  if (!validateTerminalPose(terminalPose)) return;
 
   const form = new FormData();
   for (const f of ffs) form.append("ffs_files", f);
   form.append("channel_file", channel);
   form.append("polarization_mode", getPolarizationMode());
+  form.append("terminal_pose_mode", terminalPose.mode);
+  if (terminalPose.mode === "fixed_angle") {
+    form.append("terminal_pose_angle_deg", terminalPose.angleDeg);
+  }
 
   const res = await fetch("/api/upload", { method: "POST", body: form });
   const data = await res.json();
@@ -228,11 +337,17 @@ async function loadGainPatterns() {
     return;
   }
   const payloads = [];
+  const terminalPose = getTerminalPose();
+  if (!validateTerminalPose(terminalPose)) return;
   for (let portIndex = 0; portIndex < portNames.length; portIndex += 1) {
     const params = new URLSearchParams({
       port_index: portIndex,
       polarization_mode: getPolarizationMode(),
+      terminal_pose_mode: terminalPose.mode,
     });
+    if (terminalPose.mode === "fixed_angle") {
+      params.set("terminal_pose_angle_deg", terminalPose.angleDeg);
+    }
     const res = await fetch(`/api/heatmap/${sessionId}?${params}`);
     const data = await res.json();
     if (!res.ok) {
@@ -250,10 +365,7 @@ async function computeGradient() {
     return;
   }
   const terminalPose = getTerminalPose();
-  if (terminalPose.mode === "fixed_angle" && terminalPose.angleDeg.trim() === "") {
-    alert("请输入终端固定角度");
-    return;
-  }
+  if (!validateTerminalPose(terminalPose)) return;
   const payloads = [];
   document.getElementById("statsBox").textContent = "正在计算所有端口的 MI 梯度...";
   for (let portIndex = 0; portIndex < portNames.length; portIndex += 1) {
