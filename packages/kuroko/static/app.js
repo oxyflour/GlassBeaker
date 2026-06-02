@@ -6,6 +6,17 @@ function getPolarizationMode() {
   return document.getElementById("polarizationMode").value || "cross";
 }
 
+function getTerminalPose() {
+  const mode = document.getElementById("terminalPoseMode").value || "horizontal_scan";
+  const angleInput = document.getElementById("terminalPoseAngle");
+  return { mode, angleDeg: angleInput.value };
+}
+
+function updateTerminalPoseAngleState() {
+  const isFixedAngle = document.getElementById("terminalPoseMode").value === "fixed_angle";
+  document.getElementById("terminalPoseAngle").disabled = !isFixedAngle;
+}
+
 function gridValue(grid, row, col) {
   const value = grid?.[row]?.[col];
   return Number.isFinite(value) ? value : NaN;
@@ -109,11 +120,11 @@ function renderPatternSet(payloads, title, colorField = "z") {
   visiblePayloads.forEach((payload, idx) => {
     const portIndex = payload.port_index ?? idx;
     const portName = portNames[portIndex] || `port ${portIndex}`;
-    renderPattern3d(payload, `${portIndex}: ${portName} - ${title}`, colorField, plotElementId(portIndex));
+    renderPattern3d(payload, `${portIndex}: ${portName} - ${title}`, colorField, plotElementId(portIndex), title);
   });
 }
 
-function renderPattern3d(payload, title, colorField = "z", targetId = "plot") {
+function renderPattern3d(payload, title, colorField = "z", targetId = "plot", colorTitle = title) {
   const surface = buildSurface(payload, colorField);
   const colorRange = finiteRange(surface.surfacecolor);
   const hovertext = surface.customdata.map((row) => row.map(([phiDeg, thetaDeg, gainDb, color]) => {
@@ -123,7 +134,7 @@ function renderPattern3d(payload, title, colorField = "z", targetId = "plot") {
       `phi=${phiDeg.toFixed(1)}°<br>` +
       `theta=${thetaDeg.toFixed(1)}°<br>` +
       `gain=${gainText} dB<br>` +
-      `${title}=${colorText}`
+      `${colorTitle}=${colorText}`
     );
   }));
   const trace = {
@@ -137,7 +148,7 @@ function renderPattern3d(payload, title, colorField = "z", targetId = "plot") {
     colorscale: "Turbo",
     cmin: colorRange.min,
     cmax: colorRange.max,
-    colorbar: { title },
+    colorbar: { title: colorTitle },
     contours: {
       x: { show: false },
       y: { show: false },
@@ -238,6 +249,11 @@ async function computeGradient() {
     alert("请先上传文件");
     return;
   }
+  const terminalPose = getTerminalPose();
+  if (terminalPose.mode === "fixed_angle" && terminalPose.angleDeg.trim() === "") {
+    alert("请输入终端固定角度");
+    return;
+  }
   const payloads = [];
   document.getElementById("statsBox").textContent = "正在计算所有端口的 MI 梯度...";
   for (let portIndex = 0; portIndex < portNames.length; portIndex += 1) {
@@ -246,6 +262,10 @@ async function computeGradient() {
     form.append("snr_db", document.getElementById("snrDb").value);
     form.append("num_snapshots", document.getElementById("numSnapshots").value);
     form.append("polarization_mode", getPolarizationMode());
+    form.append("terminal_pose_mode", terminalPose.mode);
+    if (terminalPose.mode === "fixed_angle") {
+      form.append("terminal_pose_angle_deg", terminalPose.angleDeg);
+    }
 
     const res = await fetch(`/api/gradient/${sessionId}`, { method: "POST", body: form });
     const data = await res.json();
@@ -265,6 +285,7 @@ async function computeGradient() {
       port: data.port_index,
       name: portNames[data.port_index],
       rotations: data.rotation_count,
+      terminal_pose: data.terminal_pose_mode === "fixed_angle" ? data.terminal_pose_angle_deg : "horizontal_scan",
       ...data.stats,
     })),
   }, null, 2);
@@ -286,17 +307,29 @@ function applyGradientView(viewMode) {
   }
 }
 
-document.getElementById("uploadBtn").addEventListener("click", uploadFiles);
+async function withDisabledButton(buttonId, action) {
+  const button = document.getElementById(buttonId);
+  button.disabled = true;
+  try {
+    await action();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.getElementById("uploadBtn").addEventListener("click", () => withDisabledButton("uploadBtn", uploadFiles));
 document.getElementById("refreshBtn").addEventListener("click", () => {
   const mode = document.getElementById("viewMode").value;
   if (mode === "gain") loadGainPatterns();
   else applyGradientView(mode);
 });
-document.getElementById("gradBtn").addEventListener("click", computeGradient);
+document.getElementById("gradBtn").addEventListener("click", () => withDisabledButton("gradBtn", computeGradient));
 document.getElementById("viewMode").addEventListener("change", (e) => applyGradientView(e.target.value));
+document.getElementById("terminalPoseMode").addEventListener("change", updateTerminalPoseAngleState);
 document.getElementById("polarizationMode").addEventListener("change", () => {
   lastGradientPayloads = [];
   renderMiHistogram([]);
   const mode = document.getElementById("viewMode").value;
   if (mode === "gain") loadGainPatterns();
 });
+updateTerminalPoseAngleState();

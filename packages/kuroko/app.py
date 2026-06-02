@@ -23,6 +23,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 SESSIONS: dict[str, dict[str, Any]] = {}
 POLARIZATION_MODES = {"cross", "vertical", "horizontal"}
+TERMINAL_POSE_MODES = {"horizontal_scan", "fixed_angle"}
 
 
 @dataclass
@@ -397,10 +398,14 @@ def compute_mi_distribution_and_gradient(
     port_index: int,
     snr_db: float,
     polarization_mode: str = "cross",
+    terminal_yaw_deg: float | None = None,
 ) -> dict[str, Any]:
     pat = patterns[port_index]
     g_lin = local_gain_linear(pat, polarization_mode)
-    rotation_angles = horizontal_rotation_angles(pat)
+    if terminal_yaw_deg is None:
+        rotation_angles = horizontal_rotation_angles(pat)
+    else:
+        rotation_angles = np.asarray([terminal_yaw_deg % 360.0], dtype=float)
     grad_scale = np.zeros((pat.n_points,), dtype=float)
     mi_values: list[float] = []
 
@@ -553,8 +558,18 @@ def gradient(
     snr_db: float = Form(10.0),
     num_snapshots: int = Form(200),
     polarization_mode: str = Form("cross"),
+    terminal_pose_mode: str = Form("horizontal_scan"),
+    terminal_pose_angle_deg: float | None = Form(None),
 ):
     polarization_mode = validate_polarization_mode(polarization_mode)
+    if terminal_pose_mode not in TERMINAL_POSE_MODES:
+        raise HTTPException(400, "Invalid terminal pose mode")
+    terminal_yaw_deg = None
+    if terminal_pose_mode == "fixed_angle":
+        if terminal_pose_angle_deg is None or not math.isfinite(terminal_pose_angle_deg):
+            raise HTTPException(400, "Terminal pose angle is required")
+        terminal_yaw_deg = terminal_pose_angle_deg
+
     if session_id not in SESSIONS:
         raise HTTPException(404, "Session not found")
     sess = SESSIONS[session_id]
@@ -567,13 +582,22 @@ def gradient(
     else:
         realizations = build_realizations(patterns, sess["channel"], num_snapshots=max(1, num_snapshots))
 
-    result = compute_mi_distribution_and_gradient(patterns, realizations, port_index, snr_db, polarization_mode)
+    result = compute_mi_distribution_and_gradient(
+        patterns,
+        realizations,
+        port_index,
+        snr_db,
+        polarization_mode,
+        terminal_yaw_deg=terminal_yaw_deg,
+    )
     pat = patterns[port_index]
 
     return {
         "mode": "gradient_abs_dmi_dgain",
         "port_index": port_index,
         "polarization_mode": polarization_mode,
+        "terminal_pose_mode": terminal_pose_mode,
+        "terminal_pose_angle_deg": terminal_yaw_deg,
         "snr_db": snr_db,
         "num_realizations": len(realizations),
         "rotation_count": result["rotation_count"],

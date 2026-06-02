@@ -9,13 +9,13 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; color: #222; }
     .row { display: flex; gap: 20px; align-items: flex-start; }
-    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 16px; background: #fafafa; box-sizing: border-box; }
+    .panel { border: 1px solid #ddd; border-radius: 8px; background: #fafafa; box-sizing: border-box; }
     #controls { flex: 0 0 360px; }
     #results { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(620px, 1fr) 360px; gap: 20px; }
     #patternGrid { min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px; }
     .patternPlot { min-width: 0; height: 420px; }
     .emptyPlot { min-height: 160px; color: #666; }
-    #miHistogram { min-width: 0; height: 720px; }
+    #miHistogram { min-width: 0; height: 420px; }
     @media (max-width: 1500px) {
       #results { grid-template-columns: 1fr; }
       #miHistogram { height: 320px; }
@@ -26,7 +26,9 @@
       #results { width: 100%; }
     }
     label { display: block; margin-top: 10px; font-weight: 600; }
+    .subLabel { font-size: 12px; color: #555; }
     input, select, button { width: 100%; padding: 8px; margin-top: 6px; box-sizing: border-box; }
+    input:disabled { color: #777; background: #f2f2f2; }
     button { cursor: pointer; }
     .small { font-size: 12px; color: #666; }
     pre { white-space: pre-wrap; background: #fff; border: 1px solid #eee; padding: 10px; border-radius: 6px; }
@@ -40,6 +42,14 @@
     <div id="controls" class="panel">
       <label>上传 FFS 文件（可多选）</label>
       <input id="ffsFiles" type="file" multiple accept=".ffs,.txt" />
+
+      <label>终端位姿</label>
+      <select id="terminalPoseMode">
+        <option value="horizontal_scan" selected>水平扫描</option>
+        <option value="fixed_angle">固定角度</option>
+      </select>
+      <label class="subLabel">固定角度 (deg)</label>
+      <input id="terminalPoseAngle" type="number" value="0" step="0.1" disabled />
 
       <label>上传 Channel JSON</label>
       <input id="channelFile" type="file" accept=".json" />
