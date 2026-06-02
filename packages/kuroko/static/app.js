@@ -304,6 +304,10 @@ function applyGradientView(viewMode) {
     renderPatternSet(lastGradientPayloads, "|dMI/dgain|", "z");
   } else if (viewMode === "gradlog") {
     renderPatternSet(lastGradientPayloads, "|dMI/dlog(gain)|", "grad_log_abs");
+  } else if (viewMode === "mi_max") {
+    renderPatternSet(lastGradientPayloads, "MI 最大值", "mi_max");
+  } else if (viewMode === "mi_min") {
+    renderPatternSet(lastGradientPayloads, "MI 最小值", "mi_min");
   }
 }
 

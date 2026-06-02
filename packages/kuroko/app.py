@@ -192,12 +192,15 @@ def gain_heatmap_payload(pattern: FarFieldPattern, port_index: int, polarization
     }
 
 
-def heatmap_from_samples(pattern: FarFieldPattern, values: np.ndarray) -> list[list[float]]:
+def heatmap_from_samples(pattern: FarFieldPattern, values: np.ndarray) -> list[list[float | None]]:
     z = np.full((len(pattern.theta_unique), len(pattern.phi_unique)), np.nan, dtype=float)
     for i, val in enumerate(values):
         ti, pi = pattern.sample_to_grid[i]
         z[ti, pi] = float(val)
-    return z.tolist()
+    return [
+        [float(value) if math.isfinite(float(value)) else None for value in row]
+        for row in z.tolist()
+    ]
 
 
 def cplx(x: Any) -> complex:
@@ -407,6 +410,8 @@ def compute_mi_distribution_and_gradient(
     else:
         rotation_angles = np.asarray([terminal_yaw_deg % 360.0], dtype=float)
     grad_scale = np.zeros((pat.n_points,), dtype=float)
+    mi_max = np.full((pat.n_points,), -np.inf, dtype=float)
+    mi_min = np.full((pat.n_points,), np.inf, dtype=float)
     mi_values: list[float] = []
 
     snr_linear = 10.0 ** (snr_db / 10.0)
@@ -420,7 +425,8 @@ def compute_mi_distribution_and_gradient(
             c = snr_linear / nt
             A = np.eye(nr, dtype=np.complex128) + c * (H @ H.conj().T)
             B = np.linalg.solve(A, H)  # A^{-1} H
-            mi_sum += float(np.linalg.slogdet(A)[1].real / np.log(2.0))
+            mi_value = float(np.linalg.slogdet(A)[1].real / np.log(2.0))
+            mi_sum += mi_value
 
             grouped_row_delta: dict[int, np.ndarray] = {}
             for idxs, ar, alpha, at in zip(
@@ -440,6 +446,8 @@ def compute_mi_distribution_and_gradient(
             b_row = B[port_index, :]
             pref = 2.0 * c / np.log(2.0)
             for idx, drow in grouped_row_delta.items():
+                mi_max[idx] = max(mi_max[idx], mi_value)
+                mi_min[idx] = min(mi_min[idx], mi_value)
                 dI_ds = pref * float(np.real(np.vdot(b_row, drow)))
                 grad_scale[idx] += dI_ds
         mi_values.append(mi_sum)
@@ -458,6 +466,8 @@ def compute_mi_distribution_and_gradient(
         "grad_gain": grad_gain,
         "grad_abs": grad_abs,
         "grad_log_abs": grad_log_abs,
+        "mi_max": np.where(np.isfinite(mi_max), mi_max, np.nan),
+        "mi_min": np.where(np.isfinite(mi_min), mi_min, np.nan),
         "gain_linear": g_lin,
         "gain_db": 20.0 * np.log10(np.maximum(g_lin, 1e-12)),
         "rotation_count": int(rotation_angles.size),
@@ -606,6 +616,8 @@ def gradient(
         "z": heatmap_from_samples(pat, result["grad_abs"]),
         "gain_db": heatmap_from_samples(pat, result["gain_db"]),
         "grad_log_abs": heatmap_from_samples(pat, result["grad_log_abs"]),
+        "mi_max": heatmap_from_samples(pat, result["mi_max"]),
+        "mi_min": heatmap_from_samples(pat, result["mi_min"]),
         "mi_values": result["mi_values"].tolist(),
         "stats": summary_stats(result["mi_values"]),
     }
