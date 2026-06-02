@@ -9,9 +9,22 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; color: #222; }
     .row { display: flex; gap: 20px; align-items: flex-start; }
-    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 16px; background: #fafafa; }
-    #controls { width: 360px; }
-    #plot { flex: 1; min-width: 700px; height: 720px; }
+    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 16px; background: #fafafa; box-sizing: border-box; }
+    #controls { flex: 0 0 360px; }
+    #results { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(620px, 1fr) 360px; gap: 20px; }
+    #patternGrid { min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px; }
+    .patternPlot { min-width: 0; height: 420px; }
+    .emptyPlot { min-height: 160px; color: #666; }
+    #miHistogram { min-width: 0; height: 720px; }
+    @media (max-width: 1500px) {
+      #results { grid-template-columns: 1fr; }
+      #miHistogram { height: 320px; }
+    }
+    @media (max-width: 1050px) {
+      .row { flex-direction: column; }
+      #controls { width: 100%; flex-basis: auto; }
+      #results { width: 100%; }
+    }
     label { display: block; margin-top: 10px; font-weight: 600; }
     input, select, button { width: 100%; padding: 8px; margin-top: 6px; box-sizing: border-box; }
     button { cursor: pointer; }
@@ -35,8 +48,12 @@
 
       <hr />
 
-      <label>端口</label>
-      <select id="portSelect"></select>
+      <label>极化</label>
+      <select id="polarizationMode">
+        <option value="cross" selected>交叉极化</option>
+        <option value="vertical">垂直极化</option>
+        <option value="horizontal">水平极化</option>
+      </select>
 
       <label>显示模式</label>
       <select id="viewMode">
@@ -52,14 +69,19 @@
       <input id="numSnapshots" type="number" value="200" step="1" />
       <div class="small">如果 channel JSON 是 snapshots/path 格式，这个值会被忽略。</div>
 
-      <button id="refreshBtn">刷新当前方向图</button>
-      <button id="gradBtn">计算 MI 梯度并着色</button>
+      <button id="refreshBtn">刷新全部方向图</button>
+      <button id="gradBtn">计算所有端口 MI 梯度并着色</button>
 
       <label>MI 分布统计</label>
       <pre id="statsBox">尚未计算</pre>
     </div>
 
-    <div id="plot" class="panel"></div>
+    <div id="results">
+      <div id="patternGrid">
+        <div class="panel emptyPlot">方向图尚未上传</div>
+      </div>
+      <div id="miHistogram" class="panel">MI 直方图尚未计算</div>
+    </div>
   </div>
 </body>
 </html>

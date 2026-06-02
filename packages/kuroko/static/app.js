@@ -1,6 +1,10 @@
 let sessionId = null;
-let currentPort = 0;
-let lastGradientPayload = null;
+let portNames = [];
+let lastGradientPayloads = [];
+
+function getPolarizationMode() {
+  return document.getElementById("polarizationMode").value || "cross";
+}
 
 function gridValue(grid, row, col) {
   const value = grid?.[row]?.[col];
@@ -73,9 +77,55 @@ function buildSurface(payload, colorField) {
   return { x, y, z, surfacecolor, customdata };
 }
 
-function renderPattern3d(payload, title, colorField = "z") {
+function plotElementId(portIndex) {
+  return `plot-port-${portIndex}`;
+}
+
+function clearPatternGrid(message = "方向图尚未上传") {
+  document.querySelectorAll(".patternPlot").forEach((plot) => Plotly.purge(plot));
+  document.getElementById("patternGrid").innerHTML = `<div class="panel emptyPlot">${message}</div>`;
+}
+
+function ensurePatternPanels(payloads) {
+  document.querySelectorAll(".patternPlot").forEach((plot) => Plotly.purge(plot));
+  const grid = document.getElementById("patternGrid");
+  grid.innerHTML = "";
+  payloads.forEach((payload, idx) => {
+    const portIndex = payload.port_index ?? idx;
+    const plot = document.createElement("div");
+    plot.id = plotElementId(portIndex);
+    plot.className = "panel patternPlot";
+    grid.appendChild(plot);
+  });
+}
+
+function renderPatternSet(payloads, title, colorField = "z") {
+  const visiblePayloads = payloads || [];
+  if (!visiblePayloads.length) {
+    clearPatternGrid("方向图尚未上传");
+    return;
+  }
+  ensurePatternPanels(visiblePayloads);
+  visiblePayloads.forEach((payload, idx) => {
+    const portIndex = payload.port_index ?? idx;
+    const portName = portNames[portIndex] || `port ${portIndex}`;
+    renderPattern3d(payload, `${portIndex}: ${portName} - ${title}`, colorField, plotElementId(portIndex));
+  });
+}
+
+function renderPattern3d(payload, title, colorField = "z", targetId = "plot") {
   const surface = buildSurface(payload, colorField);
   const colorRange = finiteRange(surface.surfacecolor);
+  const hovertext = surface.customdata.map((row) => row.map(([phiDeg, thetaDeg, gainDb, color]) => {
+    const gainText = Number.isFinite(gainDb) ? Number.parseFloat(gainDb.toPrecision(3)).toString() : "NaN";
+    const colorText = Number.isFinite(color) ? Number.parseFloat(color.toPrecision(4)).toString() : "NaN";
+    return (
+      `phi=${phiDeg.toFixed(1)}°<br>` +
+      `theta=${thetaDeg.toFixed(1)}°<br>` +
+      `gain=${gainText} dB<br>` +
+      `${title}=${colorText}`
+    );
+  }));
   const trace = {
     type: "surface",
     x: surface.x,
@@ -83,6 +133,7 @@ function renderPattern3d(payload, title, colorField = "z") {
     z: surface.z,
     surfacecolor: surface.surfacecolor,
     customdata: surface.customdata,
+    text: hovertext,
     colorscale: "Turbo",
     cmin: colorRange.min,
     cmax: colorRange.max,
@@ -92,11 +143,7 @@ function renderPattern3d(payload, title, colorField = "z") {
       y: { show: false },
       z: { show: false },
     },
-    hovertemplate:
-      "phi=%{customdata[0]:.1f}°<br>" +
-      "theta=%{customdata[1]:.1f}°<br>" +
-      "gain=%{customdata[2]:.3g} dB<br>" +
-      `${title}=%{customdata[3]:.4g}<extra></extra>`,
+    hovertemplate: "%{text}<extra></extra>",
   };
   const layout = {
     title,
@@ -109,7 +156,30 @@ function renderPattern3d(payload, title, colorField = "z") {
       camera: { eye: { x: 1.45, y: 1.45, z: 0.9 } },
     },
   };
-  Plotly.newPlot("plot", [trace], layout, { responsive: true, displaylogo: false });
+  Plotly.newPlot(targetId, [trace], layout, { responsive: true, displaylogo: false });
+}
+
+function renderMiHistogram(miValues) {
+  const values = (miValues || []).filter((value) => Number.isFinite(value));
+  if (!values.length) {
+    Plotly.purge("miHistogram");
+    document.getElementById("miHistogram").textContent = "MI 直方图尚未计算";
+    return;
+  }
+  const trace = {
+    type: "histogram",
+    x: values,
+    marker: { color: "#2563eb", line: { color: "#1e3a8a", width: 1 } },
+    hovertemplate: "MI=%{x:.4g}<br>数量=%{y}<extra></extra>",
+  };
+  const layout = {
+    title: "MI 直方图",
+    margin: { t: 44, r: 16, b: 52, l: 52 },
+    bargap: 0.06,
+    xaxis: { title: "MI", zeroline: false },
+    yaxis: { title: "数量", rangemode: "tozero" },
+  };
+  Plotly.newPlot("miHistogram", [trace], layout, { responsive: true, displaylogo: false });
 }
 
 async function uploadFiles() {
@@ -123,6 +193,7 @@ async function uploadFiles() {
   const form = new FormData();
   for (const f of ffs) form.append("ffs_files", f);
   form.append("channel_file", channel);
+  form.append("polarization_mode", getPolarizationMode());
 
   const res = await fetch("/api/upload", { method: "POST", body: form });
   const data = await res.json();
@@ -132,34 +203,34 @@ async function uploadFiles() {
   }
 
   sessionId = data.session_id;
-  currentPort = 0;
-  lastGradientPayload = null;
-  const portSelect = document.getElementById("portSelect");
-  portSelect.innerHTML = "";
-  data.ports.forEach((name, idx) => {
-    const opt = document.createElement("option");
-    opt.value = idx;
-    opt.textContent = `${idx}: ${name}`;
-    portSelect.appendChild(opt);
-  });
-  renderPattern3d(data.initial_heatmap, "方向图增益 (dB)");
+  portNames = data.ports || [];
+  lastGradientPayloads = [];
+  renderMiHistogram([]);
+  renderPatternSet(data.initial_heatmaps || [data.initial_heatmap], "方向图增益 (dB)");
   document.getElementById("statsBox").textContent =
     `channel: ${data.channel_name}\ntype: ${data.channel_type}\nport count: ${data.n_ports}`;
 }
 
-async function loadGainPattern() {
+async function loadGainPatterns() {
   if (!sessionId) {
     alert("请先上传文件");
     return;
   }
-  currentPort = parseInt(document.getElementById("portSelect").value || "0", 10);
-  const res = await fetch(`/api/heatmap/${sessionId}?port_index=${currentPort}`);
-  const data = await res.json();
-  if (!res.ok) {
-    alert(data.detail || "获取方向图失败");
-    return;
+  const payloads = [];
+  for (let portIndex = 0; portIndex < portNames.length; portIndex += 1) {
+    const params = new URLSearchParams({
+      port_index: portIndex,
+      polarization_mode: getPolarizationMode(),
+    });
+    const res = await fetch(`/api/heatmap/${sessionId}?${params}`);
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.detail || "获取方向图失败");
+      return;
+    }
+    payloads.push(data);
   }
-  renderPattern3d(data, "方向图增益 (dB)");
+  renderPatternSet(payloads, "方向图增益 (dB)");
 }
 
 async function computeGradient() {
@@ -167,54 +238,65 @@ async function computeGradient() {
     alert("请先上传文件");
     return;
   }
-  currentPort = parseInt(document.getElementById("portSelect").value || "0", 10);
-  const form = new FormData();
-  form.append("port_index", currentPort);
-  form.append("snr_db", document.getElementById("snrDb").value);
-  form.append("num_snapshots", document.getElementById("numSnapshots").value);
+  const payloads = [];
+  document.getElementById("statsBox").textContent = "正在计算所有端口的 MI 梯度...";
+  for (let portIndex = 0; portIndex < portNames.length; portIndex += 1) {
+    const form = new FormData();
+    form.append("port_index", portIndex);
+    form.append("snr_db", document.getElementById("snrDb").value);
+    form.append("num_snapshots", document.getElementById("numSnapshots").value);
+    form.append("polarization_mode", getPolarizationMode());
 
-  const res = await fetch(`/api/gradient/${sessionId}`, { method: "POST", body: form });
-  const data = await res.json();
-  if (!res.ok) {
-    alert(data.detail || "计算梯度失败");
-    return;
+    const res = await fetch(`/api/gradient/${sessionId}`, { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.detail || "计算梯度失败");
+      return;
+    }
+    payloads.push(data);
   }
 
-  lastGradientPayload = data;
+  lastGradientPayloads = payloads;
   document.getElementById("viewMode").value = "gradient";
   applyGradientView("gradient");
+  renderMiHistogram(payloads[0]?.mi_values);
   document.getElementById("statsBox").textContent = JSON.stringify({
-    ...data.stats,
-    rotations: data.rotation_count,
+    ports: payloads.map((data) => ({
+      port: data.port_index,
+      name: portNames[data.port_index],
+      rotations: data.rotation_count,
+      ...data.stats,
+    })),
   }, null, 2);
 }
 
 function applyGradientView(viewMode) {
   if (viewMode === "gain") {
-    loadGainPattern();
+    loadGainPatterns();
     return;
   }
-  if (!lastGradientPayload) {
+  if (!lastGradientPayloads.length) {
     alert("请先点击“计算 MI 梯度并着色”");
     return;
   }
   if (viewMode === "gradient") {
-    renderPattern3d(lastGradientPayload, "|dMI/dgain|", "z");
+    renderPatternSet(lastGradientPayloads, "|dMI/dgain|", "z");
   } else if (viewMode === "gradlog") {
-    renderPattern3d(lastGradientPayload, "|dMI/dlog(gain)|", "grad_log_abs");
+    renderPatternSet(lastGradientPayloads, "|dMI/dlog(gain)|", "grad_log_abs");
   }
 }
 
 document.getElementById("uploadBtn").addEventListener("click", uploadFiles);
 document.getElementById("refreshBtn").addEventListener("click", () => {
   const mode = document.getElementById("viewMode").value;
-  if (mode === "gain") loadGainPattern();
+  if (mode === "gain") loadGainPatterns();
   else applyGradientView(mode);
 });
 document.getElementById("gradBtn").addEventListener("click", computeGradient);
 document.getElementById("viewMode").addEventListener("change", (e) => applyGradientView(e.target.value));
-document.getElementById("portSelect").addEventListener("change", () => {
-  lastGradientPayload = null;
+document.getElementById("polarizationMode").addEventListener("change", () => {
+  lastGradientPayloads = [];
+  renderMiHistogram([]);
   const mode = document.getElementById("viewMode").value;
-  if (mode === "gain") loadGainPattern();
+  if (mode === "gain") loadGainPatterns();
 });

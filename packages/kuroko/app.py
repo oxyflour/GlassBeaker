@@ -22,6 +22,7 @@ app = FastAPI(title="MI Gradient Viewer")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 SESSIONS: dict[str, dict[str, Any]] = {}
+POLARIZATION_MODES = {"cross", "vertical", "horizontal"}
 
 
 @dataclass
@@ -164,8 +165,30 @@ def nearest_sample_index(pattern: FarFieldPattern, theta_deg: float, phi_deg: fl
     return int(np.argmin(angular_distance2(pattern.theta_deg, pattern.phi_deg, theta_deg, phi_deg % 360.0)))
 
 
-def local_gain_linear(pattern: FarFieldPattern) -> np.ndarray:
+def validate_polarization_mode(polarization_mode: str) -> str:
+    if polarization_mode not in POLARIZATION_MODES:
+        raise HTTPException(400, "Invalid polarization mode")
+    return polarization_mode
+
+
+def local_gain_linear(pattern: FarFieldPattern, polarization_mode: str = "cross") -> np.ndarray:
+    if polarization_mode == "vertical":
+        return np.abs(pattern.etheta)
+    if polarization_mode == "horizontal":
+        return np.abs(pattern.ephi)
     return np.sqrt(np.abs(pattern.etheta) ** 2 + np.abs(pattern.ephi) ** 2)
+
+
+def gain_heatmap_payload(pattern: FarFieldPattern, port_index: int, polarization_mode: str) -> dict[str, Any]:
+    gain_db = 20.0 * np.log10(np.maximum(local_gain_linear(pattern, polarization_mode), 1e-12))
+    return {
+        "mode": "gain_db",
+        "port_index": port_index,
+        "polarization_mode": polarization_mode,
+        "theta": pattern.theta_unique.tolist(),
+        "phi": pattern.phi_unique.tolist(),
+        "z": heatmap_from_samples(pattern, gain_db),
+    }
 
 
 def heatmap_from_samples(pattern: FarFieldPattern, values: np.ndarray) -> list[list[float]]:
@@ -316,6 +339,7 @@ def build_rotated_channel_data(
     patterns: list[FarFieldPattern],
     realization: dict[str, Any],
     yaw_deg: float,
+    polarization_mode: str = "cross",
 ) -> dict[str, Any]:
     nr = int(realization["nr"])
     nt = int(realization["nt"])
@@ -334,6 +358,10 @@ def build_rotated_channel_data(
             idxs[m] = idx
             eth = pat.etheta[idx]
             eph = pat.ephi[idx]
+            if polarization_mode == "vertical":
+                eph = 0.0 + 0.0j
+            elif polarization_mode == "horizontal":
+                eth = 0.0 + 0.0j
             ar[m] = np.conj(eth) * comp.pol[0] + np.conj(eph) * comp.pol[1]
 
         H += comp.alpha * np.outer(ar, np.conj(comp.at))
@@ -368,9 +396,10 @@ def compute_mi_distribution_and_gradient(
     realizations: list[dict[str, Any]],
     port_index: int,
     snr_db: float,
+    polarization_mode: str = "cross",
 ) -> dict[str, Any]:
     pat = patterns[port_index]
-    g_lin = local_gain_linear(pat)
+    g_lin = local_gain_linear(pat, polarization_mode)
     rotation_angles = horizontal_rotation_angles(pat)
     grad_scale = np.zeros((pat.n_points,), dtype=float)
     mi_values: list[float] = []
@@ -380,7 +409,7 @@ def compute_mi_distribution_and_gradient(
     for rel in realizations:
         mi_sum = 0.0
         for yaw_deg in rotation_angles:
-            state = build_rotated_channel_data(patterns, rel, float(yaw_deg))
+            state = build_rotated_channel_data(patterns, rel, float(yaw_deg), polarization_mode)
             H = state["H"]
             nr, nt = H.shape
             c = snr_linear / nt
@@ -452,7 +481,9 @@ def root() -> HTMLResponse:
 async def upload(
     ffs_files: list[UploadFile] = File(...),
     channel_file: UploadFile = File(...),
+    polarization_mode: str = Form("cross"),
 ):
+    polarization_mode = validate_polarization_mode(polarization_mode)
     if not ffs_files:
         raise HTTPException(400, "Please upload at least one .ffs file")
     if not channel_file.filename.lower().endswith(".json"):
@@ -488,45 +519,42 @@ async def upload(
         "channel_name": channel_file.filename,
     }
 
-    first_pat = patterns[0]
-    gain_db = 20.0 * np.log10(np.maximum(local_gain_linear(first_pat), 1e-12))
+    initial_heatmaps = [
+        gain_heatmap_payload(pat, port_index, polarization_mode)
+        for port_index, pat in enumerate(patterns)
+    ]
     return {
         "session_id": sid,
         "n_ports": len(patterns),
         "ports": [p.name for p in patterns],
         "channel_type": channel_type,
         "channel_name": channel_file.filename,
-        "initial_heatmap": {
-            "mode": "gain_db",
-            "port_index": 0,
-            "theta": first_pat.theta_unique.tolist(),
-            "phi": first_pat.phi_unique.tolist(),
-            "z": heatmap_from_samples(first_pat, gain_db),
-        },
+        "initial_heatmap": initial_heatmaps[0],
+        "initial_heatmaps": initial_heatmaps,
     }
 
 
 @app.get("/api/heatmap/{session_id}")
-def get_gain_heatmap(session_id: str, port_index: int = 0):
+def get_gain_heatmap(session_id: str, port_index: int = 0, polarization_mode: str = "cross"):
+    polarization_mode = validate_polarization_mode(polarization_mode)
     if session_id not in SESSIONS:
         raise HTTPException(404, "Session not found")
     sess = SESSIONS[session_id]
     patterns: list[FarFieldPattern] = sess["patterns"]
     if port_index < 0 or port_index >= len(patterns):
         raise HTTPException(400, "Invalid port index")
-    pat = patterns[port_index]
-    gain_db = 20.0 * np.log10(np.maximum(local_gain_linear(pat), 1e-12))
-    return {
-        "mode": "gain_db",
-        "port_index": port_index,
-        "theta": pat.theta_unique.tolist(),
-        "phi": pat.phi_unique.tolist(),
-        "z": heatmap_from_samples(pat, gain_db),
-    }
+    return gain_heatmap_payload(patterns[port_index], port_index, polarization_mode)
 
 
 @app.post("/api/gradient/{session_id}")
-def gradient(session_id: str, port_index: int = Form(0), snr_db: float = Form(10.0), num_snapshots: int = Form(200)):
+def gradient(
+    session_id: str,
+    port_index: int = Form(0),
+    snr_db: float = Form(10.0),
+    num_snapshots: int = Form(200),
+    polarization_mode: str = Form("cross"),
+):
+    polarization_mode = validate_polarization_mode(polarization_mode)
     if session_id not in SESSIONS:
         raise HTTPException(404, "Session not found")
     sess = SESSIONS[session_id]
@@ -539,12 +567,13 @@ def gradient(session_id: str, port_index: int = Form(0), snr_db: float = Form(10
     else:
         realizations = build_realizations(patterns, sess["channel"], num_snapshots=max(1, num_snapshots))
 
-    result = compute_mi_distribution_and_gradient(patterns, realizations, port_index, snr_db)
+    result = compute_mi_distribution_and_gradient(patterns, realizations, port_index, snr_db, polarization_mode)
     pat = patterns[port_index]
 
     return {
         "mode": "gradient_abs_dmi_dgain",
         "port_index": port_index,
+        "polarization_mode": polarization_mode,
         "snr_db": snr_db,
         "num_realizations": len(realizations),
         "rotation_count": result["rotation_count"],
@@ -553,5 +582,6 @@ def gradient(session_id: str, port_index: int = Form(0), snr_db: float = Form(10
         "z": heatmap_from_samples(pat, result["grad_abs"]),
         "gain_db": heatmap_from_samples(pat, result["gain_db"]),
         "grad_log_abs": heatmap_from_samples(pat, result["grad_log_abs"]),
+        "mi_values": result["mi_values"].tolist(),
         "stats": summary_stats(result["mi_values"]),
     }
