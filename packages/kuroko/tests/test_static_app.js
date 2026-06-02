@@ -53,8 +53,15 @@ test("renderPattern3d keeps theta and phi matched in hover text", () => {
   }, "gain");
 
   const trace = plots[0][1][0];
+  const ringStart = 4;
+
+  assert.equal(trace.type, "mesh3d");
   assert.equal(trace.hovertemplate, "%{text}<extra></extra>");
-  assert.match(trace.text[2][2], /phi=270\.0\u00b0/);
-  assert.match(trace.text[2][2], /theta=180\.0\u00b0/);
-  assert.doesNotMatch(trace.text[2][2], /theta=270/);
+  assert.match(trace.text[ringStart], /phi=0\.0\u00b0/);
+  assert.match(trace.text[ringStart], /theta=90\.0\u00b0/);
+  assert.match(trace.text[ringStart + 1], /phi=90\.0\u00b0/);
+  assert.match(trace.text[ringStart + 1], /theta=90\.0\u00b0/);
+  assert.match(trace.text[ringStart + 2], /phi=270\.0\u00b0/);
+  assert.match(trace.text[ringStart + 2], /theta=90\.0\u00b0/);
+  assert.doesNotMatch(trace.text[ringStart + 2], /theta=270/);
 });

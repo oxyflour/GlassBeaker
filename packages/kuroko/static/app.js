@@ -147,33 +147,67 @@ function renderPatternSet(payloads, title, colorField = "z") {
 function renderPattern3d(payload, title, colorField = "z", targetId = "plot", colorTitle = title) {
   const surface = buildSurface(payload, colorField);
   const colorRange = finiteRange(surface.surfacecolor);
-  const hovertext = surface.customdata.map((row) => row.map(([phiDeg, thetaDeg, gainDb, color]) => {
-    const gainText = Number.isFinite(gainDb) ? Number.parseFloat(gainDb.toPrecision(3)).toString() : "NaN";
-    const colorText = Number.isFinite(color) ? Number.parseFloat(color.toPrecision(4)).toString() : "NaN";
-    return (
-      `phi=${phiDeg.toFixed(1)}°<br>` +
-      `theta=${thetaDeg.toFixed(1)}°<br>` +
-      `gain=${gainText} dB<br>` +
-      `${colorTitle}=${colorText}`
-    );
-  }));
+  const rowCount = surface.x.length;
+  const columnCount = surface.x[0]?.length || 0;
+  const x = [];
+  const y = [];
+  const z = [];
+  const intensity = [];
+  const customdata = [];
+  const hovertext = [];
+  const i = [];
+  const j = [];
+  const k = [];
+
+  for (let ti = 0; ti < rowCount; ti += 1) {
+    for (let pi = 0; pi < columnCount; pi += 1) {
+      const [phiDeg, thetaDeg, gainDb, color] = surface.customdata[ti][pi];
+      const gainText = Number.isFinite(gainDb) ? Number.parseFloat(gainDb.toPrecision(3)).toString() : "NaN";
+      const colorText = Number.isFinite(color) ? Number.parseFloat(color.toPrecision(4)).toString() : "NaN";
+
+      x.push(surface.x[ti][pi]);
+      y.push(surface.y[ti][pi]);
+      z.push(surface.z[ti][pi]);
+      intensity.push(Number.isFinite(color) ? color : colorRange.min);
+      customdata.push(surface.customdata[ti][pi]);
+      hovertext.push(
+        `phi=${phiDeg.toFixed(1)}°<br>` +
+        `theta=${thetaDeg.toFixed(1)}°<br>` +
+        `gain=${gainText} dB<br>` +
+        `${colorTitle}=${colorText}`
+      );
+    }
+  }
+
+  for (let ti = 0; ti < rowCount - 1; ti += 1) {
+    for (let pi = 0; pi < columnCount - 1; pi += 1) {
+      const a = ti * columnCount + pi;
+      const b = a + 1;
+      const c = (ti + 1) * columnCount + pi;
+      const d = c + 1;
+      i.push(a, b);
+      j.push(c, c);
+      k.push(b, d);
+    }
+  }
+
   const trace = {
-    type: "surface",
-    x: surface.x,
-    y: surface.y,
-    z: surface.z,
-    surfacecolor: surface.surfacecolor,
-    customdata: surface.customdata,
+    type: "mesh3d",
+    x,
+    y,
+    z,
+    i,
+    j,
+    k,
+    intensity,
+    intensitymode: "vertex",
+    customdata,
     text: hovertext,
     colorscale: "Turbo",
+    showscale: true,
     cmin: colorRange.min,
     cmax: colorRange.max,
     colorbar: { title: colorTitle },
-    contours: {
-      x: { show: false },
-      y: { show: false },
-      z: { show: false },
-    },
     hovertemplate: "%{text}<extra></extra>",
   };
   const layout = {
