@@ -163,13 +163,18 @@ function renderPattern3d(payload, title, colorField = "z", targetId = "plot", co
     for (let pi = 0; pi < columnCount; pi += 1) {
       const [phiDeg, thetaDeg, gainDb, color] = surface.customdata[ti][pi];
       const gainText = Number.isFinite(gainDb) ? Number.parseFloat(gainDb.toPrecision(3)).toString() : "NaN";
-      const colorText = Number.isFinite(color) ? Number.parseFloat(color.toPrecision(4)).toString() : "NaN";
+      const colorText = Number.isFinite(color) ? Number.parseFloat(color.toPrecision(4)).toString() : "无数据";
 
       x.push(surface.x[ti][pi]);
       y.push(surface.y[ti][pi]);
       z.push(surface.z[ti][pi]);
       intensity.push(Number.isFinite(color) ? color : colorRange.min);
-      customdata.push(surface.customdata[ti][pi]);
+      customdata.push([
+        phiDeg,
+        thetaDeg,
+        Number.isFinite(gainDb) ? gainDb : null,
+        Number.isFinite(color) ? color : null,
+      ]);
       hovertext.push(
         `phi=${phiDeg.toFixed(1)}°<br>` +
         `theta=${thetaDeg.toFixed(1)}°<br>` +
